@@ -27,6 +27,27 @@ use crate::policy::{AllowAll, Policy};
 /// events so the brain itself never reads a clock (ARCHITECTURE §6.1).
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
+/// A handle for injecting [`Event`]s into a running [`Engine`] from outside a
+/// turn (see [`Engine::event_sender`]). Cloneable and `Send`, so it can live in
+/// a signal handler or another task. The classic use is `UserAbort`.
+#[derive(Clone)]
+pub struct EventSender {
+    tx: UnboundedSender<Event>,
+}
+
+impl EventSender {
+    /// Inject one event into the engine's inbox. Returns `false` if the engine
+    /// has already shut down (its receiver dropped).
+    pub fn send(&self, event: Event) -> bool {
+        self.tx.send(event).is_ok()
+    }
+
+    /// Convenience: inject [`Event::UserAbort`] (cancel all in-flight work).
+    pub fn abort(&self) -> bool {
+        self.send(Event::UserAbort)
+    }
+}
+
 /// Drives a [`Brain`] against real IO on tokio. Build one with
 /// [`Engine::builder`].
 pub struct Engine {
@@ -62,6 +83,19 @@ impl Engine {
     /// Read-only access to the underlying brain (log, op table, …).
     pub fn brain(&self) -> &Brain {
         &self.brain
+    }
+
+    /// A cloneable handle for injecting [`Event`]s into the running loop from
+    /// *outside* a turn — e.g. a Ctrl-C / signal handler sending
+    /// [`Event::UserAbort`] while [`user_turn`](Self::user_turn) is awaiting the
+    /// model stream. The event lands in the same inbox the per-op tasks feed, so
+    /// the brain folds it in order (ARCHITECTURE §4.2): `UserAbort` makes the
+    /// brain emit a [`Command::Cancel`] per in-flight op, the loop aborts those
+    /// tasks, and the turn ends `Cancelled`.
+    pub fn event_sender(&self) -> EventSender {
+        EventSender {
+            tx: self.tx.clone(),
+        }
     }
 
     /// Signal the front-end that the session is finishing, so it can render any

@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use baton_core::{
-    DoneReason, ModelOutput, ModelRequest, ModelSelector, OutputEvent, Record, ToolCall,
+    DoneReason, ModelOutput, ModelRequest, ModelSelector, OpOutcome, OutputEvent, Record, ToolCall,
     ToolSchema, Usage, Value,
 };
 use baton_host::capabilities::Shell;
@@ -433,4 +433,240 @@ async fn model_stream_runs_while_background_op_is_in_flight() {
     let text = capture.text.lock().unwrap().clone();
     assert!(text.contains("Kicked it off in the background."));
     assert!(text.contains("Background work finished."));
+}
+
+/// A model adapter that streams a few tokens, signals it has started streaming,
+/// then awaits forever — so the only way its task ends is the engine aborting
+/// it. Lets a test cancel an in-flight model stream for real.
+struct HangingStreamModel {
+    /// Fires once the adapter has streamed its tokens and is about to block.
+    streaming: tokio::sync::mpsc::UnboundedSender<()>,
+}
+
+#[async_trait]
+impl ModelAdapter for HangingStreamModel {
+    async fn call(
+        &self,
+        _request: ModelRequest,
+        sink: &ModelSink,
+    ) -> anyhow::Result<(ModelOutput, Usage)> {
+        // Stream partial text live (transport only; never logged) — this is the
+        // "N tokens" that cancellation must preserve as the partial.
+        sink.text("Hello, ".to_string());
+        sink.text("wor".to_string());
+        // Announce that we are mid-stream, then hang until the task is aborted.
+        let _ = self.streaming.send(());
+        std::future::pending::<()>().await;
+        unreachable!("the engine aborts this task on cancel");
+    }
+}
+
+/// P2-2 DONE criterion: cancel an in-flight **model stream** cleanly through the
+/// real tokio engine. The model streams a couple of tokens then hangs; a
+/// `UserAbort` injected via [`Engine::event_sender`] (as a Ctrl-C handler would)
+/// makes the brain emit `Cancel`, the engine aborts the task, and the brain logs
+/// the partial ("Hello, wor") with a `Cancelled` outcome and ends `Cancelled`.
+#[tokio::test]
+async fn cancel_in_flight_model_stream_preserves_partial() {
+    let capture = Capture::default();
+
+    let (streaming_tx, mut streaming_rx) = tokio::sync::mpsc::unbounded_channel();
+    let model = Arc::new(HangingStreamModel {
+        streaming: streaming_tx,
+    });
+
+    let mut engine = Engine::builder()
+        .model(ModelSelector::named("big"), model)
+        .frontend(Box::new(capture.clone()))
+        .clock(deterministic_clock())
+        .build();
+
+    // Inject the abort the moment the model is mid-stream (from "outside" the
+    // turn, like a signal handler), then let the turn drive to completion.
+    let sender = engine.event_sender();
+    tokio::spawn(async move {
+        streaming_rx
+            .recv()
+            .await
+            .expect("model should start streaming");
+        assert!(sender.abort(), "abort should be accepted");
+    });
+
+    engine.user_turn("write a long poem".into()).await;
+
+    // The turn ended Cancelled (not EndTurn, not Error).
+    let dones = capture.done.lock().unwrap();
+    assert_eq!(dones.len(), 1, "expected exactly one terminal Done");
+    assert!(
+        matches!(dones[0], DoneReason::Cancelled),
+        "expected Cancelled, got {:?}",
+        dones[0]
+    );
+
+    // The partial streamed text is preserved in the durable log as the model
+    // op's Cancelled outcome — "N tokens then cancelled", never an empty gap.
+    let partial = engine
+        .brain()
+        .state()
+        .log()
+        .iter()
+        .find_map(|e| match &e.record {
+            Record::OpEnded {
+                outcome: OpOutcome::Cancelled { partial },
+                ..
+            } => Some(partial.clone()),
+            _ => None,
+        })
+        .expect("a Cancelled op should be logged");
+    assert_eq!(partial, json!("Hello, wor"));
+
+    // No model output was ever consolidated (the stream never finished).
+    let model_outputs = engine
+        .brain()
+        .state()
+        .log()
+        .iter()
+        .filter(|e| matches!(e.record, Record::ModelOutput { .. }))
+        .count();
+    assert_eq!(
+        model_outputs, 0,
+        "a cancelled stream has no consolidated output"
+    );
+}
+
+/// A background capability that blocks forever once started (until its task is
+/// aborted), signalling when it is in flight. Proves a background op cancels
+/// cleanly with no leaked work.
+struct HangingBackground {
+    started: tokio::sync::mpsc::UnboundedSender<()>,
+}
+
+#[async_trait]
+impl Capability for HangingBackground {
+    fn name(&self) -> &str {
+        "bg"
+    }
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "bg",
+            "A background op that never finishes.",
+            json!({ "type": "object" }),
+        )
+    }
+    fn requires_permission(&self) -> bool {
+        false
+    }
+    fn runs_in_background(&self) -> bool {
+        true
+    }
+    async fn invoke(&self, _args: Value, _sink: &ChunkSink) -> Result<Value, Value> {
+        let _ = self.started.send(());
+        std::future::pending::<()>().await;
+        unreachable!("the engine aborts this task on cancel");
+    }
+}
+
+/// P2-2 DONE criterion: a **background** capability op cancels cleanly through
+/// the real engine. The model kicks off a never-finishing background op and the
+/// turn resumes into a second model call (concurrent). Once the background op is
+/// in flight, a `UserAbort` aborts every in-flight task; the background op is
+/// logged `Cancelled` and the turn ends `Cancelled` with no leaked work.
+#[tokio::test]
+async fn cancel_in_flight_background_op_cleanly() {
+    let capture = Capture::default();
+
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+    let background = Arc::new(HangingBackground {
+        started: started_tx,
+    });
+
+    // Call 0 asks for the background op; call 1 streams alongside it then hangs
+    // (so something is still in flight to cancel when we abort).
+    let (streaming_tx, _streaming_rx) = tokio::sync::mpsc::unbounded_channel();
+    let model = Arc::new(BackgroundThenHang {
+        calls: AtomicU64::new(0),
+        streaming: streaming_tx,
+        responses: Mutex::new(
+            [ModelOutput::tool_calls(vec![ToolCall::new(
+                "call-1",
+                "bg",
+                json!({}),
+            )])]
+            .into_iter()
+            .collect(),
+        ),
+    });
+
+    let mut engine = Engine::builder()
+        .model(ModelSelector::named("big"), model)
+        .capability(background)
+        .frontend(Box::new(capture.clone()))
+        .clock(deterministic_clock())
+        .build();
+
+    let sender = engine.event_sender();
+    tokio::spawn(async move {
+        started_rx.recv().await.expect("background op should start");
+        assert!(sender.abort(), "abort should be accepted");
+    });
+
+    engine.user_turn("kick off background work".into()).await;
+
+    // The session ended Cancelled.
+    let dones = capture.done.lock().unwrap();
+    assert_eq!(dones.len(), 1);
+    assert!(matches!(dones[0], DoneReason::Cancelled));
+
+    // The background op was logged Cancelled (no leaked/never-resolved op).
+    let cancelled = engine
+        .brain()
+        .state()
+        .log()
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.record,
+                Record::OpEnded {
+                    outcome: OpOutcome::Cancelled { .. },
+                    ..
+                }
+            )
+        })
+        .count();
+    assert!(
+        cancelled >= 1,
+        "the background op should be logged Cancelled"
+    );
+
+    // Nothing is left in flight — the engine fully drained.
+    assert_eq!(engine.brain().state().inflight_len(), 0);
+}
+
+/// A model whose first call requests a background op and whose later call(s)
+/// stream a token then hang until aborted.
+struct BackgroundThenHang {
+    calls: AtomicU64,
+    streaming: tokio::sync::mpsc::UnboundedSender<()>,
+    responses: Mutex<VecDeque<ModelOutput>>,
+}
+
+#[async_trait]
+impl ModelAdapter for BackgroundThenHang {
+    async fn call(
+        &self,
+        _request: ModelRequest,
+        sink: &ModelSink,
+    ) -> anyhow::Result<(ModelOutput, Usage)> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(output) = self.responses.lock().unwrap().pop_front() {
+            return Ok((output, Usage::new(1, 1)));
+        }
+        // After the scripted first response, every resumed turn streams a token
+        // then hangs — keeping a model op in flight alongside the background op.
+        let _ = n;
+        sink.text("thinking".to_string());
+        let _ = self.streaming.send(());
+        std::future::pending::<()>().await;
+        unreachable!("aborted on cancel");
+    }
 }

@@ -35,7 +35,7 @@ mod model;
 pub mod policy;
 
 pub use capability::{Capability, CapabilityRegistry, ChunkSink};
-pub use engine::{Clock, Engine, EngineBuilder};
+pub use engine::{Clock, Engine, EngineBuilder, EventSender};
 pub use frontend::{Frontend, Metrics, StdoutFrontend};
 pub use model::{ModelAdapter, ModelRegistry, ModelSink};
 pub use policy::Policy;

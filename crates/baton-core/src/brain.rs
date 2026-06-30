@@ -307,14 +307,32 @@ impl Brain {
     }
 
     fn on_op_cancelled(&mut self, op: OpId) {
+        // Ignore a cancel confirmation for an op that already resolved. The host
+        // aborts the task and emits `OpCancelled`, but the task may have queued
+        // its real terminal event (e.g. `ModelDone`) a hair before the abort;
+        // that event is folded first and removes the op. Without this guard the
+        // stale `OpCancelled` would append a spurious `Cancelled` `OpEnded` and
+        // break replay. Cancellation is idempotent (ARCHITECTURE §6.4).
+        if self.state.get_op(op).is_none() {
+            return;
+        }
+
+        // Log the partial work (e.g. "N tokens then cancelled") before removing
+        // the op, so the trace never has an implicit gap (ARCHITECTURE §6.4).
         let partial = self.partial_of(op);
         self.end_op(op, OpOutcome::Cancelled { partial }, None);
 
-        // If an interrupt is waiting for the in-flight ops to drain, start the
-        // fresh turn now that they have (so the partial work is already logged).
         if self.state.pending_resume() && !self.state.is_busy() {
+            // An interrupt (steer) is waiting for the in-flight ops to drain:
+            // start the fresh turn now that they have (the partial work is
+            // already logged, so the new turn's projection sees it).
             self.state.set_pending_resume(false);
             self.start_model_turn();
+        } else if !self.state.is_busy() {
+            // A plain abort (e.g. ESC / `UserAbort`) with nothing to resume:
+            // the turn is over, cancelled. Emit the terminal `Done` once the
+            // last in-flight op has drained so the host/front-end sees it.
+            self.done(DoneReason::Cancelled);
         }
     }
 

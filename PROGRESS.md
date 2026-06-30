@@ -82,12 +82,30 @@ Tests (44 total across the workspace, +4):
 **Exit criteria:**
 
 - ✅ Kick off a long background op and stream a model response simultaneously; react to its completion instantly (no polling/`sleep`).
-- ⏳ Cancellation + delta coalescing remain (the other Phase 2 tasks).
+- ✅ Cancel an in-flight model stream cleanly; the log records "N tokens then cancelled"; replay reproduces it (P2-2 below).
+- ⏳ Delta coalescing remains (the last Phase 2 task).
 
-Notes for the next Phase 2 tasks:
+### P2-2 — First-class cancellation ✅
 
-- **Cancellation:** `Command::Cancel`/`Event::OpCancelled` and `on_op_cancelled` already exist and log a `Cancelled { partial }` outcome (model `text_so_far` is preserved as the partial). The host's `Cancel` aborts the task and emits `OpCancelled`. What's likely missing: a focused scripted/replay test for "stream N tokens then cancel" reproducing the partial, and confirming background ops cancel cleanly too.
-- **Delta coalescing:** lives entirely host-side (ARCHITECTURE §4.4/§4.5) — deltas are transport, never logged, so coalescing won't affect the durable log or replay; the recorded thing to assert is that the consolidated `ModelDone`/`ToolResult` is unchanged regardless of how deltas were batched.
+The brain already had the cancellation *shape* (`Command::Cancel`, `Event::OpCancelled`, `Brain::on_op_cancelled` logging a `Cancelled { partial }` outcome that preserves a model op's `text_so_far`); the host already aborted the tokio task on `Cancel` and emitted `OpCancelled`. P2-2 closed the end-to-end path and hardened the reducer:
+
+- `baton-core` (`brain.rs`): `on_op_cancelled` now (1) **ignores a cancel confirmation for an op that already resolved** — the host aborts the task *and* emits `OpCancelled`, but the task may have queued its real terminal event (`ModelDone`) a hair before the abort; that event is folded first and removes the op, so the late `OpCancelled` must be a no-op or it would append a spurious `Cancelled` `OpEnded` and break replay (cancellation is idempotent, ARCHITECTURE §6.4); and (2) emits the terminal `Done { reason: Cancelled }` once the **last** in-flight op drains on a plain abort (`UserAbort`/ESC) with nothing to resume — previously a bare abort left the brain silently idle and the front-end (which already renders `DoneReason::Cancelled`) never saw it. The existing steer-interrupt path (`pending_resume` → fresh turn) is unchanged, and a single-op cancel while other work is still in flight does **not** force `Done` (the turn only ends when the brain is idle). No new `Command`/`Event`/`Record` variants — the cancellation contract was already in place.
+- `baton-host` (`engine.rs`): added a cloneable `EventSender` handle (`Engine::event_sender()`) for injecting events into the running loop from *outside* a turn — the realistic wiring for a Ctrl-C / signal handler sending `UserAbort` while `user_turn` is awaiting the model stream. `EventSender::abort()` is the `UserAbort` convenience. The driver loop itself was already correct (it aborts the per-op `JoinHandle` on `Command::Cancel` and confirms with `OpCancelled`); nothing else changed there.
+
+Tests (50 total across the workspace, +6):
+
+- `baton-core/tests/cancellation.rs` — the headline scripted "stream N tokens then `UserAbort`" pinning the command sequence (`StartModelCall` → `Cancel` → `Done { Cancelled }`) and asserting the partial (`"Hello, wor"`) is in the log; deterministic replay (identical commands **and** identical log — partial reproduced *then* the cancel); the stale-`OpCancelled`-after-`ModelDone` race is a no-op (exactly one `Ok` `OpEnded`, no spurious `Cancelled`); and cancelling one background op mid-stream does **not** end the turn (the model op still gates it → `EndTurn`, not `Cancelled`).
+- `baton-host/tests/end_to_end.rs` — through the **real tokio engine**: `cancel_in_flight_model_stream_preserves_partial` (a model that streams two tokens then hangs forever; a `UserAbort` injected via `event_sender()` aborts the task; the turn ends `Cancelled`, the partial `"Hello, wor"` is in the durable log, and **no** consolidated `ModelOutput` was recorded); and `cancel_in_flight_background_op_cleanly` (a never-finishing background op is aborted on `UserAbort`, logged `Cancelled`, with the engine fully drained — `inflight_len() == 0`, no leaked work).
+
+**Exit criteria:**
+
+- ✅ Cancel an in-flight model stream cleanly (host aborts the task; partial text preserved). Background capability ops cancel cleanly too (no leaked work).
+- ✅ Replay reproduces the partial output then the cancel, deterministically.
+- ⏳ Delta coalescing remains (the last Phase 2 task).
+
+Notes for the next Phase 2 task:
+
+- **Delta coalescing (P2-3):** lives entirely host-side (ARCHITECTURE §4.4/§4.5) — deltas are transport, never logged, so coalescing won't affect the durable log or replay; the recorded thing to assert is that the consolidated `ModelDone`/`ToolResult` is unchanged regardless of how deltas were batched. The cancellation work is orthogonal: a cancelled model op's partial is read from the brain's `text_so_far` (folded from deltas as they arrive), so coalescing must still feed each delta to the brain (or the partial would lose tokens) — batch the *front-end render*, not the `submit`.
 
 [`Engine`]: crates/baton-host/src/engine.rs
 [`Capability`]: crates/baton-host/src/capability.rs

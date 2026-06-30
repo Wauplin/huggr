@@ -392,15 +392,32 @@ impl Accumulator {
                         }
                         if let Some(args) = function.get("arguments").and_then(Value::as_str) {
                             entry.args.push_str(args);
-                            if !args.is_empty() {
+                            // Stream the live delta only once the call is announced
+                            // (so it has a stable, non-empty id to attach to). Args
+                            // that arrive before the announce — e.g. a server that
+                            // streams `arguments` before the `id`/`name` — are
+                            // buffered and flushed once at announce time below, so
+                            // nothing is lost and nothing is emitted twice.
+                            if !args.is_empty() && entry.announced {
                                 sink.tool_call_args(&entry.id, args);
                             }
                         }
                     }
-                    // Announce the tool call once its name is known.
+                    // Announce the tool call once its name is known. Guarantee a
+                    // stable, non-empty id first: if the server streamed the name
+                    // before (or never sends) the id, synthesize one from the index
+                    // so live deltas, the consolidated `ToolCall`, and the brain's
+                    // tool-result correlation all agree.
                     if !entry.announced && !entry.name.is_empty() {
+                        if entry.id.is_empty() {
+                            entry.id = format!("call_{index}");
+                        }
                         entry.announced = true;
                         sink.tool_call_start(&entry.id, &entry.name);
+                        // Flush any args buffered before the announce, in one delta.
+                        if !entry.args.is_empty() {
+                            sink.tool_call_args(&entry.id, &entry.args);
+                        }
                     }
                 }
             }
@@ -413,14 +430,23 @@ impl Accumulator {
 
     fn finish(self, sink: &ModelSink) -> (ModelOutput, Usage) {
         let mut calls = Vec::new();
-        for tool in self.tool_calls.into_values() {
-            sink.tool_call_end(&tool.id);
+        for (index, tool) in self.tool_calls.into_iter() {
+            // Guarantee a stable, non-empty id even for a call the server never
+            // gave one (or one never announced because its name never arrived):
+            // the brain correlates tool results by this id, so an empty id would
+            // silently break correlation.
+            let id = if tool.id.is_empty() {
+                format!("call_{index}")
+            } else {
+                tool.id
+            };
+            sink.tool_call_end(&id);
             let args = if tool.args.trim().is_empty() {
                 json!({})
             } else {
                 serde_json::from_str(&tool.args).unwrap_or_else(|_| json!({ "_raw": tool.args }))
             };
-            calls.push(ToolCall::new(tool.id, tool.name, args));
+            calls.push(ToolCall::new(id, tool.name, args));
         }
 
         let reasoning = (!self.reasoning.is_empty()).then_some(self.reasoning);
@@ -597,7 +623,9 @@ fn hf_cli_token() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use baton_core::{ContextBlock, ModelRequest, Role, SamplingParams, ToolSchema};
+    use baton_core::{
+        ContextBlock, Event, ModelDelta, ModelRequest, Role, SamplingParams, ToolSchema,
+    };
     use baton_host::ModelSink;
 
     fn adapter() -> OpenAiAdapter {
@@ -918,5 +946,67 @@ mod tests {
         assert_eq!(call.id, "call-9");
         assert_eq!(call.name, "shell");
         assert_eq!(call.args, json!({ "cmd": "ls" }));
+    }
+
+    // Regression: a (non-conforming) OpenAI-compatible server that streams a tool
+    // call's `arguments` and `name` *before* the `id` — or never sends an id at
+    // all — must not produce empty-id deltas or an empty-id consolidated call (the
+    // brain correlates tool results by this id). A stable id is synthesized from
+    // the index, and the pre-id args are buffered then flushed exactly once.
+    #[tokio::test]
+    async fn tool_call_with_no_id_gets_a_stable_synthesized_id() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = ModelSink::new(baton_core::OpId(0), tx);
+
+        let mut acc = Accumulator::default();
+        // args arrive first, with no id and no name yet
+        acc.ingest(
+            &json!({ "choices": [{ "delta": { "tool_calls": [
+                { "index": 0, "function": { "arguments": "{\"cmd\":" } }
+            ] } }] }),
+            &sink,
+        );
+        // then the name (still no id) — this is where the call is announced
+        acc.ingest(
+            &json!({ "choices": [{ "delta": { "tool_calls": [
+                { "index": 0, "function": { "name": "shell", "arguments": "\"ls\"}" } }
+            ] } }] }),
+            &sink,
+        );
+        acc.ingest(
+            &json!({ "choices": [{ "delta": {}, "finish_reason": "tool_calls" }] }),
+            &sink,
+        );
+
+        let (output, _usage) = acc.finish(&sink);
+        assert_eq!(output.tool_calls.len(), 1);
+        let call = &output.tool_calls[0];
+        assert_eq!(call.id, "call_0", "synthesized a stable id from the index");
+        assert_eq!(call.name, "shell");
+        assert_eq!(
+            call.args,
+            json!({ "cmd": "ls" }),
+            "buffered args reassemble"
+        );
+
+        // No streamed delta may carry an empty id, and the args reassemble from
+        // the deltas exactly once (no loss, no duplication).
+        drop(sink);
+        let mut streamed_args = String::new();
+        while let Ok(Event::ModelDelta { delta, .. }) = rx.try_recv() {
+            match delta {
+                ModelDelta::ToolCallStart { id, .. } => assert!(!id.is_empty()),
+                ModelDelta::ToolCallEnd { id } => assert!(!id.is_empty()),
+                ModelDelta::ToolCallArgsDelta { id, json_fragment } => {
+                    assert!(!id.is_empty(), "args delta must have a non-empty id");
+                    streamed_args.push_str(&json_fragment);
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            streamed_args, "{\"cmd\":\"ls\"}",
+            "args streamed once, in full"
+        );
     }
 }

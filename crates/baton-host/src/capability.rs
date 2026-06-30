@@ -28,6 +28,14 @@ pub trait Capability: Send + Sync {
         true
     }
 
+    /// Whether this capability runs in the **background** (ARCHITECTURE §6.3):
+    /// it does not block the model turn, so the model keeps streaming while the
+    /// op runs (e.g. a long `cargo build` alongside a model response). Defaults
+    /// to `false` (foreground: the turn waits for the result).
+    fn runs_in_background(&self) -> bool {
+        false
+    }
+
     /// Run the tool. `Ok(result)` and `Err(error)` are both routed back to the
     /// model as a tool result (an error is a *semantic* result the model can
     /// react to, ARCHITECTURE §5.4) — return `Err` only for tool-level failures,
@@ -84,6 +92,16 @@ impl CapabilityRegistry {
         self.map
             .values()
             .filter(|c| c.requires_permission())
+            .map(|c| c.name().to_string())
+            .collect()
+    }
+
+    /// The names of capabilities that run in the background (do not block the
+    /// model turn).
+    pub fn background_names(&self) -> Vec<String> {
+        self.map
+            .values()
+            .filter(|c| c.runs_in_background())
             .map(|c| c.name().to_string())
             .collect()
     }

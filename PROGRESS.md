@@ -63,6 +63,32 @@ Tests (40 total across the workspace):
 - ✅ "CLI on a laptop" host setup ≈ 10 lines on top of `baton-host` (see the marked block in `crates/baton-cli/src/main.rs`).
 - ✅ Genuine multi-turn session end-to-end. Verified **live** against the HF router: `baton -y "Use the shell tool to run 'echo baton-live-test', then tell me what it printed."` — the model called the shell tool, the host ran it and streamed the output, and the model produced a final answer. Also covered by the driver-loop + mock-SSE tests for CI (no key needed).
 
+## Phase 2 — Concurrency & streaming (the differentiator) 🚧
+
+**Goal:** multiple in-flight operations; the LLM is "just another stream."
+
+### P2-1 — Multiple concurrent ops ✅
+
+The op table already held many in-flight ops keyed by `OpId`, and the host already ran one task per op (one `tokio::spawn` per `StartModelCall`/`StartCapability`, feeding a single inbox channel — the brain reduces interleaved events one at a time, atomically). The missing piece for "a model stream **and** a background `shell` op run simultaneously" was a way for an op to *not* hold the turn open. Added:
+
+- `baton-core`: `OpKind::Capability` gained a `background: bool` flag; `OpKind::blocks_turn()` returns `false` for background capabilities (and was rewritten as an exhaustive match so a future op kind can't silently default to "blocks"). `TurnPolicy` gained `is_background(capability) -> bool` (default `false`), implemented by `StaticPolicy` via a configurable background set (`with_background`). The reducer (`brain.rs`): after a model turn's tool fan-out, if nothing blocks the turn it resumes the model immediately so it streams alongside the background op(s); a granted-permission background op resumes likewise; and `on_model_done` **defers `Done`** while a background op is still in flight (the turn isn't over while work runs — the background result is folded in and a fresh turn picks it up). No new `Command`/`Event`/`Record` variants — background-ness is a brain-side scheduling decision the host never sees.
+- `baton-host`: `Capability` gained `runs_in_background()` (default `false`); `CapabilityRegistry::background_names()`; `EngineBuilder::build()` threads those into the brain's `StaticPolicy` (`.with_background(...)`), mirroring the existing permissioned-names wiring. The `Engine` driver loop needed **no** change — it already spawns one task per op and reacts event-driven (the shell capability awaits `wait_with_output()`, so `ProcessExited` is instant with no polling/`sleep`).
+
+Tests (44 total across the workspace, +4):
+
+- `baton-core/tests/concurrent_ops.rs` — the headline scripted interleave (model stream + background shell, pinning the exact command sequence including the deferred `Done`); deterministic replay over the interleaved stream (identical commands **and** identical log); and a mixed background + foreground fan-out asserting only the *foreground* op gates the turn.
+- `baton-host/tests/end_to_end.rs::model_stream_runs_while_background_op_is_in_flight` — through the **real tokio engine**: a background op blocks on a channel while the next model call provably runs (true overlap, not "both ran eventually"), then releases it; the final turn picks up the result and ends with exactly one `EndTurn`.
+
+**Exit criteria:**
+
+- ✅ Kick off a long background op and stream a model response simultaneously; react to its completion instantly (no polling/`sleep`).
+- ⏳ Cancellation + delta coalescing remain (the other Phase 2 tasks).
+
+Notes for the next Phase 2 tasks:
+
+- **Cancellation:** `Command::Cancel`/`Event::OpCancelled` and `on_op_cancelled` already exist and log a `Cancelled { partial }` outcome (model `text_so_far` is preserved as the partial). The host's `Cancel` aborts the task and emits `OpCancelled`. What's likely missing: a focused scripted/replay test for "stream N tokens then cancel" reproducing the partial, and confirming background ops cancel cleanly too.
+- **Delta coalescing:** lives entirely host-side (ARCHITECTURE §4.4/§4.5) — deltas are transport, never logged, so coalescing won't affect the durable log or replay; the recorded thing to assert is that the consolidated `ModelDone`/`ToolResult` is unchanged regardless of how deltas were batched.
+
 [`Engine`]: crates/baton-host/src/engine.rs
 [`Capability`]: crates/baton-host/src/capability.rs
 [`ModelAdapter`]: crates/baton-host/src/model.rs

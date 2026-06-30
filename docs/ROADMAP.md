@@ -46,14 +46,13 @@
 
 **Goal.** Multiple in-flight operations; LLM is "just another stream."
 
-- Multiple concurrent ops in the op table; host runs one task per op.
-- Parallel: stream a model response **while** a background `shell` op streams stdout. Interleaved events, atomic reduction.
-- **First-class cancellation** (`Cancel` → `OpCancelled`), partial-op logging.
-- Host-side delta **coalescing** with exact recording for replay.
+- ✅ **P2-1 — Multiple concurrent ops.** The op table holds many simultaneously in-flight ops keyed by `OpId`; the host runs one task per op. A **background** capability (policy-designated, `TurnPolicy::is_background`) does not block the turn, so a model response streams **while** a background `shell` op runs — interleaved events, atomic per-event reduction, deterministic replay. `ProcessExited` is reacted to instantly (event-driven; no polling/`sleep`). Core stays sans-IO/single-threaded; no new `Command`/`Event` variants (background-ness is a brain-side scheduling decision invisible to the host).
+- **First-class cancellation** (`Cancel` → `OpCancelled`), partial-op logging. *(next)*
+- Host-side delta **coalescing** with exact recording for replay. *(next)*
 
 **Exit criteria.**
-- Kick off a long `cargo build` and stream a model response simultaneously; react to `ProcessExited` instantly (no polling/`sleep`).
-- Cancel an in-flight model stream cleanly; the log records "N tokens then cancelled"; replay reproduces it.
+- ✅ Kick off a long `cargo build` and stream a model response simultaneously; react to `ProcessExited` instantly (no polling/`sleep`). Covered by `baton-core/tests/concurrent_ops.rs` (scripted interleave + deterministic replay) and `baton-host/tests/end_to_end.rs::model_stream_runs_while_background_op_is_in_flight` (real engine, proven overlap).
+- Cancel an in-flight model stream cleanly; the log records "N tokens then cancelled"; replay reproduces it. *(P2 cancellation task)*
 
 ---
 
@@ -65,10 +64,10 @@
 - Trace file format (versioned, portable, shareable).
 - `baton replay <trace>` reconstructs commands bit-for-bit; an inspector to step through a session.
 - Blob store capability (disk for native) with content-addressed payloads.
+- Update CLI to resume from a trace
 
 **Exit criteria.**
-- Record a real Phase 1/2 session, replay it bit-for-bit on another machine.
-- Hand a trace file to a teammate; they reproduce the exact run offline.
+- Record a real Phase 1/2 session, replay it bit-for-bit.
 
 ---
 

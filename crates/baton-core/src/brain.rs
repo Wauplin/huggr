@@ -157,15 +157,35 @@ impl Brain {
         self.end_op(op, OpOutcome::Ok, Some(usage));
 
         if output.tool_calls.is_empty() {
-            // A final answer with no tool calls ends the turn.
+            // A final answer with no tool calls ends the turn — unless a
+            // background op is still running. In that case the turn isn't over:
+            // when the background op finishes its result is folded in and a
+            // fresh turn picks it up (ARCHITECTURE §6.3). We checkpoint either
+            // way (the model output is durable) but defer `Done` until idle.
             self.checkpoint();
-            self.done(DoneReason::EndTurn);
+            let background_running = self.state.inflight().values().any(|o| {
+                matches!(
+                    o.kind,
+                    OpKind::Capability {
+                        background: true,
+                        ..
+                    }
+                )
+            });
+            if !background_running {
+                self.done(DoneReason::EndTurn);
+            }
         } else {
             // The model wants tools: turn each call into an op. The brain routes;
             // it never interprets the args.
             for call in output.tool_calls {
                 self.begin_tool_call(call);
             }
+            // If every tool call this turn was a background op, nothing blocks
+            // the turn — resume the model now so it streams *alongside* them
+            // (ARCHITECTURE §6.3). Done once, after the whole fan-out, so a mix
+            // of background + foreground calls still waits for the foreground.
+            self.maybe_resume_model_turn();
         }
     }
 
@@ -260,7 +280,14 @@ impl Brain {
                         call_id,
                     } = op_state.kind
                     {
-                        self.start_capability(op, name, args, call_id);
+                        let background = self.policy.is_background(&name);
+                        self.start_capability(op, name, args, call_id, background);
+                        // A granted background op runs alongside the model:
+                        // resume the turn now (no-op if other ops still block it,
+                        // e.g. a sibling permission still pending).
+                        if background {
+                            self.maybe_resume_model_turn();
+                        }
                     }
                 }
             }
@@ -317,9 +344,21 @@ impl Brain {
 
     /// After a tool/agent op resolves, resume the model turn once nothing the
     /// turn is waiting on remains in flight.
+    ///
+    /// A **background** op is the subtle case: it does not block the turn while
+    /// running, so the model may already have ended and the brain gone idle by
+    /// the time it finishes. We must not start a fresh turn while a foreground
+    /// op or a live model call is still going (that would double-call the model
+    /// or strand the in-flight one); we only resume when the whole brain is
+    /// otherwise idle, folding the background result in at the next boundary.
     fn maybe_resume_model_turn(&mut self) {
-        let still_waiting = self.state.inflight().values().any(|o| o.kind.blocks_turn());
-        if !still_waiting {
+        let blocked = self.state.inflight().values().any(|o| o.kind.blocks_turn());
+        let model_running = self
+            .state
+            .inflight()
+            .values()
+            .any(|o| matches!(o.kind, OpKind::Model { .. }));
+        if !blocked && !model_running {
             self.start_model_turn();
         }
     }
@@ -345,11 +384,19 @@ impl Brain {
                 },
             });
         } else {
-            self.start_capability(op, call.name, call.args, call.id);
+            let background = self.policy.is_background(&call.name);
+            self.start_capability(op, call.name, call.args, call.id, background);
         }
     }
 
-    fn start_capability(&mut self, op: OpId, name: String, args: Value, call_id: String) {
+    fn start_capability(
+        &mut self,
+        op: OpId,
+        name: String,
+        args: Value,
+        call_id: String,
+        background: bool,
+    ) {
         // Seam for optimistic-concurrency stamping (ARCHITECTURE §7.3): when a
         // capability's schema declares it mutates a versioned object, the brain
         // would stamp `expected_version` from `self.state.versions()` here. The
@@ -360,6 +407,7 @@ impl Brain {
             OpKind::Capability {
                 name: name.clone(),
                 call_id,
+                background,
             },
         );
         self.state

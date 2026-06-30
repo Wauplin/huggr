@@ -26,6 +26,15 @@ pub trait TurnPolicy {
 
     /// Whether invoking `capability` requires a permission round-trip.
     fn needs_permission(&self, capability: &str) -> bool;
+
+    /// Whether `capability` runs in the **background**: it does not block the
+    /// model turn, so the model keeps streaming while the op runs (ARCHITECTURE
+    /// §6.3 — "a long `cargo build` and a model response concurrently"). Its
+    /// result is folded into the log when it finishes and picked up at the next
+    /// turn boundary. Defaults to `false` (foreground: the turn waits for it).
+    fn is_background(&self, _capability: &str) -> bool {
+        false
+    }
 }
 
 /// A simple, configurable [`TurnPolicy`] with a **trivial pass-through
@@ -40,6 +49,7 @@ pub struct StaticPolicy {
     model: ModelSelector,
     tools: Vec<ToolSchema>,
     permissioned: Vec<String>,
+    background: Vec<String>,
     params: SamplingParams,
     system: Option<String>,
 }
@@ -50,6 +60,7 @@ impl Default for StaticPolicy {
             model: ModelSelector::named("big"),
             tools: Vec::new(),
             permissioned: Vec::new(),
+            background: Vec::new(),
             params: SamplingParams::default(),
             system: None,
         }
@@ -76,6 +87,13 @@ impl StaticPolicy {
     /// Require a permission round-trip before invoking any of these capabilities.
     pub fn with_permissioned(mut self, names: impl IntoIterator<Item = String>) -> Self {
         self.permissioned = names.into_iter().collect();
+        self
+    }
+
+    /// Run these capabilities in the background: they do not block the model
+    /// turn, so the model keeps streaming while they run (ARCHITECTURE §6.3).
+    pub fn with_background(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.background = names.into_iter().collect();
         self
     }
 
@@ -158,5 +176,9 @@ impl TurnPolicy for StaticPolicy {
 
     fn needs_permission(&self, capability: &str) -> bool {
         self.permissioned.iter().any(|c| c == capability)
+    }
+
+    fn is_background(&self, capability: &str) -> bool {
+        self.background.iter().any(|c| c == capability)
     }
 }

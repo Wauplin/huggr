@@ -345,6 +345,7 @@ impl EngineBuilder {
             .with_model(self.selector.clone())
             .with_tools(self.caps.schemas())
             .with_permissioned(self.caps.permissioned_names())
+            .with_background(self.caps.background_names())
             .with_params(self.sampling);
         if let Some(system) = self.system_prompt {
             policy_builder = policy_builder.with_system_prompt(system);

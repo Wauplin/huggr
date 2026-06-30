@@ -169,8 +169,14 @@ pub enum OpKind {
         selector: ModelSelector,
         text_so_far: String,
     },
-    /// A capability (tool) invocation in progress.
-    Capability { name: String, call_id: String },
+    /// A capability (tool) invocation in progress. `background` ops do **not**
+    /// block the model turn (ARCHITECTURE §4.2/§6.3): the turn resumes while they
+    /// keep running, so a model stream and a long shell op run simultaneously.
+    Capability {
+        name: String,
+        call_id: String,
+        background: bool,
+    },
     /// A tool call awaiting a permission decision before it can start.
     AwaitingPermission {
         name: String,
@@ -210,16 +216,16 @@ impl OpKind {
         }
     }
 
-    /// Whether this op is something a model turn is waiting on (a tool, a
-    /// pending permission, a sub-agent, or a user answer) — as opposed to a
-    /// model op. Used to decide when to resume the turn.
+    /// Whether this op is something a model turn is waiting on (a foreground
+    /// tool, a pending permission, a sub-agent, or a user answer) — as opposed
+    /// to a model op or a **background** capability. Used to decide when to
+    /// resume the turn: a background op runs *alongside* the model stream, so it
+    /// must not hold the turn open.
     pub(crate) fn blocks_turn(&self) -> bool {
-        matches!(
-            self,
-            OpKind::Capability { .. }
-                | OpKind::AwaitingPermission { .. }
-                | OpKind::Agent
-                | OpKind::AwaitingUser
-        )
+        match self {
+            OpKind::Capability { background, .. } => !background,
+            OpKind::AwaitingPermission { .. } | OpKind::Agent | OpKind::AwaitingUser => true,
+            OpKind::Model { .. } => false,
+        }
     }
 }

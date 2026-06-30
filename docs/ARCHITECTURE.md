@@ -260,6 +260,8 @@ The brain processes one event at a time. Concurrency is the host merging many so
 - "Atomic events" is automatic: an event is fully reduced before the next.
 - A model stream (op 7) and a shell stream (op 8) interleave in the inbox in real arrival order; the brain handles whichever event is next.
 
+**Foreground vs background ops.** Whether an op *holds the turn open* is a policy decision, not a host one. The `TurnPolicy` answers `is_background(capability)`; the reducer marks the in-flight op accordingly. A **foreground** op (the default) blocks the turn: the model only resumes once every foreground op of the turn has resolved (the fan-out join, §6.3). A **background** op does **not** block the turn: the brain resumes the model immediately, so the model stream and the background op (e.g. a long `cargo build`) run *simultaneously*, their events interleaving atomically. When a background op finishes, its result is folded into the log and picked up at the next turn boundary; if the model already produced its final answer while the background op was still running, the brain defers `Done` until the background op resolves (the turn isn't over while work is in flight). The host runs every op — foreground or background — identically: one task per op feeding the shared inbox. Background-ness is invisible to the host; it never reaches a `Command` variant.
+
 ### 4.3 Cancellation
 
 ```

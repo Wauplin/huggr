@@ -9,11 +9,12 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use baton_core::{
-    DoneReason, ModelOutput, ModelRequest, ModelSelector, OutputEvent, Record, ToolCall, Usage,
+    DoneReason, ModelOutput, ModelRequest, ModelSelector, OutputEvent, Record, ToolCall,
+    ToolSchema, Usage, Value,
 };
 use baton_host::capabilities::Shell;
 use baton_host::policy::DenyAll;
-use baton_host::{Engine, Frontend, ModelAdapter, ModelSink, Policy};
+use baton_host::{Capability, ChunkSink, Engine, Frontend, ModelAdapter, ModelSink, Policy};
 use serde_json::json;
 
 /// A scripted model: each `call` pops the next queued output and records the
@@ -282,4 +283,154 @@ async fn metrics_flow_through_engine() {
 
     // The session-end hook fired exactly once (the totals footer point).
     assert_eq!(*capture.session_ends.lock().unwrap(), 1);
+}
+
+/// A background capability whose `invoke` blocks until explicitly released, and
+/// records when it started. Lets a test *prove* the model ran while this op was
+/// still in flight (true overlap, not just "both ran eventually").
+struct BlockingBackground {
+    /// Fires once `invoke` has started (the op is in flight).
+    started: tokio::sync::mpsc::UnboundedSender<()>,
+    /// `invoke` returns only after this resolves (the test releases it).
+    release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+#[async_trait]
+impl Capability for BlockingBackground {
+    fn name(&self) -> &str {
+        "bg"
+    }
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "bg",
+            "A background op that blocks.",
+            json!({ "type": "object" }),
+        )
+    }
+    fn requires_permission(&self) -> bool {
+        false
+    }
+    fn runs_in_background(&self) -> bool {
+        true
+    }
+    async fn invoke(&self, _args: Value, _sink: &ChunkSink) -> Result<Value, Value> {
+        let _ = self.started.send(());
+        let rx = self.release.lock().unwrap().take();
+        if let Some(rx) = rx {
+            let _ = rx.await;
+        }
+        Ok(json!({ "exit_code": 0, "stdout": "background done" }))
+    }
+}
+
+/// A model whose *second* call signals it ran (proving it executed while the
+/// background op was still blocked) and then releases the background op.
+struct ConcurrentModel {
+    calls: AtomicU64,
+    /// Fires when the second model call runs — i.e. while `bg` is still in flight.
+    model_ran_concurrently: tokio::sync::mpsc::UnboundedSender<()>,
+    /// Releases the blocked background op (sent on the second model call).
+    release_bg: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    responses: Mutex<VecDeque<ModelOutput>>,
+}
+
+#[async_trait]
+impl ModelAdapter for ConcurrentModel {
+    async fn call(
+        &self,
+        _request: ModelRequest,
+        sink: &ModelSink,
+    ) -> anyhow::Result<(ModelOutput, Usage)> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = self
+            .responses
+            .lock()
+            .unwrap()
+            .pop_front()
+            .ok_or_else(|| anyhow::anyhow!("mock ran out of scripted responses"))?;
+        // The second call is the one that runs *concurrently* with the still-
+        // blocked background op: announce it, then release the background op.
+        if n == 1 {
+            let _ = self.model_ran_concurrently.send(());
+            if let Some(tx) = self.release_bg.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+        }
+        if !output.text.is_empty() {
+            sink.text(output.text.clone());
+        }
+        Ok((output, Usage::new(1, 1)))
+    }
+}
+
+/// P2-1 DONE criterion: a model stream and a background op run **simultaneously**
+/// through the real tokio engine. The model's first call starts a background op;
+/// the turn resumes into a second model call *without waiting* for it; that
+/// second call provably runs while the background op is still blocked, then
+/// releases it; when the background op finishes, a final turn picks up its
+/// result and ends. No polling/sleep anywhere — the engine reacts to events.
+#[tokio::test]
+async fn model_stream_runs_while_background_op_is_in_flight() {
+    let capture = Capture::default();
+
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let (ran_tx, mut ran_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let background = Arc::new(BlockingBackground {
+        started: started_tx,
+        release: Mutex::new(Some(release_rx)),
+    });
+
+    // Call 0: ask for the background op. Call 1: streams while bg is blocked,
+    // releases it. Call 2: final answer after bg's result is folded in.
+    let model = Arc::new(ConcurrentModel {
+        calls: AtomicU64::new(0),
+        model_ran_concurrently: ran_tx,
+        release_bg: Mutex::new(Some(release_tx)),
+        responses: Mutex::new(
+            [
+                ModelOutput::tool_calls(vec![ToolCall::new("call-1", "bg", json!({}))]),
+                ModelOutput::text("Kicked it off in the background."),
+                ModelOutput::text("Background work finished."),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    });
+
+    let mut engine = Engine::builder()
+        .model(ModelSelector::named("big"), model)
+        .capability(background)
+        .frontend(Box::new(capture.clone()))
+        .clock(deterministic_clock())
+        .build();
+
+    engine
+        .user_turn("do background work and keep talking".into())
+        .await;
+
+    // The background op started (was in flight)...
+    started_rx.recv().await.expect("background op should start");
+    // ...and the second model call ran while it was still blocked (true overlap).
+    ran_rx
+        .recv()
+        .await
+        .expect("model should run concurrently with the in-flight background op");
+
+    // The turn completed: the background result was folded in and a final model
+    // call ended the turn. Exactly one EndTurn (the deferred-done path).
+    let dones = capture.done.lock().unwrap();
+    assert_eq!(dones.len(), 1, "expected exactly one terminal Done");
+    assert!(matches!(dones[0], DoneReason::EndTurn));
+
+    // The background tool result is in the durable log.
+    let tool_results = count_tool_results(engine.brain().state().log());
+    assert_eq!(tool_results.len(), 1);
+    assert_eq!(tool_results[0].0, "bg");
+
+    // Both the concurrent line and the final line were streamed.
+    let text = capture.text.lock().unwrap().clone();
+    assert!(text.contains("Kicked it off in the background."));
+    assert!(text.contains("Background work finished."));
 }

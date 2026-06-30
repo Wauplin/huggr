@@ -117,9 +117,11 @@ Tests (57 total across the workspace, +7):
 
 [`Coalescer`]: crates/baton-host/src/coalesce.rs
 
-## Phase 3 — Traces: save, replay, inspect (in progress)
+## Phase 3 — Traces: save, replay, inspect (in progress; P3-4 remains)
 
 **Goal:** sessions are first-class artifacts (record, replay, resume).
+
+**Phase 3 exit criterion — met (P3-3):** a real Phase 1/2 session is recorded through the engine, saved to a trace, reloaded, and replayed through a fresh brain **bit-for-bit** — the reconstructed command sequence and durable log are byte-identical to the recording (`baton-host/tests/end_to_end.rs::record_then_replay_reconstructs_the_session_bit_for_bit`).
 
 ### P3-1 — `baton-replay` crate + trace format ✅
 
@@ -163,6 +165,20 @@ Tests (72 total across the workspace, +10):
 **Trace integration (for P3-3/P3-4 to consume):** the recorder offloads a large tool result with `BlobStore::put`, pushes the returned `BlobRef` into the `Trace`'s `BlobManifest`, and stores the small ref in place of the bytes; replay/resume rehydrate the bytes with `BlobStore::get(ref.hash)`. The capability and the persistence layer share one `BlobStore` (via `Blob::with_store`) so they agree on the store root and hashes.
 
 [`BlobStore`]: crates/baton-replay/src/blob.rs
+
+### P3-3 — `baton replay <trace>` + inspector ✅
+
+Replay is the whole point of the sans-IO design: because the brain is a pure fold over an ordered event stream, re-feeding a trace's recorded `Event`s into a *fresh* `Brain` reproduces every `Command` it ever emitted — bit-for-bit, with no IO (ARCHITECTURE §6.3). The recorded `log` is the *truth* a replay is checked against; `BrainState` is never stored, only rederived (§12.1). Implemented host-side; `baton-core` is untouched.
+
+- `baton-replay` (`src/replay.rs`): [`replay`]`(trace) -> Replay { commands, log }` re-feeds the events into a fresh brain (mirroring the host driver loop, zero IO) and returns the reconstructed command sequence + folded log; [`verify`] does that and asserts the reconstructed log equals the recorded log (`TraceError::ReplayMismatch` otherwise) — the Phase 3 exit criterion. Because the brain *branches* on some of the policy's pure decisions (`needs_permission`, `is_background`), faithful reconstruction needs the *same* policy: `StaticPolicy` is now `Serialize`/`Deserialize`, the trace gained an opaque `policy: Option<Value>` field (`Trace::with_policy`), and `replay`/`verify`/`Inspector` decode it (`replay_with_policy`/`verify_with_policy` accept a custom one; fall back to the default when absent/undecodable). [`Inspector`] wraps the same reconstruction as a step-through debugger: `step()` feeds the next recorded event and reports the commands it produced + the log tail it appended; `run()` collects every `Step`. All public types are `#[non_exhaustive]` with constructors.
+- `baton-host` (`engine.rs`): an opt-in `Recorder` (`EngineBuilder::record(true)`) captures the exact ordered `Event` stream at the single `submit` chokepoint (including the injected `Tick`s; the first tick seeds the trace's `created_at`), and serializes the brain's `StaticPolicy` once at build time so the trace carries it. `Engine::trace()` builds a `Trace` on demand (captured events + the brain's current durable log + policy); `Engine::save_trace(path)` writes it (clear error if recording was off). A non-recording engine pays nothing. The trace + replay surface is re-exported from `baton-host` (`Trace`, `Inspector`, `Replay`, `Step`, `TraceError`, and `baton_replay` itself) so an embedder needs one crate.
+- `baton-cli`: `baton --record <path>` records a live one-shot/interactive session to a trace (banner shows `· recording`); `baton replay <trace>` loads a trace, reconstructs the session through a fresh brain, and `verify`s it bit-for-bit against the recorded log; `baton replay <trace> --step` first walks the session one event at a time via the `Inspector`, printing each event with the command(s) and log entry(ies) it produced.
+
+Tests (81 total across the workspace, +9): `baton-replay/tests/replay.rs` — replay reconstructs a hand-built Phase 1/2 trace's commands + log; `verify` passes on a faithful trace and returns `ReplayMismatch` on a tampered log; a trace round-trips through disk and still replays bit-for-bit; the `Inspector` yields one step per event (`run()` collects them all) and its appended log tails reassemble the full log; an empty trace replays to nothing. `baton-host/tests/end_to_end.rs::record_then_replay_reconstructs_the_session_bit_for_bit` — the exit criterion through the **real engine**: record a shell-tool session → save to disk → reload → replay through a fresh brain → reconstructed command sequence + log byte-identical to the live log, a second replay yields identical commands, and the inspector reassembles the same log step by step; `::engine_without_recording_has_no_trace` — a non-recording engine has no trace and `save_trace` errors cleanly.
+
+[`replay`]: crates/baton-replay/src/replay.rs
+[`verify`]: crates/baton-replay/src/replay.rs
+[`Inspector`]: crates/baton-replay/src/replay.rs
 
 [`Engine`]: crates/baton-host/src/engine.rs
 [`Capability`]: crates/baton-host/src/capability.rs

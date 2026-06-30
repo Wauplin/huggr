@@ -812,3 +812,118 @@ async fn delta_coalescing_keeps_recording_exact() {
         );
     }
 }
+
+/// P3-3 / Phase 3 exit criterion: record a real session through the engine,
+/// save it to a trace, reload it, replay it through a fresh brain, and assert
+/// the reconstructed command sequence + log is byte-identical to the original.
+#[tokio::test]
+async fn record_then_replay_reconstructs_the_session_bit_for_bit() {
+    let capture = Capture::default();
+
+    // A session with a tool op: model calls shell, then gives a final answer.
+    let model = MockModel::new([
+        ModelOutput::tool_calls(vec![ToolCall::new(
+            "call-1",
+            "shell",
+            json!({ "cmd": "echo replay-me" }),
+        )]),
+        ModelOutput::text("The shell printed replay-me."),
+    ]);
+
+    let mut engine = Engine::builder()
+        .model(ModelSelector::named("big"), model)
+        .capability(Arc::new(Shell))
+        .system_prompt("You are a test agent.")
+        .frontend(Box::new(capture.clone()))
+        .clock(deterministic_clock())
+        .record(true) // <-- capture the ordered event stream
+        .build();
+
+    engine.user_turn("greet me using the shell".into()).await;
+    engine.session_end();
+
+    // The live session's durable log (the truth we will replay against).
+    let live_log = engine.brain().state().log().to_vec();
+    assert!(!live_log.is_empty());
+
+    // Save the recorded trace to disk and reload it.
+    let dir = std::env::temp_dir().join(format!("baton-host-replay-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("session.trace.json");
+    engine.save_trace(&path).expect("recording was enabled");
+    let trace = baton_host::Trace::load(&path).expect("reload the trace");
+
+    // The recorded log matches the live log exactly (recorder read it from the
+    // brain at save time; no desync).
+    assert_eq!(trace.log, live_log, "recorded log must equal the live log");
+
+    // Replay through a FRESH brain (no engine, no IO): the reconstructed log is
+    // byte-identical to the original recording — the exit criterion.
+    let replay = baton_host::baton_replay::verify(&trace)
+        .expect("replay must reconstruct the recorded log bit-for-bit");
+    assert_eq!(
+        replay.log, live_log,
+        "replayed log == live log, bit-for-bit"
+    );
+
+    // Determinism: a second replay yields identical commands.
+    let again = baton_host::baton_replay::replay(&trace);
+    assert_eq!(
+        replay.commands, again.commands,
+        "re-feeding identical events must yield identical commands"
+    );
+
+    // The reconstructed command sequence is the real agentic turn loop: it
+    // opens with a model call, runs the shell capability, and ends with Done.
+    use baton_core::Command;
+    assert!(
+        matches!(
+            replay.commands.first(),
+            Some(Command::StartModelCall { .. })
+        ),
+        "first command is the opening model call"
+    );
+    assert!(
+        replay
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::StartCapability { name, .. } if name == "shell")),
+        "the shell capability was invoked"
+    );
+    assert!(
+        matches!(replay.commands.last(), Some(Command::Done { .. })),
+        "the session ends with Done"
+    );
+
+    // The step-through inspector walks the same session: every event is one
+    // step, and the per-step appended log entries reassemble the full log.
+    let mut inspector = baton_host::Inspector::new(&trace);
+    let mut stepped_log = Vec::new();
+    let mut steps = 0;
+    while let Some(step) = inspector.step() {
+        stepped_log.extend(step.appended);
+        steps += 1;
+    }
+    assert_eq!(steps, trace.events.len(), "one inspector step per event");
+    assert_eq!(stepped_log, live_log, "stepwise log reassembles the truth");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A non-recording engine has no trace, and `save_trace` errors cleanly.
+#[tokio::test]
+async fn engine_without_recording_has_no_trace() {
+    let model = MockModel::new([ModelOutput::text("hi")]);
+    let mut engine = Engine::builder()
+        .model(ModelSelector::named("big"), model)
+        .frontend(Box::new(Capture::default()))
+        .clock(deterministic_clock())
+        .build();
+    engine.user_turn("hello".into()).await;
+    assert!(engine.trace().is_none(), "recording was not enabled");
+    assert!(
+        engine
+            .save_trace("/tmp/should-not-exist.trace.json")
+            .is_err()
+    );
+}

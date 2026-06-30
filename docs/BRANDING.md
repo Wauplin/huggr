@@ -4,19 +4,14 @@
 
 **Baton**
 
-A Rust-based agent harness. Branded **Baton**; published under `baton-rs` where the
-bare `baton` name is already taken.
+A Rust-based agent harness. Branded **Baton**; published under `baton-rs` where the bare `baton` name is already taken.
 
 ### Why "Baton"
 
-"Baton" is an English word borrowed from French *bâton* ("stick"). Two of its senses
-map almost perfectly onto what the harness does:
+"Baton" is an English word borrowed from French *bâton* ("stick"). Two of its senses map almost perfectly onto what the harness does:
 
-- **The relay-race baton** — the object runners pass from hand to hand. "Passing the
-  baton" means handing off work and control cleanly. That is exactly what an agent
-  harness does between turns, tools, and sub-agents.
-- **The conductor's baton** — the stick used to *coordinate* many players at once.
-  A good fit for an orchestrator driving multiple agents.
+- **The relay-race baton** — the object runners pass from hand to hand. "Passing the baton" means handing off work and control cleanly. That is exactly what an agent harness does between turns, tools, and sub-agents.
+- **The conductor's baton** — the stick used to *coordinate* many players at once. A good fit for an orchestrator driving multiple agents.
 
 It is short, easy to remember, pronounceable, and keeps a subtle French flavor.
 
@@ -52,6 +47,4 @@ Derivatives follow `baton-<area>`:
 
 ### Note on discoverability
 
-Search engines will initially surface the unrelated `baton` channel crate and `bat`-family
-tooling for queries like "baton rust". This is a known, accepted trade-off for owning a
-short, memorable name over time.
+Search engines will initially surface the unrelated `baton` channel crate and `bat`-family tooling for queries like "baton rust". This is a known, accepted trade-off for owning a short, memorable name over time.

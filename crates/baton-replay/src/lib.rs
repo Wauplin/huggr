@@ -8,7 +8,8 @@
 //! the ordered host→brain [`Event`] stream, the durable [`LogEntry`] log, and a
 //! place to reference content-addressed blobs by hash. Loading a trace and
 //! re-feeding its events into a fresh [`Brain`](baton_core::Brain) reconstructs
-//! the session deterministically (replay/resume, built in P3-3/P3-4).
+//! the session deterministically — [`replay`]/[`verify`] do exactly this (P3-3),
+//! and an [`Inspector`] steps through it one event at a time (resume is P3-4).
 //!
 //! ## Why this crate exists (and where IO lives)
 //!
@@ -58,7 +59,9 @@ use baton_core::{Event, LogEntry};
 use serde::{Deserialize, Serialize};
 
 mod blob;
+mod replay;
 pub use blob::BlobStore;
+pub use replay::{Inspector, Replay, Step, replay, replay_with_policy, verify, verify_with_policy};
 
 /// The current trace container format version. Bump on any breaking change to
 /// the [`Trace`] layout; older readers reject newer versions (see
@@ -85,6 +88,16 @@ pub struct Trace {
     /// References to content-addressed payloads (the bytes live in the
     /// [`BlobStore`], not inlined here).
     pub blobs: BlobManifest,
+    /// The session's [`TurnPolicy`](baton_core::TurnPolicy) configuration, as an
+    /// **opaque** JSON value (narrow-waist, §2.4 — this crate stores and
+    /// forwards it, never interprets it). Reproducing the policy's *pure*
+    /// decisions (which capabilities need permission, which run in the
+    /// background, the advertised tools, the model selector) is required for
+    /// bit-for-bit replay (§6.3); the host serializes its policy here and decodes
+    /// it back on replay. `None` for traces recorded without a captured policy
+    /// (replay then falls back to the default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<serde_json::Value>,
 }
 
 /// Trace container metadata. Versioned for forward-compat.
@@ -175,6 +188,7 @@ impl Trace {
             events,
             log,
             blobs: BlobManifest::new(),
+            policy: None,
         }
     }
 
@@ -191,7 +205,16 @@ impl Trace {
             events,
             log,
             blobs,
+            policy: None,
         }
+    }
+
+    /// Attach the session's policy configuration (an opaque JSON value the host
+    /// produced by serializing its [`TurnPolicy`](baton_core::TurnPolicy)). Used
+    /// so replay reproduces the brain's pure decisions bit-for-bit (§6.3).
+    pub fn with_policy(mut self, policy: serde_json::Value) -> Self {
+        self.policy = Some(policy);
+        self
     }
 
     /// Serialize the trace to pretty JSON bytes. Pure; no IO.
@@ -245,4 +268,15 @@ pub enum TraceError {
     /// A blob referenced by hash is not present in the [`BlobStore`].
     #[error("blob not found in store: {hash}")]
     BlobNotFound { hash: String },
+
+    /// Replaying the trace's events through a fresh brain produced a log that
+    /// differs from the recorded log — the fold is no longer deterministic for
+    /// this trace (the regression [`verify`] exists to catch).
+    #[error(
+        "replay mismatch: recorded log has {recorded} entries, reconstruction has {reconstructed}"
+    )]
+    ReplayMismatch {
+        recorded: usize,
+        reconstructed: usize,
+    },
 }

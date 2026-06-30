@@ -40,3 +40,7 @@ pub use engine::{Clock, Engine, EngineBuilder, EventSender};
 pub use frontend::{Frontend, Metrics, StdoutFrontend};
 pub use model::{ModelAdapter, ModelRegistry, ModelSink};
 pub use policy::Policy;
+
+// Re-export the trace + replay surface so a host embedder needs only one crate
+// to record a session and replay it (the persistence crate lives behind us).
+pub use baton_replay::{self, Inspector, Replay, Step, Trace, TraceError};

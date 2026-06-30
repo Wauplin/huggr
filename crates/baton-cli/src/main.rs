@@ -2,17 +2,24 @@
 //!
 //! The engine setup below is the "CLI on a laptop" host: ~10 lines on top of
 //! `baton-host` (ROADMAP Phase 1 exit criterion).
+//!
+//! Beyond running sessions, the CLI can **record** a session to a trace
+//! (`--record <path>`) and **replay** one (`baton replay <trace>`) — replay
+//! reconstructs the brain's commands bit-for-bit and verifies them against the
+//! recorded log (ROADMAP Phase 3 exit criterion), with a `--step` inspector that
+//! walks the session one event at a time.
 
 use std::io::{IsTerminal, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
-use baton_core::ModelSelector;
+use anyhow::{Context, Result};
+use baton_core::{Command, Event, ModelSelector};
 use baton_host::capabilities::{FsRead, FsWrite, Http, Shell};
 use baton_host::policy::{AllowAll, Interactive};
-use baton_host::{Engine, Policy, StdoutFrontend};
+use baton_host::{Engine, Inspector, Policy, StdoutFrontend, Trace};
 use baton_providers::OpenAiAdapter;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 const SYSTEM_PROMPT: &str = "\
 You are Baton, a helpful coding agent running in a terminal. You can run shell \
@@ -27,7 +34,8 @@ short summary.";
     about = "A portable, runtime-free agent harness"
 )]
 struct Cli {
-    /// One-shot prompt. If omitted, starts an interactive session.
+    /// One-shot prompt. If omitted (and no subcommand), starts an interactive
+    /// session.
     prompt: Vec<String>,
 
     /// Approve every tool call without prompting (the allow-all mode).
@@ -43,11 +51,44 @@ struct Cli {
     /// plus a "… +N lines" summary. Also enabled by `BATON_FULL_OUTPUT=1`.
     #[arg(long = "full-output")]
     full_output: bool,
+
+    /// Record this session to a trace file (the ordered event stream + the
+    /// durable log), replayable later with `baton replay <path>`.
+    #[arg(long = "record", value_name = "PATH")]
+    record: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Cmd>,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Reconstruct a recorded session from a trace and verify it replays
+    /// bit-for-bit (the Phase 3 exit criterion).
+    Replay {
+        /// Path to a `.trace.json` file produced by `--record`.
+        trace: PathBuf,
+
+        /// Step through the session one event at a time, printing the command(s)
+        /// and log entry(ies) each event produced.
+        #[arg(long = "step")]
+        step: bool,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Some(Cmd::Replay { trace, step }) = &cli.command {
+        return run_replay(trace, *step);
+    }
+
+    run_session(cli).await
+}
+
+/// Drive a live agent session (one-shot or interactive), optionally recording it.
+async fn run_session(cli: Cli) -> Result<()> {
     let policy: Arc<dyn Policy> = if cli.yes {
         Arc::new(AllowAll)
     } else {
@@ -63,10 +104,12 @@ async fn main() -> Result<()> {
     } else {
         "interactive"
     };
+    let recording = cli.record.is_some();
     let banner = format!(
-        "baton · model {} · {} · {mode}",
+        "baton · model {} · {} · {mode}{}",
         adapter.model(),
         adapter.base_url(),
+        if recording { " · recording" } else { "" },
     );
     // Dim the banner only on a real terminal (and not under NO_COLOR).
     if std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
@@ -93,6 +136,7 @@ async fn main() -> Result<()> {
         .capability(Arc::new(Http::new()))
         .system_prompt(SYSTEM_PROMPT)
         .policy(policy)
+        .record(recording)
         .frontend(Box::new(frontend))
         .build();
     // -------------------------------------------------------------------------
@@ -100,6 +144,7 @@ async fn main() -> Result<()> {
     if !cli.prompt.is_empty() {
         engine.user_turn(cli.prompt.join(" ")).await;
         engine.session_end();
+        save_recording(&engine, cli.record.as_deref())?;
         return Ok(());
     }
 
@@ -120,5 +165,105 @@ async fn main() -> Result<()> {
         engine.user_turn(line.to_string()).await;
     }
 
+    save_recording(&engine, cli.record.as_deref())?;
     Ok(())
+}
+
+/// Persist the recorded session, if `--record` was given.
+fn save_recording(engine: &Engine, path: Option<&std::path::Path>) -> Result<()> {
+    if let Some(path) = path {
+        engine
+            .save_trace(path)
+            .with_context(|| format!("saving trace to {}", path.display()))?;
+        eprintln!("recorded session → {}", path.display());
+    }
+    Ok(())
+}
+
+/// `baton replay <trace>` — load a trace, reconstruct the session through a
+/// fresh brain, and verify the reconstructed log matches bit-for-bit. With
+/// `--step`, walk it one event at a time first.
+fn run_replay(path: &std::path::Path, step: bool) -> Result<()> {
+    let trace = Trace::load(path).with_context(|| format!("loading trace {}", path.display()))?;
+    eprintln!(
+        "replaying {} · {} events · {} log entries · format v{}",
+        path.display(),
+        trace.events.len(),
+        trace.log.len(),
+        trace.meta.format_version,
+    );
+
+    if step {
+        print_steps(&trace);
+    }
+
+    // The Phase 3 exit criterion: reconstruct commands + log bit-for-bit.
+    let replay = baton_host::baton_replay::verify(&trace)
+        .context("replay did not reconstruct the recorded log bit-for-bit")?;
+
+    eprintln!(
+        "✓ replay reconstructed {} commands; log matches the recording bit-for-bit",
+        replay.commands.len(),
+    );
+    Ok(())
+}
+
+/// Step through a trace, printing each event with the commands and log entries
+/// it produced. Host-side inspector; no IO of its own beyond stdout.
+fn print_steps(trace: &Trace) {
+    let mut inspector = Inspector::new(trace);
+    let total = inspector.len();
+    while let Some(step) = inspector.step() {
+        println!("\n── step {}/{} ─────────────", step.index + 1, total);
+        println!("  event:   {}", summarize_event(&step.event));
+        if step.commands.is_empty() {
+            println!("  command: (none)");
+        } else {
+            for cmd in &step.commands {
+                println!("  command: {}", summarize_command(cmd));
+            }
+        }
+        for entry in &step.appended {
+            println!("  log[{}]: {:?}", entry.seq.0, entry.record);
+        }
+    }
+}
+
+fn summarize_event(event: &Event) -> String {
+    use Event::*;
+    match event {
+        Tick { now } => format!("Tick(now={})", now.0),
+        UserInput { content, mode } => format!("UserInput({content} · {mode:?})"),
+        UserAbort => "UserAbort".to_string(),
+        ModelDelta { op, .. } => format!("ModelDelta(op={})", op.0),
+        ModelDone { op, .. } => format!("ModelDone(op={})", op.0),
+        ModelError { op, .. } => format!("ModelError(op={})", op.0),
+        CapabilityChunk { op, .. } => format!("CapabilityChunk(op={})", op.0),
+        CapabilityDone { op, .. } => format!("CapabilityDone(op={})", op.0),
+        CapabilityError { op, .. } => format!("CapabilityError(op={})", op.0),
+        PermissionDecision { op, decision } => {
+            format!("PermissionDecision(op={} · {decision:?})", op.0)
+        }
+        OpCancelled { op } => format!("OpCancelled(op={})", op.0),
+        other => format!("{other:?}"),
+    }
+}
+
+fn summarize_command(cmd: &Command) -> String {
+    match cmd {
+        Command::StartModelCall { op, model, .. } => {
+            format!("StartModelCall(op={} · {model:?})", op.0)
+        }
+        Command::StartCapability { op, name, .. } => {
+            format!("StartCapability(op={} · {name})", op.0)
+        }
+        Command::RequestPermission { op, request } => {
+            format!("RequestPermission(op={} · {})", op.0, request.capability)
+        }
+        Command::Cancel { op } => format!("Cancel(op={})", op.0),
+        Command::Emit(_) => "Emit(…)".to_string(),
+        Command::Checkpoint => "Checkpoint".to_string(),
+        Command::Done { reason } => format!("Done({reason:?})"),
+        other => format!("{other:?}"),
+    }
 }

@@ -44,7 +44,12 @@ pub trait TurnPolicy {
 /// It is also genuinely useful as a default and as a test fixture: the model
 /// selector, the advertised tool schemas, and the set of permissioned
 /// capabilities are all configurable.
-#[derive(Clone, Debug)]
+///
+/// It is `Serialize`/`Deserialize` so a host can persist a session's policy
+/// alongside its trace (the pure branching — `needs_permission`,
+/// `is_background`, advertised tools, model selector — must be reproduced for
+/// bit-for-bit replay, ARCHITECTURE §6.3).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StaticPolicy {
     model: ModelSelector,
     tools: Vec<ToolSchema>,

@@ -17,12 +17,42 @@ use serde_json::json;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
+use baton_replay::{Trace, TraceError};
+
 use crate::ChunkSink;
 use crate::capability::CapabilityRegistry;
 use crate::coalesce::Coalescer;
 use crate::frontend::{Frontend, StdoutFrontend};
 use crate::model::{ModelRegistry, ModelSink};
 use crate::policy::{AllowAll, Policy};
+
+/// Captures the exact ordered [`Event`] stream the host feeds the brain, so the
+/// session can be persisted as a [`Trace`] and replayed bit-for-bit later
+/// (ARCHITECTURE §6.2/§12). It records the *input* (events, including the
+/// injected `Tick`s) in submission order; the durable *log* is read from the
+/// brain at save time (it is always a fold over these same events).
+///
+/// Recording is opt-in (`Engine::builder().record()`); a non-recording engine
+/// pays nothing.
+#[derive(Clone, Debug, Default)]
+struct Recorder {
+    events: Vec<Event>,
+    /// The first injected timestamp, used as the trace's `created_at` (the
+    /// `seq 0` tick — never a syscall in the core).
+    created_at: Option<u64>,
+}
+
+impl Recorder {
+    /// Record one event in submission order. The first `Tick` seeds `created_at`.
+    fn record(&mut self, event: &Event) {
+        if self.created_at.is_none() {
+            if let Event::Tick { now } = event {
+                self.created_at = Some(now.0);
+            }
+        }
+        self.events.push(event.clone());
+    }
+}
 
 /// A source of (host-side) wall-clock time, injected into the brain as `Tick`
 /// events so the brain itself never reads a clock (ARCHITECTURE §6.1).
@@ -69,6 +99,13 @@ pub struct Engine {
     /// event stream — every `ModelDelta` is still submitted — so replay stays
     /// bit-for-bit identical regardless of how the render was coalesced.
     coalescer: Coalescer,
+    /// When recording is enabled, the captured event stream for the trace
+    /// (ARCHITECTURE §12). `None` when recording is off (zero overhead).
+    recorder: Option<Recorder>,
+    /// The brain's policy config, serialized once at build time, so a recorded
+    /// trace can carry it (the brain branches on the policy's pure decisions —
+    /// permission/background — so replay needs the same policy, §6.3).
+    policy_config: Option<serde_json::Value>,
 }
 
 impl Engine {
@@ -113,10 +150,50 @@ impl Engine {
     }
 
     /// Feed an event in, stamping it with a fresh injected `Tick` first.
+    ///
+    /// Both events go through here in submission order, so this is the single
+    /// chokepoint where the [`Recorder`] captures the exact stream that produced
+    /// the session — the property replay depends on (ARCHITECTURE §6.2).
     fn submit(&mut self, event: Event) {
         let now = Timestamp((self.clock)());
-        self.brain.submit(Event::Tick { now });
+        let tick = Event::Tick { now };
+        if let Some(rec) = self.recorder.as_mut() {
+            rec.record(&tick);
+            rec.record(&event);
+        }
+        self.brain.submit(tick);
         self.brain.submit(event);
+    }
+
+    /// Build a [`Trace`] of the session so far (the captured event stream + the
+    /// brain's current durable log), or `None` if recording was not enabled on
+    /// this engine. The trace replays bit-for-bit through
+    /// [`baton_replay::verify`].
+    pub fn trace(&self) -> Option<Trace> {
+        let rec = self.recorder.as_ref()?;
+        let mut trace = Trace::new(
+            rec.events.clone(),
+            self.brain.state().log().to_vec(),
+            rec.created_at,
+        );
+        // Capture the policy so replay reproduces the brain's permission /
+        // background branching bit-for-bit (§6.3).
+        if let Some(policy) = self.policy_config.clone() {
+            trace = trace.with_policy(policy);
+        }
+        Some(trace)
+    }
+
+    /// Save the recorded session to `path` as a trace. Errors if recording was
+    /// not enabled (`TraceError::Io` with `NotFound`-style intent is avoided —
+    /// returns a clear error) or the write fails.
+    pub fn save_trace(&self, path: impl AsRef<std::path::Path>) -> Result<(), TraceError> {
+        match self.trace() {
+            Some(trace) => trace.save(path),
+            None => Err(TraceError::Io(std::io::Error::other(
+                "engine is not recording; build it with .record()",
+            ))),
+        }
     }
 
     /// Process commands and events until no operation is in flight (the turn is
@@ -286,8 +363,11 @@ impl Engine {
                 }
             }
 
-            // Phase 3 persists the trace here; Phase 1 just drops finished
-            // task handles so they don't accumulate.
+            // The recorder captures the event stream at `submit` (so the trace
+            // is always buildable on demand via `Engine::trace`); a checkpoint
+            // just drops finished task handles so they don't accumulate. A host
+            // that wanted incremental on-disk persistence could `save_trace`
+            // here too.
             Command::Checkpoint => self.tasks.retain(|_, h| !h.is_finished()),
 
             Command::Done { reason } => self.frontend.on_done(&reason),
@@ -336,6 +416,7 @@ pub struct EngineBuilder {
     selector: ModelSelector,
     system_prompt: Option<String>,
     sampling: SamplingParams,
+    record: bool,
 }
 
 impl Default for EngineBuilder {
@@ -349,6 +430,7 @@ impl Default for EngineBuilder {
             selector: ModelSelector::named("big"),
             system_prompt: None,
             sampling: SamplingParams::default(),
+            record: false,
         }
     }
 }
@@ -416,6 +498,14 @@ impl EngineBuilder {
         self
     }
 
+    /// Record the session: capture the ordered event stream so it can be saved
+    /// as a [`Trace`] ([`Engine::trace`]/[`Engine::save_trace`]) and replayed
+    /// bit-for-bit (ARCHITECTURE §12). Off by default (zero overhead).
+    pub fn record(mut self, record: bool) -> Self {
+        self.record = record;
+        self
+    }
+
     pub fn build(self) -> Engine {
         let mut policy_builder = StaticPolicy::default()
             .with_model(self.selector.clone())
@@ -426,6 +516,13 @@ impl EngineBuilder {
         if let Some(system) = self.system_prompt {
             policy_builder = policy_builder.with_system_prompt(system);
         }
+
+        // Serialize the policy once (for recorded traces) before it moves into
+        // the brain. `StaticPolicy` is serde-able; capture is best-effort.
+        let policy_config = self
+            .record
+            .then(|| serde_json::to_value(&policy_builder).ok())
+            .flatten();
 
         let (tx, rx) = mpsc::unbounded_channel();
         Engine {
@@ -442,6 +539,8 @@ impl EngineBuilder {
             tasks: HashMap::new(),
             op_labels: HashMap::new(),
             coalescer: Coalescer::new(),
+            recorder: self.record.then(Recorder::default),
+            policy_config,
         }
     }
 }

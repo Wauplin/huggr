@@ -13,8 +13,11 @@ use baton_host::{ModelAdapter, ModelSink};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
 
-const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
-const DEFAULT_MODEL: &str = "gpt-4o-mini";
+// Defaults target the Hugging Face router (an OpenAI-compatible endpoint). The
+// `/v1` suffix is part of the base URL; the adapter appends `/chat/completions`.
+// Point `OPENAI_BASE_URL` at `https://api.openai.com/v1` to use OpenAI directly.
+const DEFAULT_BASE_URL: &str = "https://router.huggingface.co/v1";
+const DEFAULT_MODEL: &str = "meta-llama/Llama-3.3-70B-Instruct";
 
 /// An adapter for the OpenAI Chat Completions API (or any compatible endpoint
 /// via `OPENAI_BASE_URL`).
@@ -36,10 +39,16 @@ impl OpenAiAdapter {
         }
     }
 
-    /// Build from the environment: `OPENAI_API_KEY` (required), `OPENAI_MODEL`
-    /// (default `gpt-4o-mini`), `OPENAI_BASE_URL` (default the OpenAI API).
+    /// Build from the environment:
+    ///
+    /// - **API key:** `OPENAI_API_KEY`, else `HF_TOKEN`, else the output of
+    ///   `hf auth token` if the `hf` CLI is installed and logged in.
+    /// - **Model:** `OPENAI_MODEL` (default `meta-llama/Llama-3.3-70B-Instruct`).
+    /// - **Base URL:** `OPENAI_BASE_URL` (default the Hugging Face router).
     pub fn from_env() -> anyhow::Result<Self> {
-        let api_key = std::env::var("OPENAI_API_KEY").context("OPENAI_API_KEY is not set")?;
+        let api_key = resolve_api_key().context(
+            "no API key found: set OPENAI_API_KEY or HF_TOKEN, or log in with `hf auth login`",
+        )?;
         let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
         let base_url =
             std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
@@ -336,6 +345,34 @@ fn stringify(value: &Value) -> String {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     }
+}
+
+/// Resolve an API key from, in order: `OPENAI_API_KEY`, `HF_TOKEN`, then the
+/// `hf` CLI's stored token. Returns `None` if none are available.
+fn resolve_api_key() -> Option<String> {
+    for var in ["OPENAI_API_KEY", "HF_TOKEN"] {
+        if let Ok(value) = std::env::var(var) {
+            let value = value.trim().to_string();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    hf_cli_token()
+}
+
+/// The token stored by the `hf` CLI (`hf auth token`), if it is installed and
+/// logged in.
+fn hf_cli_token() -> Option<String> {
+    let output = std::process::Command::new("hf")
+        .args(["auth", "token"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let token = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!token.is_empty()).then_some(token)
 }
 
 #[cfg(test)]

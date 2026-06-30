@@ -85,14 +85,28 @@ Planned (later phases): `baton-wasm`, `baton-py`, `baton-js`,
 
 ## Running the CLI
 
+By default `baton` talks to the **Hugging Face router** (an OpenAI-compatible
+endpoint), so if you're logged in with the `hf` CLI it works with no setup:
+
 ```bash
-export OPENAI_API_KEY=sk-...          # required
-export OPENAI_MODEL=gpt-4o-mini       # optional (this is the default)
+hf auth login                         # once; baton reads the stored token
 
 cargo run -p baton-cli -- "list the rust files and summarise the workspace"
 cargo run -p baton-cli                # interactive REPL
 cargo run -p baton-cli -- -y "..."    # approve all tool calls (no prompts)
 ```
+
+Configuration (all optional) via environment:
+
+| Variable | Default | Notes |
+|---|---|---|
+| API key | `OPENAI_API_KEY`, else `HF_TOKEN`, else `hf auth token` | |
+| `OPENAI_MODEL` | `meta-llama/Llama-3.3-70B-Instruct` | must support tool calling |
+| `OPENAI_BASE_URL` | `https://router.huggingface.co/v1` | set to `https://api.openai.com/v1` for OpenAI |
+
+> The model must support **function calling**, since baton always advertises its
+> tools. Small models that don't (e.g. some 8B instruct variants) return
+> `model features function calling not support`.
 
 The engine setup is ~10 lines on top of `baton-host` (see the marked block in
 [`crates/baton-cli/src/main.rs`](crates/baton-cli/src/main.rs)).

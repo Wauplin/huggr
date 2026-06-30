@@ -57,7 +57,10 @@ Done:
 - Capabilities (`baton-host::capabilities`): `shell` (streams stdout),
   `fs_read` (read-only, no permission), `fs_write`, `http`.
 - `baton-providers`: `OpenAiAdapter` — chat completions with streaming SSE,
-  tool-call assembly, usage accounting, configurable base URL.
+  tool-call assembly, usage accounting, configurable base URL. Defaults target
+  the **Hugging Face router** (`https://router.huggingface.co/v1`,
+  `meta-llama/Llama-3.3-70B-Instruct`); the API key resolves from
+  `OPENAI_API_KEY` → `HF_TOKEN` → `hf auth token`.
 - `baton-cli`: the `baton` binary. One-shot (`baton "prompt"`) or interactive
   REPL; `-y/--yes` for allow-all.
 
@@ -79,9 +82,11 @@ Tests (17 total across the workspace):
 
 - ✅ "CLI on a laptop" host setup ≈ 10 lines on top of `baton-host` (see the
   marked block in `crates/baton-cli/src/main.rs`).
-- ◑ Genuine multi-turn session end-to-end: the full mechanism is verified in
-  tests (driver loop + real shell + real HTTP/SSE path). A **live** OpenAI
-  session additionally needs `OPENAI_API_KEY` set — run `baton "..."`.
+- ✅ Genuine multi-turn session end-to-end. Verified **live** against the HF
+  router: `baton -y "Use the shell tool to run 'echo baton-live-test', then
+  tell me what it printed."` — the model called the shell tool, the host ran it
+  and streamed the output, and the model produced a final answer. Also covered
+  by the driver-loop + mock-SSE tests for CI (no key needed).
 
 [`Engine`]: crates/baton-host/src/engine.rs
 [`Capability`]: crates/baton-host/src/capability.rs

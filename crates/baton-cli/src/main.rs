@@ -10,7 +10,7 @@ use anyhow::Result;
 use baton_core::ModelSelector;
 use baton_host::capabilities::{FsRead, FsWrite, Http, Shell};
 use baton_host::policy::{AllowAll, Interactive};
-use baton_host::{Engine, Policy};
+use baton_host::{Engine, Policy, StdoutFrontend};
 use baton_providers::OpenAiAdapter;
 use clap::Parser;
 
@@ -38,6 +38,11 @@ struct Cli {
     /// then the built-in `google/gemma-4-31B-it:together`).
     #[arg(short = 'm', long = "model")]
     model: Option<String>,
+
+    /// Show tool results in full instead of collapsing large output to a head
+    /// plus a "… +N lines" summary. Also enabled by `BATON_FULL_OUTPUT=1`.
+    #[arg(long = "full-output")]
+    full_output: bool,
 }
 
 #[tokio::main]
@@ -70,6 +75,15 @@ async fn main() -> Result<()> {
         eprintln!("{banner}");
     }
 
+    // The `--full-output` flag forces full tool-result rendering; otherwise the
+    // frontend honours `BATON_FULL_OUTPUT` on its own.
+    let frontend = StdoutFrontend::new();
+    let frontend = if cli.full_output {
+        frontend.with_full_output(true)
+    } else {
+        frontend
+    };
+
     // --- the "CLI on a laptop" host: ~10 lines on top of baton-host ----------
     let mut engine = Engine::builder()
         .model(ModelSelector::named("big"), Arc::new(adapter))
@@ -79,6 +93,7 @@ async fn main() -> Result<()> {
         .capability(Arc::new(Http::new()))
         .system_prompt(SYSTEM_PROMPT)
         .policy(policy)
+        .frontend(Box::new(frontend))
         .build();
     // -------------------------------------------------------------------------
 

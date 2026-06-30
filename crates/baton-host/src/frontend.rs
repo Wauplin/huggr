@@ -62,7 +62,13 @@ pub struct StdoutFrontend {
     /// Whether we're mid-line streaming assistant text (so the next log line
     /// inserts a newline first).
     streaming: bool,
+    /// When set, tool results are rendered in full instead of being collapsed
+    /// to a head + "… +N lines" summary. Defaults from `BATON_FULL_OUTPUT`.
+    full_output: bool,
 }
+
+/// How many leading lines of a tool result to show before collapsing the rest.
+const RESULT_HEAD_LINES: usize = 8;
 
 impl Default for StdoutFrontend {
     fn default() -> Self {
@@ -70,7 +76,19 @@ impl Default for StdoutFrontend {
         Self {
             color,
             streaming: false,
+            full_output: env_truthy("BATON_FULL_OUTPUT"),
         }
+    }
+}
+
+/// Read an env var as a boolean: set & non-empty & not `0`/`false`/`no` ⇒ true.
+fn env_truthy(name: &str) -> bool {
+    match std::env::var(name) {
+        Ok(v) => {
+            let v = v.trim();
+            !v.is_empty() && !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no")
+        }
+        Err(_) => false,
     }
 }
 
@@ -82,6 +100,13 @@ impl StdoutFrontend {
     /// Force colors on or off, overriding TTY/`NO_COLOR` detection.
     pub fn with_color(mut self, color: bool) -> Self {
         self.color = color;
+        self
+    }
+
+    /// Force full (uncollapsed) tool-result rendering on or off, overriding the
+    /// `BATON_FULL_OUTPUT` env default.
+    pub fn with_full_output(mut self, full: bool) -> Self {
+        self.full_output = full;
         self
     }
 
@@ -105,6 +130,47 @@ impl StdoutFrontend {
     fn line(&mut self, text: String) {
         self.break_stream();
         println!("{text}");
+    }
+
+    /// Build the (already styled) lines a tool result renders to. Pure, so the
+    /// collapse / full-output behaviour can be unit-tested without stdout.
+    ///
+    /// In compact mode the body is a head of at most [`RESULT_HEAD_LINES`]
+    /// lines followed by a "… +N lines" note; with `full_output` the whole
+    /// result is shown.
+    fn tool_end_lines(&self, name: &str, result: &Value, is_error: bool) -> Vec<String> {
+        let (marker, code) = if is_error {
+            ("✗", style::RED)
+        } else {
+            ("✓", style::GREEN)
+        };
+        let header = self.paint(code, &format!("  {marker} {name}"));
+
+        let body = render_result(result);
+        let lines: Vec<&str> = body.lines().collect();
+        let show = if self.full_output {
+            lines.len()
+        } else {
+            lines.len().min(RESULT_HEAD_LINES)
+        };
+
+        let mut out = Vec::new();
+        // First body line sits next to the header; subsequent shown lines are
+        // indented underneath.
+        let first = lines.first().copied().unwrap_or("");
+        out.push(format!(
+            "{header} {}",
+            self.paint(style::GRAY, &arrow(first))
+        ));
+        for line in lines.iter().take(show).skip(1) {
+            out.push(self.paint(style::GRAY, &format!("    {line}")));
+        }
+        let hidden = lines.len().saturating_sub(show);
+        if hidden > 0 {
+            let note = format!("    … +{hidden} lines (set BATON_FULL_OUTPUT=1 to expand)");
+            out.push(self.paint(style::DIM, &note));
+        }
+        out
     }
 }
 
@@ -171,17 +237,9 @@ impl Frontend for StdoutFrontend {
     }
 
     fn on_tool_end(&mut self, _op: OpId, name: &str, result: &Value, is_error: bool) {
-        let (marker, code) = if is_error {
-            ("✗", style::RED)
-        } else {
-            ("✓", style::GREEN)
-        };
-        let head = self.paint(code, &format!("  {marker} {name}"));
-        let summary = self.paint(
-            style::GRAY,
-            &format!("→ {}", truncate(&compact(result), 160)),
-        );
-        self.line(format!("{head} {summary}"));
+        for line in self.tool_end_lines(name, result, is_error) {
+            self.line(line);
+        }
     }
 
     fn on_permission(&mut self, capability: &str, decision: &Decision) {
@@ -208,6 +266,38 @@ impl Frontend for StdoutFrontend {
     }
 }
 
+/// Prefix a single-line summary with the result arrow, collapsing newlines.
+fn arrow(first_line: &str) -> String {
+    format!("→ {}", truncate(first_line, 160))
+}
+
+/// Render a tool result into human-readable, possibly multi-line text.
+///
+/// Strings are shown verbatim (their own newlines drive the head/collapse
+/// logic). Objects are rendered as `key: value` lines, expanding any string
+/// field that itself contains newlines (e.g. a shell `stdout`) onto its own
+/// lines — this is what makes a 1000-line command output collapse nicely.
+/// Anything else falls back to compact JSON.
+fn render_result(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Object(map) => {
+            let mut out = String::new();
+            for (k, v) in map {
+                match v {
+                    Value::String(s) if s.contains('\n') => {
+                        out.push_str(&format!("{k}:\n{}\n", s.trim_end_matches('\n')));
+                    }
+                    Value::String(s) => out.push_str(&format!("{k}: {s}\n")),
+                    other => out.push_str(&format!("{k}: {}\n", compact(other))),
+                }
+            }
+            out.trim_end_matches('\n').to_string()
+        }
+        other => compact(other),
+    }
+}
+
 /// Compact one-line JSON for logging.
 fn compact(value: &Value) -> String {
     match value {
@@ -224,4 +314,111 @@ fn truncate(s: &str, max: usize) -> String {
     }
     let kept: String = s.chars().take(max).collect();
     format!("{kept}…")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A 1000-line shell result collapses to a head plus a "… +N lines" note.
+    #[test]
+    fn tool_result_collapses_by_default() {
+        let body: String = (0..1000).map(|i| format!("line {i}\n")).collect::<String>();
+        let result = json!({ "exit_code": 0, "stdout": body, "stderr": "" });
+
+        // Colors off so we assert on plain text.
+        let fe = StdoutFrontend::new()
+            .with_color(false)
+            .with_full_output(false);
+        let lines = fe.tool_end_lines("shell", &result, false);
+
+        // Far fewer than 1000 lines, and a collapse note is present.
+        assert!(
+            lines.len() <= RESULT_HEAD_LINES + 2,
+            "got {} lines",
+            lines.len()
+        );
+        let joined = lines.join("\n");
+        // 1000 stdout lines + the `exit_code:`/`stderr:`/`stdout:` framing means
+        // the bulk is hidden; the note reports the hidden remainder.
+        assert!(joined.contains("… +"), "missing collapse note:\n{joined}");
+        assert!(
+            joined.contains("lines"),
+            "note should mention lines:\n{joined}"
+        );
+        assert!(
+            joined.contains("BATON_FULL_OUTPUT"),
+            "note should mention the toggle"
+        );
+        // The head still shows real content.
+        assert!(
+            joined.contains("line 0"),
+            "head should show first lines:\n{joined}"
+        );
+        // The tail is not shown.
+        assert!(
+            !joined.contains("line 999"),
+            "tail should be hidden:\n{joined}"
+        );
+    }
+
+    /// `with_full_output(true)` (the `BATON_FULL_OUTPUT` toggle) shows everything.
+    #[test]
+    fn tool_result_full_output_shows_everything() {
+        let body: String = (0..1000).map(|i| format!("line {i}\n")).collect::<String>();
+        let result = json!({ "exit_code": 0, "stdout": body, "stderr": "" });
+
+        let fe = StdoutFrontend::new()
+            .with_color(false)
+            .with_full_output(true);
+        let lines = fe.tool_end_lines("shell", &result, false);
+        let joined = lines.join("\n");
+
+        assert!(
+            !joined.contains("… +"),
+            "full output must not collapse:\n{joined}"
+        );
+        assert!(joined.contains("line 0"), "first line missing");
+        assert!(
+            joined.contains("line 999"),
+            "last line missing in full output"
+        );
+    }
+
+    /// A small result is shown inline with no collapse note either way.
+    #[test]
+    fn small_result_not_collapsed() {
+        let result = json!({ "exit_code": 0, "stdout": "hello\n", "stderr": "" });
+        let fe = StdoutFrontend::new()
+            .with_color(false)
+            .with_full_output(false);
+        let joined = fe.tool_end_lines("shell", &result, false).join("\n");
+        assert!(
+            !joined.contains("… +"),
+            "small result should not collapse:\n{joined}"
+        );
+        assert!(joined.contains("hello"));
+    }
+
+    /// `BATON_FULL_OUTPUT` parsing: truthy vs falsy values.
+    #[test]
+    fn env_truthy_parsing() {
+        // We can't safely mutate process env in parallel tests; exercise the
+        // parser via the same matching used by `env_truthy`.
+        for (v, want) in [
+            ("1", true),
+            ("true", true),
+            ("yes", true),
+            ("0", false),
+            ("false", false),
+            ("no", false),
+            ("", false),
+        ] {
+            let v = v.trim();
+            let got =
+                !v.is_empty() && !matches!(v.to_ascii_lowercase().as_str(), "0" | "false" | "no");
+            assert_eq!(got, want, "value {v:?}");
+        }
+    }
 }

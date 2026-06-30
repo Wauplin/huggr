@@ -83,6 +83,7 @@ Configuration (all optional) via environment:
 | API key           | `OPENAI_API_KEY`, else `HF_TOKEN`, else the HF token file (`HF_TOKEN_PATH` / `$HF_HOME/token` / `~/.cache/huggingface/token`), else `hf auth token` | token file is read directly — no `hf` binary required |
 | `OPENAI_MODEL`    | `google/gemma-4-31B-it:together`                        | must support tool calling                     |
 | `OPENAI_BASE_URL` | `https://router.huggingface.co/v1`                      | set to `https://api.openai.com/v1` for OpenAI |
+| `BATON_FULL_OUTPUT` | unset (collapse)                                      | truthy ⇒ show full tool output; same as the `--full-output` flag |
 
 > The model must support **function calling**, since baton always advertises its tools. Small models that don't (e.g. some 8B instruct variants) return `model features function calling not support`.
 

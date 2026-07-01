@@ -728,6 +728,35 @@ async fn handle_repl_command(
             handle_todo_command(engine, parts.collect::<Vec<_>>().join(" "));
             Ok(true)
         }
+        "/diff" => {
+            print_git_diff(parts.collect::<Vec<_>>().join(" "))?;
+            Ok(true)
+        }
+        "/review" => {
+            print_review_prompt()?;
+            Ok(true)
+        }
+        "/commit-message" => {
+            print_commit_message()?;
+            Ok(true)
+        }
+        "/branch" => {
+            print_git_branch()?;
+            Ok(true)
+        }
+        "/rewind" => {
+            handle_rewind_command(engine, parts.collect::<Vec<_>>().join(" "))?;
+            Ok(true)
+        }
+        "/resume" => {
+            let rest = parts.collect::<Vec<_>>().join(" ");
+            if rest.trim().is_empty() {
+                println!("usage: hugr resume <trace> [prompt...]");
+            } else {
+                println!("run: hugr resume {rest}");
+            }
+            Ok(true)
+        }
         _ if command.starts_with('/') => {
             eprintln!("unknown command: {line}");
             Ok(true)
@@ -826,6 +855,98 @@ fn handle_todo_command(engine: &mut Engine, rest: String) {
         },
         _ => eprintln!("usage: /todo [list|add <text>|done <n>|open <n>|clear]"),
     }
+}
+
+fn print_git_diff(args: String) -> Result<()> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("diff").arg("--no-color");
+    let args = args.trim();
+    if args == "--cached" || args == "cached" {
+        cmd.arg("--cached");
+    } else if !args.is_empty() {
+        cmd.arg("--").arg(args);
+    }
+    print_command_output(&mut cmd)
+}
+
+fn print_review_prompt() -> Result<()> {
+    let mut diff_cmd = std::process::Command::new("git");
+    diff_cmd.args(["diff", "--no-color"]);
+    let diff = command_text(&mut diff_cmd)?;
+    if diff.trim().is_empty() {
+        println!("review: no unstaged diff");
+        return Ok(());
+    }
+    let mut names_cmd = std::process::Command::new("git");
+    names_cmd.args(["diff", "--name-only"]);
+    let files = command_text(&mut names_cmd)?;
+    println!("review scope:");
+    for file in files.lines().filter(|line| !line.trim().is_empty()) {
+        println!("- {file}");
+    }
+    println!("\nreview checklist:");
+    println!("- correctness regressions");
+    println!("- stale edits or missing CAS reads");
+    println!("- missing focused tests");
+    println!("- docs/progress updates");
+    Ok(())
+}
+
+fn print_commit_message() -> Result<()> {
+    let mut staged_cmd = std::process::Command::new("git");
+    staged_cmd.args(["diff", "--cached", "--name-only"]);
+    let staged = command_text(&mut staged_cmd)?;
+    let names = if staged.trim().is_empty() {
+        let mut unstaged_cmd = std::process::Command::new("git");
+        unstaged_cmd.args(["diff", "--name-only"]);
+        command_text(&mut unstaged_cmd)?
+    } else {
+        staged
+    };
+    let files: Vec<_> = names
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    if files.is_empty() {
+        println!("commit message: no diff");
+        return Ok(());
+    }
+    let scope = commit_scope(&files);
+    println!("Implement {scope}");
+    println!();
+    for file in files.iter().take(8) {
+        println!("- update {file}");
+    }
+    Ok(())
+}
+
+fn print_git_branch() -> Result<()> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["branch", "--show-current"]);
+    print_command_output(&mut cmd)
+}
+
+fn handle_rewind_command(engine: &Engine, rest: String) -> Result<()> {
+    let parts: Vec<_> = rest.split_whitespace().collect();
+    if parts.len() != 2 {
+        println!("usage: /rewind <log-seq> <trace-path>");
+        return Ok(());
+    }
+    let seq: u64 = parts[0]
+        .parse()
+        .with_context(|| format!("invalid log seq `{}`", parts[0]))?;
+    let path = PathBuf::from(parts[1]);
+    let Some(trace) = engine.trace() else {
+        println!("rewind requires a recording engine; start hugr with --record <path>");
+        return Ok(());
+    };
+    let branch = branch_trace_at_seq(&trace, seq);
+    branch
+        .save(&path)
+        .with_context(|| format!("saving rewound trace to {}", path.display()))?;
+    println!("rewound trace saved -> {}", path.display());
+    println!("resume with: hugr resume {}", path.display());
+    Ok(())
 }
 
 fn print_status(engine: &Engine, tier_mapping: &str, host_status: &HostStatus) {
@@ -961,6 +1082,64 @@ fn active_todos(engine: &Engine) -> Vec<TodoItem> {
             _ => None,
         })
         .unwrap_or_default()
+}
+
+fn print_command_output(cmd: &mut std::process::Command) -> Result<()> {
+    let output = command_text(cmd)?;
+    print!("{output}");
+    Ok(())
+}
+
+fn command_text(cmd: &mut std::process::Command) -> Result<String> {
+    let output = cmd.output().context("running command")?;
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() && text.trim().is_empty() {
+        text.push_str(&format!("command exited with status {}", output.status));
+    }
+    Ok(text)
+}
+
+fn commit_scope(files: &[&str]) -> String {
+    if files
+        .iter()
+        .any(|file| file.starts_with("crates/hugr-core/"))
+    {
+        "core changes".to_string()
+    } else if files
+        .iter()
+        .any(|file| file.starts_with("crates/hugr-host/"))
+    {
+        "host changes".to_string()
+    } else if files
+        .iter()
+        .any(|file| file.starts_with("crates/hugr-cli/"))
+    {
+        "CLI changes".to_string()
+    } else if files.iter().any(|file| file.starts_with("docs/")) {
+        "documentation updates".to_string()
+    } else {
+        "changes".to_string()
+    }
+}
+
+fn branch_trace_at_seq(trace: &Trace, seq: u64) -> Trace {
+    let mut inspector = Inspector::new(trace);
+    let mut events = Vec::new();
+    let mut log = Vec::new();
+    while let Some(step) = inspector.step() {
+        let would_cross = step.appended.iter().any(|entry| entry.seq.0 > seq);
+        if would_cross {
+            break;
+        }
+        events.push(step.event);
+        log.extend(step.appended);
+    }
+    let mut branch = Trace::new(events, log, trace.meta.created_at);
+    if let Some(policy) = trace.policy.clone() {
+        branch = branch.with_policy(policy);
+    }
+    branch
 }
 
 fn print_spend_report(report: &SpendReport) {
@@ -1218,5 +1397,50 @@ mod tests {
         assert_eq!(configs[1].args, vec![OsString::from(".")]);
         assert_eq!(configs[2].name, "git");
         assert_eq!(configs[2].args, vec![OsString::from("--stdio")]);
+    }
+
+    #[test]
+    fn commit_scope_prefers_hot_crate_paths() {
+        assert_eq!(
+            commit_scope(&["crates/hugr-core/src/brain.rs", "docs/ROADMAP_2.md"]),
+            "core changes"
+        );
+        assert_eq!(
+            commit_scope(&["docs/ROADMAP_2.md"]),
+            "documentation updates"
+        );
+    }
+
+    #[test]
+    fn branch_trace_at_seq_keeps_prefix_events_and_policy() {
+        let trace = Trace::new(
+            vec![
+                Event::Tick {
+                    now: hugr_core::Timestamp(1),
+                },
+                Event::UserInput {
+                    content: json!("first"),
+                    mode: hugr_core::SteerMode::Queue,
+                    est_tokens: 1,
+                },
+                Event::PlanAccepted {
+                    text: "do it".to_string(),
+                    est_tokens: 2,
+                },
+                Event::UserInput {
+                    content: json!("second"),
+                    mode: hugr_core::SteerMode::Queue,
+                    est_tokens: 1,
+                },
+            ],
+            Vec::new(),
+            Some(1),
+        )
+        .with_policy(json!({ "kind": "test" }));
+
+        let branch = branch_trace_at_seq(&trace, 1);
+        assert_eq!(branch.events.len(), 3);
+        assert_eq!(branch.log.len(), 2);
+        assert_eq!(branch.policy, Some(json!({ "kind": "test" })));
     }
 }

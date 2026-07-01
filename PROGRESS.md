@@ -335,6 +335,19 @@ Tests:
 - `hugr-host::capabilities::verify::tests::summarizes_failures_and_detects_targeted_tests` pins failure summarisation, targeted test detection, and background-op declaration.
 - Verification run: `cargo test -p hugr-host summarizes_failures_and_detects_targeted_tests -q`; `cargo check -p hugr-cli -q`.
 
+### D7 — Git/session CLI ergonomics ✅
+
+Done:
+
+- The REPL now supports `/diff`, `/review`, `/commit-message`, `/branch`, `/rewind <seq> <trace-path>`, and `/resume <trace> [prompt...]`. These commands inspect/draft only; commits remain explicit user actions outside the CLI helper.
+- `/rewind` writes a branched trace prefix from the current recorded session and prints the exact `hugr resume <trace>` command to continue from it. Existing top-level `hugr resume` remains the concrete resume path.
+- `/review` prints diff scope plus a compact review checklist, and `/commit-message` drafts a message from staged files or the unstaged diff.
+
+Tests:
+
+- `hugr-cli` unit tests pin commit-message scope selection and trace-prefix branching while preserving policy metadata.
+- Verification run: `cargo test -p hugr-cli _ -q`; `cargo check -p hugr-cli -q`.
+
 ## Phase 0 — Pure core skeleton (no IO) ✅
 
 **Goal:** the brain exists as a pure state machine with zero IO.

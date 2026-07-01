@@ -36,7 +36,7 @@
 //! wasm-bindgen string intrinsics abort on non-wasm targets, so the tests
 //! exercise `Core`, never the wrapper).
 
-use hugr_core::{Brain, Command, Event, StaticPolicy};
+use hugr_core::{Brain, Command, Event, RoutingPolicy, StaticPolicy, TurnPolicy};
 use wasm_bindgen::prelude::*;
 
 /// The pure binding logic, target-independent and native-testable. Every method
@@ -47,12 +47,12 @@ pub struct Core {
 }
 
 impl Core {
-    /// Build from a JSON-serialized [`StaticPolicy`] (see [`HugrBrain::new`]).
+    /// Build from a JSON-serialized [`RoutingPolicy`] or legacy
+    /// [`StaticPolicy`] (see [`HugrBrain::new`]).
     pub fn from_policy_json(policy_json: &str) -> Result<Core, String> {
-        let policy: StaticPolicy =
-            serde_json::from_str(policy_json).map_err(|e| format!("invalid policy JSON: {e}"))?;
+        let policy = policy_from_json(policy_json)?;
         Ok(Core {
-            inner: Brain::new(Box::new(policy)),
+            inner: Brain::new(policy),
         })
     }
 
@@ -95,7 +95,7 @@ impl Core {
 }
 
 /// A [`Brain`] wrapped for JavaScript. Construct one with a serialized
-/// [`StaticPolicy`], then drive it with [`submit`](HugrBrain::submit) /
+/// [`RoutingPolicy`] / [`StaticPolicy`], then drive it with [`submit`](HugrBrain::submit) /
 /// [`poll`](HugrBrain::poll) exactly as the native host's driver loop does.
 #[wasm_bindgen]
 pub struct HugrBrain {
@@ -104,7 +104,7 @@ pub struct HugrBrain {
 
 #[wasm_bindgen]
 impl HugrBrain {
-    /// Create a brain from a JSON-serialized [`StaticPolicy`] — the same policy
+    /// Create a brain from a JSON-serialized [`RoutingPolicy`] — the same policy
     /// the native [`EngineBuilder`](hugr_host) assembles (model selector,
     /// advertised tools, permissioned set, system prompt). The brain branches on
     /// the policy's pure decisions (`needs_permission`, `is_background`,
@@ -169,6 +169,15 @@ impl HugrBrain {
     pub fn context_plan_json(&self) -> Result<String, JsError> {
         self.core.context_plan_json().map_err(|e| JsError::new(&e))
     }
+}
+
+fn policy_from_json(policy_json: &str) -> Result<Box<dyn TurnPolicy>, String> {
+    if let Ok(policy) = serde_json::from_str::<RoutingPolicy>(policy_json) {
+        return Ok(Box::new(policy));
+    }
+    let policy: StaticPolicy =
+        serde_json::from_str(policy_json).map_err(|e| format!("invalid policy JSON: {e}"))?;
+    Ok(Box::new(policy))
 }
 
 /// The `hugr-wasm` version this binding was built from, exposed so the JS host

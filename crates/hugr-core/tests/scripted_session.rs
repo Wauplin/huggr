@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 use common::*;
 use hugr_core::{
     Brain, Command, ContentPart, ContextDisposition, ContextPlan, ContextSource, DoneReason, Event,
-    LogEntry, ModelSelector, OpId, Record, RoutingInputs, RoutingPhase, Seq, SeqRange,
-    StaticPolicy, SummaryCoverage, Timestamp, TokenBudget, ToolRisk, ToolSchema, TurnPolicy,
+    LogEntry, ModelSelector, OpId, Record, RoutingInputs, RoutingPhase, RoutingPolicy, Seq,
+    SeqRange, StaticPolicy, SummaryCoverage, Timestamp, TokenBudget, ToolRisk, ToolSchema,
+    TurnPolicy,
 };
 use serde_json::json;
 
@@ -146,6 +147,53 @@ fn routing_inputs_are_purely_derived_for_turn_and_followup() {
     assert_eq!(seen[1].tool_risk, ToolRisk::Failed);
     assert!(seen[1].recent_failures >= 1);
     assert!(seen[1].context_pressure >= seen[0].context_pressure);
+}
+
+#[test]
+fn routing_policy_deterministically_uses_small_medium_and_big() {
+    let mut small_brain = Brain::new(Box::new(RoutingPolicy::default()));
+    let small_commands = run_script(
+        &mut small_brain,
+        vec![user("classify this request as safe or unsafe")],
+    );
+    assert!(matches!(
+        first_model_selector(&small_commands),
+        Some(ModelSelector::Named(name)) if name == "small"
+    ));
+
+    let mut medium_brain = Brain::new(Box::new(RoutingPolicy::default()));
+    let medium_commands = run_script(&mut medium_brain, vec![user("write a short note")]);
+    assert!(matches!(
+        first_model_selector(&medium_commands),
+        Some(ModelSelector::Named(name)) if name == "medium"
+    ));
+
+    let failure_script = vec![
+        user("fix the failing tests"),
+        Event::ModelDone {
+            op: OpId(0),
+            output: tool_output("call-1", "shell", json!({ "cmd": "cargo test" })),
+            usage: usage(),
+            est_tokens: 1,
+        },
+        Event::CapabilityError {
+            op: OpId(1),
+            error: json!({ "error": "test failed", "stderr": "FAILED test_one" }),
+            conflict: None,
+            est_tokens: 1,
+        },
+    ];
+    let mut big_brain = Brain::new(Box::new(RoutingPolicy::default()));
+    let big_commands = run_script(&mut big_brain, failure_script.clone());
+    assert!(matches!(
+        last_model_selector(&big_commands),
+        Some(ModelSelector::Named(name)) if name == "big"
+    ));
+
+    let mut replay_brain = Brain::new(Box::new(RoutingPolicy::default()));
+    let replay_commands = run_script(&mut replay_brain, failure_script);
+    assert_eq!(big_commands, replay_commands);
+    assert_eq!(big_brain.state().log(), replay_brain.state().log());
 }
 
 /// The same session, but the tool requires permission. The sequence gains a
@@ -674,4 +722,18 @@ fn manual_compaction_event_runs_one_pass_without_starting_turn() {
     let commands_second = run_script(&mut second, script);
     assert_eq!(commands_first, commands_second);
     assert_eq!(first.state().log(), second.state().log());
+}
+
+fn first_model_selector(commands: &[Command]) -> Option<&ModelSelector> {
+    commands.iter().find_map(|command| match command {
+        Command::StartModelCall { model, .. } => Some(model),
+        _ => None,
+    })
+}
+
+fn last_model_selector(commands: &[Command]) -> Option<&ModelSelector> {
+    commands.iter().rev().find_map(|command| match command {
+        Command::StartModelCall { model, .. } => Some(model),
+        _ => None,
+    })
 }

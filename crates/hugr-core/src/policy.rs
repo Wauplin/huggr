@@ -314,6 +314,145 @@ impl StaticPolicy {
     }
 }
 
+/// A deterministic three-tier routing policy (ROADMAP_2 B2).
+///
+/// It delegates projection, permissions, background ops, sub-agent seeding, and
+/// compaction to a [`StaticPolicy`] base, and only replaces model selection.
+/// The tier choice is intentionally conservative and fully derived from
+/// [`RoutingInputs`] plus recent log text: `small` for cheap naming /
+/// classification phases, `big` for failure / context-pressure / repo-wide
+/// change signals, and the base/default selector (normally `medium`) otherwise.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RoutingPolicy {
+    base: StaticPolicy,
+    #[serde(default = "small_selector")]
+    small: ModelSelector,
+    #[serde(default = "medium_selector")]
+    medium: ModelSelector,
+    #[serde(default = "big_selector")]
+    big: ModelSelector,
+    #[serde(default = "default_failure_threshold")]
+    recent_failure_threshold: u32,
+    #[serde(default = "default_context_pressure_threshold")]
+    context_pressure_threshold: f32,
+}
+
+impl Default for RoutingPolicy {
+    fn default() -> Self {
+        Self::new(StaticPolicy::default())
+    }
+}
+
+impl RoutingPolicy {
+    pub fn new(base: StaticPolicy) -> Self {
+        let medium = base.model.clone();
+        Self {
+            base,
+            small: small_selector(),
+            medium,
+            big: big_selector(),
+            recent_failure_threshold: default_failure_threshold(),
+            context_pressure_threshold: default_context_pressure_threshold(),
+        }
+    }
+
+    pub fn with_tiers(
+        mut self,
+        small: ModelSelector,
+        medium: ModelSelector,
+        big: ModelSelector,
+    ) -> Self {
+        self.small = small;
+        self.medium = medium;
+        self.big = big;
+        self
+    }
+
+    pub fn with_recent_failure_threshold(mut self, threshold: u32) -> Self {
+        self.recent_failure_threshold = threshold;
+        self
+    }
+
+    pub fn with_context_pressure_threshold(mut self, threshold: f32) -> Self {
+        self.context_pressure_threshold = threshold.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn base(&self) -> &StaticPolicy {
+        &self.base
+    }
+
+    pub fn into_base(self) -> StaticPolicy {
+        self.base
+    }
+}
+
+impl TurnPolicy for RoutingPolicy {
+    fn choose_model(&self, state: &BrainState, inputs: &RoutingInputs) -> ModelSelector {
+        if let Some(selector) = &inputs.override_selector {
+            return selector.clone();
+        }
+
+        match inputs.phase {
+            RoutingPhase::Compaction
+            | RoutingPhase::PermissionJudge
+            | RoutingPhase::SessionTitle
+            | RoutingPhase::QuickClassification => {
+                return self.small.clone();
+            }
+            RoutingPhase::Normal | RoutingPhase::ToolFollowup => {}
+        }
+
+        let recent_user = recent_user_text(state.log());
+        if recent_user.as_deref().is_some_and(is_small_text_task) {
+            return self.small.clone();
+        }
+
+        if inputs.recent_failures >= self.recent_failure_threshold
+            || matches!(inputs.tool_risk, ToolRisk::Denied | ToolRisk::Failed)
+            || inputs.context_pressure >= self.context_pressure_threshold
+            || recent_user.as_deref().is_some_and(is_big_text_task)
+        {
+            return self.big.clone();
+        }
+
+        self.medium.clone()
+    }
+
+    fn context_budget(&self, state: &BrainState) -> TokenBudget {
+        self.base.context_budget(state)
+    }
+
+    fn project_context(&self, log: &[LogEntry], budget: TokenBudget) -> ContextPlan {
+        self.base.project_context(log, budget)
+    }
+
+    fn compaction_high_water(&self, state: &BrainState, budget: TokenBudget) -> Option<u64> {
+        self.base.compaction_high_water(state, budget)
+    }
+
+    fn select_compaction_span(
+        &self,
+        log: &[LogEntry],
+        plan: &ContextPlan,
+    ) -> Option<CompactionTarget> {
+        self.base.select_compaction_span(log, plan)
+    }
+
+    fn needs_permission(&self, capability: &str) -> bool {
+        self.base.needs_permission(capability)
+    }
+
+    fn is_background(&self, capability: &str) -> bool {
+        self.base.is_background(capability)
+    }
+
+    fn agent_seed(&self, capability: &str) -> Option<AgentSeed> {
+        self.base.agent_seed(capability)
+    }
+}
+
 impl TurnPolicy for StaticPolicy {
     fn choose_model(&self, _state: &BrainState, _inputs: &RoutingInputs) -> ModelSelector {
         self.model.clone()
@@ -545,6 +684,59 @@ fn recent_tool_risk(log: &[LogEntry]) -> ToolRisk {
             _ => None,
         })
         .unwrap_or(ToolRisk::None)
+}
+
+fn recent_user_text(log: &[LogEntry]) -> Option<String> {
+    log.iter().rev().find_map(|entry| match &entry.record {
+        Record::UserMessage { text, .. } => Some(text.clone()),
+        _ => None,
+    })
+}
+
+fn is_small_text_task(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let short = lower.len() <= 160;
+    short
+        && (lower.contains("session title")
+            || lower.contains("title this")
+            || lower.contains("name this")
+            || lower.contains("classify")
+            || lower.contains("categorize")
+            || lower.contains("yes/no")
+            || lower.contains("quick summary")
+            || lower.starts_with("summarize this"))
+}
+
+fn is_big_text_task(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("repo-wide")
+        || lower.contains("across the repo")
+        || lower.contains("large refactor")
+        || lower.contains("migrate")
+        || lower.contains("ambiguous")
+        || lower.contains("architecture")
+        || lower.contains("design decision")
+        || lower.contains("hard reasoning")
+}
+
+fn small_selector() -> ModelSelector {
+    ModelSelector::named("small")
+}
+
+fn medium_selector() -> ModelSelector {
+    ModelSelector::named("medium")
+}
+
+fn big_selector() -> ModelSelector {
+    ModelSelector::named("big")
+}
+
+fn default_failure_threshold() -> u32 {
+    2
+}
+
+fn default_context_pressure_threshold() -> f32 {
+    0.85
 }
 
 fn default_compaction_high_water_percent() -> u8 {

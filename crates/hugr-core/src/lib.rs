@@ -59,7 +59,8 @@ pub use model::{
     ModelSelector, Role, SamplingParams, StopReason, TokenBudget, ToolCall, ToolSchema, Usage,
 };
 pub use policy::{
-    AgentSeed, CompactionTarget, RoutingInputs, RoutingPhase, StaticPolicy, ToolRisk, TurnPolicy,
+    AgentSeed, CompactionTarget, RoutingInputs, RoutingPhase, RoutingPolicy, StaticPolicy,
+    ToolRisk, TurnPolicy,
 };
 pub use primitives::{ObjectKey, OpId, Seq, Timestamp, Value};
 pub use record::{LogEntry, OpMeta, OpOutcome, Record, SeqRange, SummaryCoverage};

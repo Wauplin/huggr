@@ -21,7 +21,7 @@
 //! the session one event at a time, watching the commands each event produced
 //! and the log entries it appended.
 
-use hugr_core::{Brain, Command, Event, LogEntry, StaticPolicy, TurnPolicy};
+use hugr_core::{Brain, Command, Event, LogEntry, RoutingPolicy, StaticPolicy, TurnPolicy};
 
 use crate::{Trace, TraceError};
 
@@ -51,7 +51,7 @@ pub fn replay(trace: &Trace) -> Replay {
 }
 
 /// Reconstruct the [`TurnPolicy`] a trace was recorded under: decode the
-/// captured [`StaticPolicy`] config if present, else the default.
+/// captured [`RoutingPolicy`] / [`StaticPolicy`] config if present, else the default.
 ///
 /// This is the policy a faithful replay (or **resume**, P3-4) must run under —
 /// the brain branches on the policy's pure decisions, so continuing a session
@@ -59,14 +59,19 @@ pub fn replay(trace: &Trace) -> Replay {
 /// captured policy (or one we can't decode) falls back to the default.
 pub fn policy_from_trace(trace: &Trace) -> Box<dyn TurnPolicy> {
     match &trace.policy {
-        Some(value) => match serde_json::from_value::<StaticPolicy>(value.clone()) {
-            Ok(policy) => Box::new(policy),
-            // A policy we can't decode (e.g. a custom non-StaticPolicy host):
-            // fall back to the default rather than fail. The caller can supply
-            // the right policy via `replay_with_policy`.
-            Err(_) => Box::new(StaticPolicy::default()),
-        },
-        None => Box::new(StaticPolicy::default()),
+        Some(value) => {
+            if let Ok(policy) = serde_json::from_value::<RoutingPolicy>(value.clone()) {
+                return Box::new(policy);
+            }
+            match serde_json::from_value::<StaticPolicy>(value.clone()) {
+                Ok(policy) => Box::new(policy),
+                // A policy we can't decode (e.g. a custom host policy): fall
+                // back to the default rather than fail. The caller can supply
+                // the right policy via `replay_with_policy`.
+                Err(_) => Box::new(RoutingPolicy::default()),
+            }
+        }
+        None => Box::new(RoutingPolicy::default()),
     }
 }
 

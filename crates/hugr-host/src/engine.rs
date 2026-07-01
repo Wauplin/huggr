@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hugr_core::{
-    AgentSeed, Brain, Command, ContextPlan, Event, ModelSelector, OpId, SamplingParams,
-    StaticPolicy, SteerMode, Timestamp, ToolSchema, Value,
+    AgentSeed, Brain, Command, ContextPlan, Event, ModelSelector, OpId, RoutingPolicy,
+    SamplingParams, StaticPolicy, SteerMode, Timestamp, ToolSchema, Value,
 };
 use serde_json::json;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -803,20 +803,21 @@ impl EngineBuilder {
                 // model; the brain routes agent-named calls to `StartAgent`.
                 let mut tools = self.caps.schemas();
                 tools.extend(self.agents.iter().map(|(schema, _)| schema.clone()));
-                let mut policy = StaticPolicy::default()
+                let mut base_policy = StaticPolicy::default()
                     .with_model(self.selector.clone())
                     .with_tools(tools)
                     .with_permissioned(self.caps.permissioned_names())
                     .with_background(self.caps.background_names())
                     .with_params(self.sampling);
                 for (schema, seed) in &self.agents {
-                    policy = policy.with_agent(schema.name.clone(), *seed);
+                    base_policy = base_policy.with_agent(schema.name.clone(), *seed);
                 }
                 if let Some(system) = self.system_prompt {
-                    policy = policy.with_system_prompt(system);
+                    base_policy = base_policy.with_system_prompt(system);
                 }
+                let policy = RoutingPolicy::new(base_policy);
                 // Serialize the policy once (for recorded traces) before it moves
-                // into the brain. `StaticPolicy` is serde-able; best-effort.
+                // into the brain. `RoutingPolicy` is serde-able; best-effort.
                 let policy_config = self
                     .record
                     .then(|| serde_json::to_value(&policy).ok())

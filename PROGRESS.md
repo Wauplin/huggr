@@ -121,6 +121,19 @@ Tests:
 
 - `crates/hugr-core/tests/scripted_session.rs::routing_inputs_are_purely_derived_for_turn_and_followup` pins the B1 inputs for a normal turn and a failed-tool follow-up.
 
+### B2 — Deterministic tier routing policy ✅
+
+Done:
+
+- `hugr-core` now provides `RoutingPolicy`, a real `TurnPolicy` that delegates projection, permissions, background ops, sub-agent seeding, and compaction to a `StaticPolicy` base while replacing only model selection.
+- Routing is deterministic over recorded data: `small` is used for session/title naming, quick classification, and the explicit compaction/judge/title/classification phases; `big` is used for recent failure signals, denied/failed tool results, high context pressure, or hard repo-wide/architecture prompts; the base selector, normally `medium`, is used otherwise.
+- Fresh native `EngineBuilder` sessions now use `RoutingPolicy` and serialize it into new traces. `hugr-replay` and `hugr-wasm` decode both new `RoutingPolicy` configs and legacy `StaticPolicy` configs, so existing traces/configs keep working.
+
+Tests:
+
+- `crates/hugr-core/tests/scripted_session.rs::routing_policy_deterministically_uses_small_medium_and_big` proves deterministic routing across all three tiers and replay equality from the same recorded events.
+- Verification run: `cargo test -p hugr-core -q`; `cargo test -p hugr-replay -q`; `cargo check -p hugr-host -q`.
+
 ## Phase 0 — Pure core skeleton (no IO) ✅
 
 **Goal:** the brain exists as a pure state machine with zero IO.

@@ -1,18 +1,18 @@
 # CLAUDE.md
 
-Guidance for working in the Baton repository.
+Guidance for working in the Hugr repository.
 
 ## What this is
 
-Baton is a **runtime-free, sans-IO agent harness** in Rust. Read `docs/DESIGN.md` and `docs/ARCHITECTURE.md` before making non-trivial changes — the architecture is the product, and several decisions are deliberate one-way doors. `docs/ROADMAP.md` tracks the phased plan and per-phase exit criteria; `PROGRESS.md` tracks what is actually built.
+Hugr is a **runtime-free, sans-IO agent harness** in Rust. Read `docs/DESIGN.md` and `docs/ARCHITECTURE.md` before making non-trivial changes — the architecture is the product, and several decisions are deliberate one-way doors. `docs/ROADMAP.md` tracks the phased plan and per-phase exit criteria; `PROGRESS.md` tracks what is actually built.
 
 ## The one rule that matters most
 
-**`baton-core` is sans-IO and pure.** It is a reducer: `submit(event)` folds an event into state and queues commands; `poll()` drains them. It must never do IO.
+**`hugr-core` is sans-IO and pure.** It is a reducer: `submit(event)` folds an event into state and queues commands; `poll()` drains them. It must never do IO.
 
 Hard invariants — do not break these:
 
-- **No environmental dependencies in `baton-core`.** No `tokio`, no `reqwest`, no `std::fs`, no sockets, no clock, no RNG, no threads. Only pure-data crates (`serde`, `serde_json`). Verify with `cargo tree -p baton-core`.
+- **No environmental dependencies in `hugr-core`.** No `tokio`, no `reqwest`, no `std::fs`, no sockets, no clock, no RNG, no threads. Only pure-data crates (`serde`, `serde_json`). Verify with `cargo tree -p hugr-core`.
 - **The brain is single-threaded.** All concurrency lives in the host. The moment the brain is multithreaded, we lose sans-IO, replay, and easy bindings.
 - **All nondeterminism is injected** as events (`Tick` for time; model output, tool results, user input as events). The brain never reads a clock or RNG. This is what makes replay bit-for-bit deterministic — protect it.
 - **The log is the source of truth.** `BrainState` is a *fold* over the log and must stay rebuildable from it. Don't add un-derived state.
@@ -36,12 +36,12 @@ Consequences for code changes:
 
 - **Agent strategy** (which model, how to project context, whether permission is needed) lives in the pluggable `TurnPolicy` — never hardcoded in the reducer. The Phase 0 `StaticPolicy` is the trivial pass-through projection.
 - **The reducer** (`brain.rs`) only: maintains the log + op table; drives the turn loop; asks the policy; routes opaque payloads; emits permission/UI events; decides done/checkpoint. If you're adding "smarts", it probably belongs in a policy, not the reducer.
-- **Everything hard** (IO, HTTP, rendering, scheduling, model resolution, the atomic CAS check, storage) is the *host's* job — not in `baton-core`.
+- **Everything hard** (IO, HTTP, rendering, scheduling, model resolution, the atomic CAS check, storage) is the *host's* job — not in `hugr-core`.
 
 ## Project layout
 
 ```
-crates/baton-core/       # the sans-IO brain (NO tokio/reqwest/fs)
+crates/hugr-core/       # the sans-IO brain (NO tokio/reqwest/fs)
   src/primitives.rs  # OpId, Seq, Timestamp, Value, ObjectKey
   src/model.rs       # ModelRequest/Delta/Output, ToolCall, Usage, selectors
   src/command.rs     # Command (brain → host) + OutputEvent
@@ -51,7 +51,7 @@ crates/baton-core/       # the sans-IO brain (NO tokio/reqwest/fs)
   src/policy.rs      # TurnPolicy trait + StaticPolicy
   src/brain.rs       # Brain: poll() + submit() + the reducer
 
-crates/baton-host/       # default native host (tokio, IO) — Phase 1
+crates/hugr-host/       # default native host (tokio, IO) — Phase 1
   src/engine.rs      # the tokio driver loop + EngineBuilder
   src/capability.rs  # Capability trait + ChunkSink + registry
   src/model.rs       # ModelAdapter trait + ModelSink + registry
@@ -59,15 +59,15 @@ crates/baton-host/       # default native host (tokio, IO) — Phase 1
   src/frontend.rs    # Frontend trait + StdoutFrontend (ANSI colors)
   src/capabilities/  # shell, fs_read, fs_write, http, blob (content-addressed store)
 
-crates/baton-providers/  # model adapters — OpenAiAdapter (streaming)
-crates/baton-cli/        # the `baton` binary (~10 lines on top of baton-host)
+crates/hugr-providers/  # model adapters — OpenAiAdapter (streaming)
+crates/hugr-cli/        # the `hugr` binary (~10 lines on top of hugr-host)
 
-crates/baton-replay/     # versioned, portable trace format (save/load) — Phase 3
+crates/hugr-replay/     # versioned, portable trace format (save/load) — Phase 3
   src/lib.rs         # Trace { meta, events, log, blobs }; std::fs save/load
   src/blob.rs        # BlobStore: disk-backed content-addressed (sha256) store
 ```
 
-`baton-plugin-abi` (Phase 5, the versioned plugin contract + subprocess transport) and `baton-wasm` (Phase 4, the browser/JS binding — the same brain compiled to WASM, driving the Chrome extension in `crates/baton-wasm/extension/`) now exist too; the remaining crates in `ARCHITECTURE.md` §10 (`baton-py`, `baton-js`) arrive in later phases. `baton-replay` is a host-side **persistence** crate — it may use `std::fs`, but it depends on `baton-core` as *pure data only* and never pulls IO into the core. **Never add environmental dependencies to `baton-core`** to make a host easier; put them in the host crate. All IO/HTTP/shell/clock work lives in `baton-host` (or another host), never in the core.
+`hugr-plugin-abi` (Phase 5, the versioned plugin contract + subprocess transport) and `hugr-wasm` (Phase 4, the browser/JS binding — the same brain compiled to WASM, driving the Chrome extension in `crates/hugr-wasm/extension/`) now exist too; the remaining crates in `ARCHITECTURE.md` §10 (`hugr-py`, `hugr-js`) arrive in later phases. `hugr-replay` is a host-side **persistence** crate — it may use `std::fs`, but it depends on `hugr-core` as *pure data only* and never pulls IO into the core. **Never add environmental dependencies to `hugr-core`** to make a host easier; put them in the host crate. All IO/HTTP/shell/clock work lives in `hugr-host` (or another host), never in the core.
 
 When extending the host: capabilities are uniform (no privileged built-ins — shell/fs/http are ordinary `Capability`s); a model call is "an effect the host provides" registered like a capability; transport errors (retries, 429s) are the adapter's job, semantic errors route back to the model as tool results.
 
@@ -75,10 +75,10 @@ When extending the host: capabilities are uniform (no privileged built-ins — s
 
 ```bash
 cargo test                  # all tests
-cargo test -p baton-core    # core only
+cargo test -p hugr-core    # core only
 cargo clippy --all-targets  # lint (keep it clean)
 cargo fmt --all             # format before committing
-cargo tree -p baton-core    # audit: must stay free of tokio/reqwest/fs
+cargo tree -p hugr-core    # audit: must stay free of tokio/reqwest/fs
 ```
 
 ## Conventions

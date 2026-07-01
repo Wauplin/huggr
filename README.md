@@ -1,12 +1,12 @@
-# Baton
+# Hugr
 
 > A lightweight, embeddable, runtime-free agent harness written in Rust.
 
-**Baton** is the agent "brain" that can run **anywhere** — a browser tab (as WASM, with no backend), a Python or JS script via bindings, a serverless function, or a long-lived server — from a *single, portable core* with a small footprint and fast startup.
+**Hugr** is the agent "brain" that can run **anywhere** — a browser tab (as WASM, with no backend), a Python or JS script via bindings, a serverless function, or a long-lived server — from a *single, portable core* with a small footprint and fast startup.
 
-The differentiator is not a feature list; it is an **architecture**. Baton keeps four things separate that most harnesses conflate:
+The differentiator is not a feature list; it is an **architecture**. Hugr keeps four things separate that most harnesses conflate:
 
-| Concern           | What Baton does                                               |
+| Concern           | What Hugr does                                               |
 | ----------------- | ------------------------------------------------------------- |
 | **Durable state** | An append-only **event log** is the source of truth           |
 | **Model context** | A **projection** rendered from the log per turn               |
@@ -36,15 +36,15 @@ loop {
 
 `poll()` and `submit()` are **synchronous and pure**. All concurrency and IO live in the host; the brain is a single-threaded reducer.
 
-[`Command`]: crates/baton-core/src/command.rs
-[`Event`]: crates/baton-core/src/event.rs
+[`Command`]: crates/hugr-core/src/command.rs
+[`Event`]: crates/hugr-core/src/event.rs
 
 ## Status — Phases 0 & 1 ✅
 
 Per the [roadmap](docs/ROADMAP.md):
 
 - **Phase 0** — the **pure core skeleton (no IO)**: the `Command`/`Event` vocabulary, the append-only log and in-flight op table, the turn loop (`user → model → tool → model → done`), a trivial pass-through projection policy, and **deterministic replay**.
-- **Phase 1** — the **batteries-included CLI host**: a tokio driver loop, the uniform capability + model-adapter interfaces, `shell`/`fs`/`http` capabilities, an interactive permission policy, a streaming OpenAI-compatible adapter, and the `baton` CLI.
+- **Phase 1** — the **batteries-included CLI host**: a tokio driver loop, the uniform capability + model-adapter interfaces, `shell`/`fs`/`http` capabilities, an interactive permission policy, a streaming OpenAI-compatible adapter, and the `hugr` CLI.
 
 See [`PROGRESS.md`](PROGRESS.md) for the detailed status.
 
@@ -54,31 +54,31 @@ The workspace grows into the full layout from [`ARCHITECTURE.md` §10](docs/ARCH
 
 ```
 crates/
-  baton-core/          # the sans-IO brain — state, log, projection, op table,
+  hugr-core/          # the sans-IO brain — state, log, projection, op table,
                        #   reducer. NO tokio, NO reqwest, NO fs.
-  baton-host/          # default native host: tokio driver loop, Capability +
+  hugr-host/          # default native host: tokio driver loop, Capability +
                        #   ModelAdapter traits, shell/fs/http, policy, front-end.
-  baton-providers/     # model adapters — OpenAI chat completions (streaming).
-  baton-cli/           # the `baton` showcase binary.
-  baton-replay/        # versioned, portable trace format + replay/inspect + blobs.
-  baton-plugin-abi/    # versioned plugin contract + subprocess (stdio) transport.
-  baton-example-plugin/# a standalone third-party plugin (no Baton dependency).
-  baton-wasm/          # the browser/JS binding + a Chrome-extension host (WASM;
-                       #   same brain, no backend). See crates/baton-wasm/extension/.
+  hugr-providers/     # model adapters — OpenAI chat completions (streaming).
+  hugr-cli/           # the `hugr` showcase binary.
+  hugr-replay/        # versioned, portable trace format + replay/inspect + blobs.
+  hugr-plugin-abi/    # versioned plugin contract + subprocess (stdio) transport.
+  hugr-example-plugin/# a standalone third-party plugin (no Hugr dependency).
+  hugr-wasm/          # the browser/JS binding + a Chrome-extension host (WASM;
+                       #   same brain, no backend). See crates/hugr-wasm/extension/.
 ```
 
-Planned (later phases): `baton-py`, `baton-js`.
+Planned (later phases): `hugr-py`, `hugr-js`.
 
 ## Running the CLI
 
-By default `baton` talks to the **Hugging Face router** (an OpenAI-compatible endpoint), so if you're logged in with the `hf` CLI it works with no setup:
+By default `hugr` talks to the **Hugging Face router** (an OpenAI-compatible endpoint), so if you're logged in with the `hf` CLI it works with no setup:
 
 ```bash
-hf auth login                         # once; baton reads the stored token
+hf auth login                         # once; hugr reads the stored token
 
-cargo run -p baton-cli -- "list the rust files and summarise the workspace"
-cargo run -p baton-cli                # interactive REPL
-cargo run -p baton-cli -- -y "..."    # approve all tool calls (no prompts)
+cargo run -p hugr-cli -- "list the rust files and summarise the workspace"
+cargo run -p hugr-cli                # interactive REPL
+cargo run -p hugr-cli -- -y "..."    # approve all tool calls (no prompts)
 ```
 
 Configuration (all optional) via environment:
@@ -88,11 +88,11 @@ Configuration (all optional) via environment:
 | API key           | `OPENAI_API_KEY`, else `HF_TOKEN`, else the HF token file (`HF_TOKEN_PATH` / `$HF_HOME/token` / `~/.cache/huggingface/token`), else `hf auth token` | token file is read directly — no `hf` binary required |
 | `OPENAI_MODEL`    | `google/gemma-4-31B-it:together`                        | must support tool calling                     |
 | `OPENAI_BASE_URL` | `https://router.huggingface.co/v1`                      | set to `https://api.openai.com/v1` for OpenAI |
-| `BATON_FULL_OUTPUT` | unset (collapse)                                      | truthy ⇒ show full tool output; same as the `--full-output` flag |
+| `HUGR_FULL_OUTPUT` | unset (collapse)                                      | truthy ⇒ show full tool output; same as the `--full-output` flag |
 
-> The model must support **function calling**, since baton always advertises its tools. Small models that don't (e.g. some 8B instruct variants) return `model features function calling not support`.
+> The model must support **function calling**, since hugr always advertises its tools. Small models that don't (e.g. some 8B instruct variants) return `model features function calling not support`.
 
-The engine setup is ~10 lines on top of `baton-host` (see the marked block in [`crates/baton-cli/src/main.rs`](crates/baton-cli/src/main.rs)).
+The engine setup is ~10 lines on top of `hugr-host` (see the marked block in [`crates/hugr-cli/src/main.rs`](crates/hugr-cli/src/main.rs)).
 
 ## Running in the browser (Chrome extension)
 
@@ -101,11 +101,11 @@ The **same** brain, compiled to WASM, drives an installable Chrome side-panel ag
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.100
-./crates/baton-wasm/build-extension.sh
-# then: chrome://extensions → Developer mode → Load unpacked → crates/baton-wasm/extension/
+./crates/hugr-wasm/build-extension.sh
+# then: chrome://extensions → Developer mode → Load unpacked → crates/hugr-wasm/extension/
 ```
 
-A prebuilt `extension/wasm/` is committed, so you can skip the build and load it directly. See [`crates/baton-wasm/extension/README.md`](crates/baton-wasm/extension/README.md) and [`DEMOS.md`](crates/baton-wasm/extension/DEMOS.md).
+A prebuilt `extension/wasm/` is committed, so you can skip the build and load it directly. See [`crates/hugr-wasm/extension/README.md`](crates/hugr-wasm/extension/README.md) and [`DEMOS.md`](crates/hugr-wasm/extension/DEMOS.md).
 
 ## Building & testing
 
@@ -114,14 +114,14 @@ cargo build --workspace
 cargo test                  # unit + scripted/determinism + end-to-end tests
 cargo clippy --all-targets
 cargo fmt --all
-cargo tree -p baton-core    # audit: must stay free of tokio/reqwest/fs
+cargo tree -p hugr-core    # audit: must stay free of tokio/reqwest/fs
 ```
 
 Notable tests:
 
-- `baton-core/tests` — the Phase 0 exit criteria: a scripted session reduces to the expected command sequence; the same event stream replays to identical commands.
-- `baton-host/tests/end_to_end.rs` — a real multi-turn session through the tokio driver loop using the real `shell` capability.
-- `baton-providers` — request building, SSE accumulation, and a streaming run against a local mock SSE server.
+- `hugr-core/tests` — the Phase 0 exit criteria: a scripted session reduces to the expected command sequence; the same event stream replays to identical commands.
+- `hugr-host/tests/end_to_end.rs` — a real multi-turn session through the tokio driver loop using the real `shell` capability.
+- `hugr-providers` — request building, SSE accumulation, and a streaming run against a local mock SSE server.
 
 ## License
 

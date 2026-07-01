@@ -1,0 +1,433 @@
+//! `hugr` — the batteries-included showcase CLI.
+//!
+//! The engine setup below is the "CLI on a laptop" host: ~10 lines on top of
+//! `hugr-host` (ROADMAP Phase 1 exit criterion).
+//!
+//! Beyond running sessions, the CLI can **record** a session to a trace
+//! (`--record <path>`) and **replay** one (`hugr replay <trace>`) — replay
+//! reconstructs the brain's commands bit-for-bit and verifies them against the
+//! recorded log (ROADMAP Phase 3 exit criterion), with a `--step` inspector that
+//! walks the session one event at a time.
+
+use std::io::{IsTerminal, Write};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use hugr_core::{AgentSeed, Command, Event, ModelSelector, ToolSchema};
+use hugr_host::capabilities::{FsRead, FsWrite, Http, Shell};
+use hugr_host::policy::{AllowAll, Interactive};
+use hugr_host::{Engine, EngineBuilder, Inspector, Policy, StdoutFrontend, Trace};
+use hugr_providers::OpenAiAdapter;
+
+const SYSTEM_PROMPT: &str = "\
+You are Hugr, a helpful coding agent running in a terminal. You can run shell \
+commands, read and write files, and make HTTP requests via the provided tools. \
+Prefer concrete actions over long explanations. When a task is complete, give a \
+short summary.";
+
+#[derive(Parser)]
+#[command(
+    name = "hugr",
+    version,
+    about = "A portable, runtime-free agent harness"
+)]
+struct Cli {
+    /// One-shot prompt. If omitted (and no subcommand), starts an interactive
+    /// session.
+    prompt: Vec<String>,
+
+    /// Approve every tool call without prompting (the allow-all mode).
+    #[arg(short = 'y', long = "yes")]
+    yes: bool,
+
+    /// Override the default model id (defaults to the `OPENAI_MODEL` env var,
+    /// then the built-in `google/gemma-4-31B-it:together`).
+    #[arg(short = 'm', long = "model")]
+    model: Option<String>,
+
+    /// Show tool results in full instead of collapsing large output to a head
+    /// plus a "… +N lines" summary. Also enabled by `HUGR_FULL_OUTPUT=1`.
+    #[arg(long = "full-output")]
+    full_output: bool,
+
+    /// Record this session to a trace file (the ordered event stream + the
+    /// durable log), replayable later with `hugr replay <path>`.
+    #[arg(long = "record", value_name = "PATH")]
+    record: Option<PathBuf>,
+
+    /// Load a plugin: a program (optionally with args) that speaks the Hugr
+    /// plugin protocol over stdio. Repeatable. Each plugin's tools are
+    /// registered as ordinary capabilities. E.g. `--plugin ./my-plugin`.
+    #[arg(long = "plugin", value_name = "CMD")]
+    plugins: Vec<String>,
+
+    #[command(subcommand)]
+    command: Option<Cmd>,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Reconstruct a recorded session from a trace and verify it replays
+    /// bit-for-bit (the Phase 3 exit criterion).
+    Replay {
+        /// Path to a `.trace.json` file produced by `--record`.
+        trace: PathBuf,
+
+        /// Step through the session one event at a time, printing the command(s)
+        /// and log entry(ies) each event produced.
+        #[arg(long = "step")]
+        step: bool,
+    },
+
+    /// Resume a recorded session from a trace and continue it with a new turn.
+    /// The brain is rebuilt from the trace's events (with no IO — recorded work
+    /// is not re-run), the policy is restored from the trace, and the continued
+    /// session keeps recording so it can be saved again (the Phase 3 P3-4 goal).
+    Resume {
+        /// Path to a `.trace.json` file produced by `--record` (or a prior
+        /// `resume`). The continued session is written back here by default.
+        trace: PathBuf,
+
+        /// The new user turn to add. If omitted, starts an interactive session
+        /// continuing from the trace.
+        prompt: Vec<String>,
+
+        /// Approve every tool call without prompting (the allow-all mode).
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+
+        /// Override the default model id used for the new turn(s).
+        #[arg(short = 'm', long = "model")]
+        model: Option<String>,
+
+        /// Write the extended session to a different trace file instead of back
+        /// to `<trace>` (so the original recording is left untouched).
+        #[arg(long = "record", value_name = "PATH")]
+        record: Option<PathBuf>,
+    },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut cli = Cli::parse();
+
+    match cli.command.take() {
+        Some(Cmd::Replay { trace, step }) => return run_replay(&trace, step),
+        Some(Cmd::Resume {
+            trace,
+            prompt,
+            yes,
+            model,
+            record,
+        }) => return run_resume(trace, prompt, yes, model, record).await,
+        None => {}
+    }
+
+    run_session(cli).await
+}
+
+/// Drive a live agent session (one-shot or interactive), optionally recording it.
+async fn run_session(cli: Cli) -> Result<()> {
+    let policy = select_policy(cli.yes);
+    let adapter = build_adapter(cli.model)?;
+    let recording = cli.record.is_some();
+    let mode = if cli.yes {
+        "auto-approve"
+    } else {
+        "interactive"
+    };
+    print_banner(&format!(
+        "hugr · model {} · {} · {mode}{}",
+        adapter.model(),
+        adapter.base_url(),
+        if recording { " · recording" } else { "" },
+    ));
+
+    // The `--full-output` flag forces full tool-result rendering; otherwise the
+    // frontend honours `HUGR_FULL_OUTPUT` on its own.
+    let frontend = StdoutFrontend::new();
+    let frontend = if cli.full_output {
+        frontend.with_full_output(true)
+    } else {
+        frontend
+    };
+
+    // --- the "CLI on a laptop" host: ~10 lines on top of hugr-host ----------
+    let mut builder = base_builder(adapter, policy)
+        .record(recording)
+        .frontend(Box::new(frontend));
+    // Load any --plugin programs and register their tools as capabilities.
+    for spec in &cli.plugins {
+        let mut parts = spec.split_whitespace();
+        let program = parts.next().unwrap_or_default();
+        let args: Vec<&str> = parts.collect();
+        let caps = hugr_host::plugins::load_subprocess(program, args)
+            .await
+            .with_context(|| format!("loading plugin `{spec}`"))?;
+        for cap in caps {
+            builder = builder.capability(cap);
+        }
+    }
+    let mut engine = builder.build();
+    // -------------------------------------------------------------------------
+
+    drive_session(
+        &mut engine,
+        cli.prompt,
+        "hugr — interactive session (Ctrl-D to exit)",
+        cli.record.as_deref(),
+    )
+    .await
+}
+
+/// `hugr resume <trace> [prompt...]` — load a trace, rebuild the brain from its
+/// recorded events (no IO: the recorded model/shell/http work is *not* re-run),
+/// then continue the session with a new turn. The continued session keeps
+/// recording and is saved back to `<trace>` by default (or to `--record <path>`),
+/// so it grows into a trace that still replays bit-for-bit (Phase 3 P3-4).
+async fn run_resume(
+    trace_path: PathBuf,
+    prompt: Vec<String>,
+    yes: bool,
+    model: Option<String>,
+    record: Option<PathBuf>,
+) -> Result<()> {
+    let trace = Trace::load(&trace_path)
+        .with_context(|| format!("loading trace {}", trace_path.display()))?;
+    // Default: write the grown session back to the same file (so it accumulates).
+    let out_path = record.unwrap_or_else(|| trace_path.clone());
+
+    let policy = select_policy(yes);
+    let adapter = build_adapter(model)?;
+    let mode = if yes { "auto-approve" } else { "interactive" };
+    print_banner(&format!(
+        "hugr · resuming {} ({} events) · model {} · {} · {mode} · recording → {}",
+        trace_path.display(),
+        trace.events.len(),
+        adapter.model(),
+        adapter.base_url(),
+        out_path.display(),
+    ));
+
+    // Resume rebuilds the brain from the trace (with zero IO) and restores the
+    // recorded policy; `.resume` implies recording so the grown session re-saves.
+    let mut engine = base_builder(adapter, policy).resume(trace).build();
+
+    drive_session(
+        &mut engine,
+        prompt,
+        "hugr — resumed interactive session (Ctrl-D to exit)",
+        Some(out_path.as_path()),
+    )
+    .await
+}
+
+/// The host permission policy for the chosen approval mode (`-y` = allow-all).
+fn select_policy(yes: bool) -> Arc<dyn Policy> {
+    if yes {
+        Arc::new(AllowAll)
+    } else {
+        Arc::new(Interactive)
+    }
+}
+
+/// Build the model adapter from the environment, applying a `--model` override.
+fn build_adapter(model: Option<String>) -> Result<OpenAiAdapter> {
+    let mut adapter = OpenAiAdapter::from_env()?;
+    if let Some(model) = model {
+        adapter = adapter.with_model(model);
+    }
+    Ok(adapter)
+}
+
+/// Print a startup banner to stderr, dimmed only on a real terminal (and not
+/// under `NO_COLOR`).
+fn print_banner(text: &str) {
+    if std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
+        eprintln!("\x1b[2m{text}\x1b[0m");
+    } else {
+        eprintln!("{text}");
+    }
+}
+
+/// The shared "CLI on a laptop" host: register the model + capabilities and the
+/// permission policy. Callers add `.record()`/`.resume()`/`.frontend()` and
+/// `.build()`. Keeping this in one place is what keeps the host setup ~10 lines.
+fn base_builder(adapter: OpenAiAdapter, policy: Arc<dyn Policy>) -> EngineBuilder {
+    Engine::builder()
+        .model(ModelSelector::named("big"), Arc::new(adapter))
+        .capability(Arc::new(Shell))
+        .capability(Arc::new(FsRead))
+        .capability(Arc::new(FsWrite))
+        .capability(Arc::new(Http::new()))
+        // A `task` sub-agent tool (Phase 6): the model can delegate a self-
+        // contained unit of work to a child agent seeded with the full context.
+        // The child reuses this host's tools (optionally narrowed via `tools`).
+        .agent(task_agent_schema(), AgentSeed::ForkFull)
+        .system_prompt(SYSTEM_PROMPT)
+        .policy(policy)
+}
+
+/// The schema advertised for the built-in `task` sub-agent tool.
+fn task_agent_schema() -> ToolSchema {
+    ToolSchema::new(
+        "task",
+        "Delegate a self-contained sub-task to a child agent. It runs with its \
+         own turn loop and the same tools, and returns a text digest. Use for \
+         focused work you want handled end-to-end (e.g. 'find and summarize all \
+         TODOs').",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "prompt": { "type": "string", "description": "The sub-task instruction." },
+                "tools": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional allowlist of tool names the sub-agent may use."
+                }
+            },
+            "required": ["prompt"]
+        }),
+    )
+}
+
+/// Run the session: a one-shot turn if `prompt` is non-empty, otherwise an
+/// interactive REPL (`intro` is its header). Saves the recording to `out_path`
+/// (if any) at the end. Shared by the live and resumed paths.
+async fn drive_session(
+    engine: &mut Engine,
+    prompt: Vec<String>,
+    intro: &str,
+    out_path: Option<&std::path::Path>,
+) -> Result<()> {
+    if !prompt.is_empty() {
+        engine.user_turn(prompt.join(" ")).await;
+        engine.session_end();
+        return save_recording(engine, out_path);
+    }
+
+    println!("{intro}");
+    loop {
+        print!("\n› ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            println!();
+            engine.session_end();
+            break; // EOF
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        engine.user_turn(line.to_string()).await;
+    }
+
+    save_recording(engine, out_path)
+}
+
+/// Persist the recorded session, if `--record` was given.
+fn save_recording(engine: &Engine, path: Option<&std::path::Path>) -> Result<()> {
+    if let Some(path) = path {
+        engine
+            .save_trace(path)
+            .with_context(|| format!("saving trace to {}", path.display()))?;
+        eprintln!("recorded session → {}", path.display());
+    }
+    Ok(())
+}
+
+/// `hugr replay <trace>` — load a trace, reconstruct the session through a
+/// fresh brain, and verify the reconstructed log matches bit-for-bit. With
+/// `--step`, walk it one event at a time first.
+fn run_replay(path: &std::path::Path, step: bool) -> Result<()> {
+    let trace = Trace::load(path).with_context(|| format!("loading trace {}", path.display()))?;
+    eprintln!(
+        "replaying {} · {} events · {} log entries · format v{}",
+        path.display(),
+        trace.events.len(),
+        trace.log.len(),
+        trace.meta.format_version,
+    );
+
+    if step {
+        print_steps(&trace);
+    }
+
+    // The Phase 3 exit criterion: reconstruct commands + log bit-for-bit.
+    let replay = hugr_host::hugr_replay::verify(&trace)
+        .context("replay did not reconstruct the recorded log bit-for-bit")?;
+
+    eprintln!(
+        "✓ replay reconstructed {} commands; log matches the recording bit-for-bit",
+        replay.commands.len(),
+    );
+    Ok(())
+}
+
+/// Step through a trace, printing each event with the commands and log entries
+/// it produced. Host-side inspector; no IO of its own beyond stdout.
+fn print_steps(trace: &Trace) {
+    let mut inspector = Inspector::new(trace);
+    let total = inspector.len();
+    while let Some(step) = inspector.step() {
+        println!("\n── step {}/{} ─────────────", step.index + 1, total);
+        println!("  event:   {}", summarize_event(&step.event));
+        if step.commands.is_empty() {
+            println!("  command: (none)");
+        } else {
+            for cmd in &step.commands {
+                println!("  command: {}", summarize_command(cmd));
+            }
+        }
+        for entry in &step.appended {
+            println!("  log[{}]: {:?}", entry.seq.0, entry.record);
+        }
+    }
+}
+
+fn summarize_event(event: &Event) -> String {
+    use Event::*;
+    match event {
+        Tick { now } => format!("Tick(now={})", now.0),
+        UserInput { content, mode } => format!("UserInput({content} · {mode:?})"),
+        UserAbort => "UserAbort".to_string(),
+        ModelDelta { op, .. } => format!("ModelDelta(op={})", op.0),
+        ModelDone { op, .. } => format!("ModelDone(op={})", op.0),
+        ModelError { op, .. } => format!("ModelError(op={})", op.0),
+        CapabilityChunk { op, .. } => format!("CapabilityChunk(op={})", op.0),
+        CapabilityDone { op, .. } => format!("CapabilityDone(op={})", op.0),
+        CapabilityError { op, .. } => format!("CapabilityError(op={})", op.0),
+        AgentDone { op, .. } => format!("AgentDone(op={})", op.0),
+        AgentError { op, .. } => format!("AgentError(op={})", op.0),
+        PermissionDecision { op, decision } => {
+            format!("PermissionDecision(op={} · {decision:?})", op.0)
+        }
+        OpCancelled { op } => format!("OpCancelled(op={})", op.0),
+        other => format!("{other:?}"),
+    }
+}
+
+fn summarize_command(cmd: &Command) -> String {
+    match cmd {
+        Command::StartModelCall { op, model, .. } => {
+            format!("StartModelCall(op={} · {model:?})", op.0)
+        }
+        Command::StartCapability { op, name, .. } => {
+            format!("StartCapability(op={} · {name})", op.0)
+        }
+        Command::StartAgent { op, seed, .. } => {
+            format!("StartAgent(op={} · seed {} entries)", op.0, seed.len())
+        }
+        Command::RequestPermission { op, request } => {
+            format!("RequestPermission(op={} · {})", op.0, request.capability)
+        }
+        Command::Cancel { op } => format!("Cancel(op={})", op.0),
+        Command::Emit(_) => "Emit(…)".to_string(),
+        Command::Checkpoint => "Checkpoint".to_string(),
+        Command::Done { reason } => format!("Done({reason:?})"),
+        other => format!("{other:?}"),
+    }
+}

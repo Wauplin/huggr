@@ -1,45 +1,45 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/baton-core",
-    "crates/baton-host",
-    "crates/baton-providers",
-    "crates/baton-cli",
-    "crates/baton-replay",
-    "crates/baton-plugin-abi",
-    "crates/baton-example-plugin",
-    "crates/baton-wasm",
+    "crates/hugr-core",
+    "crates/hugr-host",
+    "crates/hugr-providers",
+    "crates/hugr-cli",
+    "crates/hugr-replay",
+    "crates/hugr-plugin-abi",
+    "crates/hugr-example-plugin",
+    "crates/hugr-wasm",
 ]
 
-# The full crate layout (see docs/ARCHITECTURE.md §10) still adds baton-model,
-# baton-py and baton-js over later phases. Phase 0 shipped the pure, sans-IO
-# brain (`baton-core`); Phase 1 adds the native host, an OpenAI provider adapter,
-# and the showcase CLI; Phase 3 adds `baton-replay` (the versioned, portable
-# trace format); Phase 5 adds `baton-plugin-abi` (the versioned plugin contract +
-# subprocess transport) and `baton-example-plugin` (a standalone example plugin);
-# Phase 4 adds `baton-wasm` (the browser/JS binding — the same brain compiled to
+# The full crate layout (see docs/ARCHITECTURE.md §10) still adds hugr-model,
+# hugr-py and hugr-js over later phases. Phase 0 shipped the pure, sans-IO
+# brain (`hugr-core`); Phase 1 adds the native host, an OpenAI provider adapter,
+# and the showcase CLI; Phase 3 adds `hugr-replay` (the versioned, portable
+# trace format); Phase 5 adds `hugr-plugin-abi` (the versioned plugin contract +
+# subprocess transport) and `hugr-example-plugin` (a standalone example plugin);
+# Phase 4 adds `hugr-wasm` (the browser/JS binding — the same brain compiled to
 # WASM, driving a Chrome extension with no backend). Phase 6 (sub-agents & forks)
-# is entirely inside baton-core + baton-host. All host crates may touch IO (or,
-# for baton-wasm, the JS host does); never `baton-core`.
+# is entirely inside hugr-core + hugr-host. All host crates may touch IO (or,
+# for hugr-wasm, the JS host does); never `hugr-core`.
 
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/baton-rs/baton"
+repository = "https://github.com/hugr-rs/hugr"
 rust-version = "1.85"
 
 [workspace.dependencies]
-# Pure data (used by baton-core too).
+# Pure data (used by hugr-core too).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Host-side (IO/runtime) deps — never used by baton-core.
-baton-core = { path = "crates/baton-core" }
-baton-host = { path = "crates/baton-host" }
-baton-providers = { path = "crates/baton-providers" }
-baton-replay = { path = "crates/baton-replay" }
-baton-plugin-abi = { path = "crates/baton-plugin-abi" }
+# Host-side (IO/runtime) deps — never used by hugr-core.
+hugr-core = { path = "crates/hugr-core" }
+hugr-host = { path = "crates/hugr-host" }
+hugr-providers = { path = "crates/hugr-providers" }
+hugr-replay = { path = "crates/hugr-replay" }
+hugr-plugin-abi = { path = "crates/hugr-plugin-abi" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"
@@ -47,7 +47,7 @@ async-trait = "0.1"
 anyhow = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive", "env"] }
-# Content-addressed blob hashing (host-side persistence; never in baton-core).
+# Content-addressed blob hashing (host-side persistence; never in hugr-core).
 sha2 = "0.10"
 
 # Release profile leaning toward the "tiny footprint" goal (ARCHITECTURE §11).

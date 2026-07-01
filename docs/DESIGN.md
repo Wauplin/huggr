@@ -1,6 +1,6 @@
 # Design Document
 
-> **Name:** `Baton` (published as `baton-rs`; see `BRANDING.md`). A lightweight, embeddable, runtime-free agent harness written in Rust.
+> **Name:** `Hugr` (published as `hugr-rs`; see `BRANDING.md`). A lightweight, embeddable, runtime-free agent harness written in Rust.
 
 ## 1. Vision
 
@@ -149,7 +149,7 @@ This enables what polling-based harnesses cannot:
 A deliberate payoff of "the conversation is *not* the state": four capabilities that other harnesses build as separate, hard-to-retrofit subsystems collapse into operations on the append-only event log. See `ARCHITECTURE.md` §§12–16 for the concrete mechanics.
 
 - **Saving a trace** = the event log made durable. We persist the ordered event stream (not derived state), with large payloads referenced as content-addressed blobs. Traces are portable (record on a server, replay in a browser), and are the same substrate used for replay, debugging, test fixtures, and resume. Saving is a *host capability* (disk, IndexedDB, HTTP, a Hub repo) — the core never decides where a trace goes.
-- **Sub-agents ("agent subprocess")** = *another `baton-core` instance*. Spawning one is a `StartAgent` op that behaves like any other in-flight op (stream, observe, cancel, attribute cost). The host chooses isolation — in-process, worktree, or subprocess/remote — over the *same* brain↔host contract, so sub-agents reuse the entire run-anywhere story.
+- **Sub-agents ("agent subprocess")** = *another `hugr-core` instance*. Spawning one is a `StartAgent` op that behaves like any other in-flight op (stream, observe, cancel, attribute cost). The host chooses isolation — in-process, worktree, or subprocess/remote — over the *same* brain↔host contract, so sub-agents reuse the entire run-anywhere story.
 - **Forks** = copying a log prefix (copy-on-write). This single primitive powers sub-agent context sharing, branching/"what-if", rewind/edit-resume, and speculative execution. Results flow back as *values*, not log merges — forks diverge, results return one-directionally (no CRDT pain).
 - **Cron / scheduling** = a *host-side* scheduler (the core has no clock; time is injected) that fires a trigger by injecting an event into a session — either resuming an existing trace, targeting a named persistent session, or starting fresh per fire. No special core support beyond resume + event injection, both of which already exist.
 
@@ -189,7 +189,7 @@ Smaller open questions (defaults leaning one way, decide during implementation):
 - WASM component model maturity vs a simpler custom ABI for v1 plugins.
 - How rich the canonical model representation needs to be for v1 (which provider-specific fields are first-class from the start).
 - Sub-agent context sharing semantics (fork the log vs reference-shared log).
-- Whether/when to add the `baton-hub` (Hugging Face integration) crate from `BRANDING.md` to the crate layout and roadmap.
+- Whether/when to add the `hugr-hub` (Hugging Face integration) crate from `BRANDING.md` to the crate layout and roadmap.
 
 **Resolved** (designed; see the referenced architecture sections):
 

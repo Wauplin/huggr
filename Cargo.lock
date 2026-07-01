@@ -82,104 +82,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "baton-cli"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "baton-core",
- "baton-host",
- "baton-providers",
- "clap",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "baton-core"
-version = "0.0.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "baton-example-plugin"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "baton-core",
- "baton-host",
- "baton-plugin-abi",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "baton-host"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "baton-core",
- "baton-plugin-abi",
- "baton-replay",
- "futures-util",
- "reqwest",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "baton-plugin-abi"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "baton-core",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "baton-providers"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "baton-core",
- "baton-host",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "baton-replay"
-version = "0.0.0"
-dependencies = [
- "baton-core",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
-]
-
-[[package]]
-name = "baton-wasm"
-version = "0.0.0"
-dependencies = [
- "baton-core",
- "console_error_panic_hook",
- "serde",
- "serde_json",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -490,6 +392,104 @@ name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+
+[[package]]
+name = "hugr-cli"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hugr-core",
+ "hugr-host",
+ "hugr-providers",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "hugr-core"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hugr-example-plugin"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hugr-core",
+ "hugr-host",
+ "hugr-plugin-abi",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "hugr-host"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures-util",
+ "hugr-core",
+ "hugr-plugin-abi",
+ "hugr-replay",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "hugr-plugin-abi"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "hugr-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "hugr-providers"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures-util",
+ "hugr-core",
+ "hugr-host",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "hugr-replay"
+version = "0.0.0"
+dependencies = [
+ "hugr-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "hugr-wasm"
+version = "0.0.0"
+dependencies = [
+ "console_error_panic_hook",
+ "hugr-core",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "hyper"

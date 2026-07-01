@@ -207,7 +207,7 @@ Tool outputs and large inputs are stored by hash; the log holds the reference. T
 pub struct BlobRef { hash: Hash, len: u64, media: MediaType }
 ```
 
-Implemented (P3-2): `baton-replay::BlobStore` is the disk-backed, content-addressed store (SHA-256 keys, `"sha256:<hex>"`; identical content dedupes to one file). It produces `BlobRef`s in the exact shape the trace's `BlobManifest` carries, so a large payload offloaded by digest rehydrates on load. `baton-host` exposes it as an ordinary `blob` capability (not a privileged built-in; opaque `Value` args/results) — a browser host can swap in a different store. The store's `std::fs` IO lives in the host-side persistence crate; `baton-core` stays sans-IO.
+Implemented (P3-2): `hugr-replay::BlobStore` is the disk-backed, content-addressed store (SHA-256 keys, `"sha256:<hex>"`; identical content dedupes to one file). It produces `BlobRef`s in the exact shape the trace's `BlobManifest` carries, so a large payload offloaded by digest rehydrates on load. `hugr-host` exposes it as an ordinary `blob` capability (not a privileged built-in; opaque `Value` args/results) — a browser host can swap in a different store. The store's `std::fs` IO lives in the host-side persistence crate; `hugr-core` stays sans-IO.
 
 ### 3.4 Compaction is a model op, not a function
 
@@ -532,7 +532,7 @@ host provides to plugin (imports):
 - **Subprocess/MCP** for heavy or language-agnostic tools where weight is acceptable (server hosts only). Adapted into the same `Capability` interface.
 - **Compile-time** capabilities for the batteries-included defaults (native shell/fs/http), shipped with the default host.
 
-Implemented (Phase 5): `baton-plugin-abi` owns the versioned, narrow contract (`describe`/`invoke`/`on_event` as tagged JSON, an integer `PROTOCOL_VERSION`, opaque `Value` payloads) behind a single transport-agnostic `PluginTransport` trait. The **subprocess** transport (`SubprocessPlugin`, stdio JSON) is the working default — a plugin is any external program, in any language, in its own repo, needing no core recompile and unable to touch core internals. The **WASM component** transport (the primary ABI above) is scaffolded behind the `wasm` feature (`WasmPlugin`) against the same trait; its wasmtime backend lands with Phase 4. The host wraps a loaded plugin's tools as ordinary `Capability`s (`baton_host::plugins`) — no privileged plugins, mirroring "no privileged built-ins". `on_event` is defined but not yet delivered by the host (narrow now, widen later).
+Implemented (Phase 5): `hugr-plugin-abi` owns the versioned, narrow contract (`describe`/`invoke`/`on_event` as tagged JSON, an integer `PROTOCOL_VERSION`, opaque `Value` payloads) behind a single transport-agnostic `PluginTransport` trait. The **subprocess** transport (`SubprocessPlugin`, stdio JSON) is the working default — a plugin is any external program, in any language, in its own repo, needing no core recompile and unable to touch core internals. The **WASM component** transport (the primary ABI above) is scaffolded behind the `wasm` feature (`WasmPlugin`) against the same trait; its wasmtime backend lands with Phase 4. The host wraps a loaded plugin's tools as ordinary `Capability`s (`hugr_host::plugins`) — no privileged plugins, mirroring "no privileged built-ins". `on_event` is defined but not yet delivered by the host (narrow now, widen later).
 
 ## 9. Front-ends
 
@@ -547,27 +547,27 @@ Rendering is never inside the core; multiple front-ends can attach to one sessio
 ## 10. Crate layout (proposed)
 
 ```
-baton-core         # sans-IO brain: state, log, projection, op table, reducer.
+hugr-core         # sans-IO brain: state, log, projection, op table, reducer.
                    # NO tokio, NO reqwest, NO fs. #![no_std]-friendly if feasible.
-baton-model        # canonical ModelRequest/Delta + provider adapter traits.
-baton-providers    # Anthropic/OpenAI/... adapters (host-side, behind features).
-baton-host         # default native host: tokio driver, reqwest, shell/fs/http
+hugr-model        # canonical ModelRequest/Delta + provider adapter traits.
+hugr-providers    # Anthropic/OpenAI/... adapters (host-side, behind features).
+hugr-host         # default native host: tokio driver, reqwest, shell/fs/http
                    # capabilities, disk blob store, interactive policy.
-baton-cli          # the batteries-included showcase CLI (≈ thin wrapper).
-baton-wasm         # wasm-bindgen host glue for browser/extension.
-baton-py           # PyO3 bindings (poll/submit exposed).
-baton-js           # napi/wasm bindings for Node/Deno.
-baton-plugin-abi   # WASM component world definition + host loader.
-baton-replay       # versioned, portable TRACE format (save/load) + replay/inspect.
-                   # Host-side persistence: depends on baton-core as pure data,
+hugr-cli          # the batteries-included showcase CLI (≈ thin wrapper).
+hugr-wasm         # wasm-bindgen host glue for browser/extension.
+hugr-py           # PyO3 bindings (poll/submit exposed).
+hugr-js           # napi/wasm bindings for Node/Deno.
+hugr-plugin-abi   # WASM component world definition + host loader.
+hugr-replay       # versioned, portable TRACE format (save/load) + replay/inspect.
+                   # Host-side persistence: depends on hugr-core as pure data,
                    # may use std::fs — never pulls IO into the core. (Phase 3.)
 ```
 
-Dependency rule: **`baton-core` depends on nothing environmental.** Everything async/IO/provider-specific lives outside it.
+Dependency rule: **`hugr-core` depends on nothing environmental.** Everything async/IO/provider-specific lives outside it.
 
 ## 11. Sizing & performance targets (initial)
 
-- `baton-core` compiled to WASM: low single-digit MB, ideally < 2 MB gzipped.
+- `hugr-core` compiled to WASM: low single-digit MB, ideally < 2 MB gzipped.
 - Cold start (instantiate + first `poll`): single-digit ms.
 - Steady-state per-event reduce: microseconds (append-only buffer updates).
 - Memory per idle session: dominated by the log/blobs, not the runtime.
@@ -607,9 +607,9 @@ The brain emits `Command::Checkpoint`; the host serializes the current trace (ap
 
 ## 13. Sub-agents (the "agent subprocess")
 
-A sub-agent is **not a special subsystem** — it is *another `baton-core` instance*. Because the core is tiny, pure, and runtime-free, spawning one is cheap, and an arbitrarily deep tree of agents is just a tree of brains.
+A sub-agent is **not a special subsystem** — it is *another `hugr-core` instance*. Because the core is tiny, pure, and runtime-free, spawning one is cheap, and an arbitrarily deep tree of agents is just a tree of brains.
 
-Implemented (Phase 6): `Command::StartAgent { op, config, seed }` is emitted (instead of `StartCapability`) when the pluggable `TurnPolicy::agent_seed(capability)` designates a tool as a sub-agent spawner — *strategy* in the policy, not hardcoded in the reducer. `config` is the opaque tool-call args (host-interpreted: prompt/model/tools); `seed` is the forked log prefix (§14). The child runs **in-process** as a spawned host task (`baton_host::agent::run_agent`) reusing a subset of the parent's model + capability registries; its ops live in a `JoinSet` so a parent `Cancel` tears down the subtree. Its digest returns as `Event::AgentDone { op, result }` (a text answer + aggregated usage), folded back like any tool result. Nested agents work with no special case. Replay is flattened (§13.3): the parent trace records each child's `AgentDone`, so re-feeding it reconstructs the parent bit-for-bit without re-running children.
+Implemented (Phase 6): `Command::StartAgent { op, config, seed }` is emitted (instead of `StartCapability`) when the pluggable `TurnPolicy::agent_seed(capability)` designates a tool as a sub-agent spawner — *strategy* in the policy, not hardcoded in the reducer. `config` is the opaque tool-call args (host-interpreted: prompt/model/tools); `seed` is the forked log prefix (§14). The child runs **in-process** as a spawned host task (`hugr_host::agent::run_agent`) reusing a subset of the parent's model + capability registries; its ops live in a `JoinSet` so a parent `Cancel` tears down the subtree. Its digest returns as `Event::AgentDone { op, result }` (a text answer + aggregated usage), folded back like any tool result. Nested agents work with no special case. Replay is flattened (§13.3): the parent trace records each child's `AgentDone`, so re-feeding it reconstructs the parent bit-for-bit without re-running children.
 
 ### 13.1 A sub-agent is an op
 
@@ -703,7 +703,7 @@ Scheduling lives entirely in the **host** (the core has no clock — time is inj
 | **Fresh per fire**   | New empty log, submit the trigger as the first event         | Each firing starts from a clean slate                    |
 
 ```rust
-// Host-side scheduler (NOT in baton-core).
+// Host-side scheduler (NOT in hugr-core).
 struct Schedule { cron: CronExpr, target: TriggerTarget, prompt: String }
 enum TriggerTarget { ResumeSession(SessionId), Persistent(SessionId), FreshSession }
 ```
@@ -729,7 +729,7 @@ That is the payoff of "the conversation is *not* the state": every advanced runt
 | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | Interface over-/under-engineered (hard to host, weak, or breaks on extension) | Narrow waist: type only what the brain branches on; opaque payloads elsewhere; `#[non_exhaustive]` (§2.4) |
 | Traces balloon from per-token deltas                                          | Deltas are transport-only; persist consolidated records + blobs (§4.5)                                    |
-| Sans-IO makes the simple case painful                                         | Ship `baton-host` + `baton-cli`; "CLI on laptop" ≈ 10 lines                                               |
+| Sans-IO makes the simple case painful                                         | Ship `hugr-host` + `hugr-cli`; "CLI on laptop" ≈ 10 lines                                               |
 | Streaming re-entrancy complexity                                              | Op table + cheap append handlers; coalesce host-side                                                      |
 | WASM component model immaturity                                               | Start with a simpler custom WASM ABI; migrate when stable                                                 |
 | Canonical model type too thin to use providers well                           | First-class cache/reasoning/tool-call fields + opaque `extra` from v1                                     |

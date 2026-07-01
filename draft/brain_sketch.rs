@@ -1,4 +1,4 @@
-//! baton-core — EARLY SKETCH, not meant to compile or be complete.
+//! hugr-core — EARLY SKETCH, not meant to compile or be complete.
 //!
 //! Purpose: make concrete *what the brain actually does*. Read top to bottom.
 //! The whole point: the brain is SMALL. It is a reducer + a turn policy +

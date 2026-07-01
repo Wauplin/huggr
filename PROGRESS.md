@@ -363,6 +363,19 @@ Tests:
 - `hugr-cli::tests::coding_agent_schema_declares_defaults` pins named subagent schema defaults.
 - Verification run: `cargo test -p hugr-core sub_agent -q`; `cargo test -p hugr-host coding_agent_defaults_constrain_tools_and_tiers -q`; `cargo test -p hugr-cli coding_agent_schema_declares_defaults -q`; `cargo check -p hugr-cli -q`.
 
+### D9 — Terminal UX ✅
+
+Done:
+
+- The CLI front-end decision is documented in `docs/ARCHITECTURE.md`: stay with stdout streaming for now instead of adopting a TUI framework. This keeps logs copyable and avoids the TUI one-way-door while the agent loop is still evolving.
+- `StdoutFrontend` now tracks active model/tool ops and renders a stable status line showing active models and tools (including background ops such as `cargo_verify`), plus an idle status when work drains.
+- Existing compact/collapsible tool cards, token/cost footer metrics, `/status` context counters, and full-output toggle remain the stdout strategy for noisy sessions.
+
+Tests:
+
+- `hugr-host::frontend::tests::status_text_tracks_active_model_and_tools` pins active/idle status-line rendering.
+- Verification run: `cargo test -p hugr-host status_text_tracks_active_model_and_tools -q`; `cargo check -p hugr-host -q`.
+
 ## Phase 0 — Pure core skeleton (no IO) ✅
 
 **Goal:** the brain exists as a pure state machine with zero IO.

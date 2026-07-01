@@ -556,6 +556,8 @@ The core emits `OutputEvent`s via `Command::Emit`. Any number of front-ends subs
 
 Rendering is never inside the core; multiple front-ends can attach to one session simultaneously.
 
+Implemented CLI decision (ROADMAP_2 D9): the native CLI stays on the stdout-streaming front-end for now, rather than adopting a TUI framework. This keeps logs copyable, works in dumb terminals and CI, and avoids taking the TUI dependency/API one-way door before the agent loop stabilizes. The stdout front-end owns readable status lines, compact tool cards, active background-op lists, token/cost/context counters surfaced by `/status`, and calm idle states; a future TUI can still subscribe to the same `OutputEvent`/lifecycle hooks without changing `hugr-core`.
+
 ## 10. Crate layout (proposed)
 
 ```

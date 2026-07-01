@@ -157,6 +157,9 @@ pub struct StdoutFrontend {
     /// Wall-clock start of each in-flight model/tool op, for per-call elapsed
     /// timing. Measured host-side (`Instant`) so `hugr-core` stays clock-free.
     started: HashMap<OpId, Instant>,
+    /// Active model/tool labels for the stdout status line (ROADMAP_2 D9).
+    active_models: HashMap<OpId, String>,
+    active_tools: HashMap<OpId, String>,
     /// Running session totals, rendered as a footer at session end.
     metrics: Metrics,
 }
@@ -172,6 +175,8 @@ impl Default for StdoutFrontend {
             streaming: false,
             full_output: env_truthy("HUGR_FULL_OUTPUT"),
             started: HashMap::new(),
+            active_models: HashMap::new(),
+            active_tools: HashMap::new(),
             metrics: Metrics::default(),
         }
     }
@@ -235,6 +240,38 @@ impl StdoutFrontend {
     fn line(&mut self, text: String) {
         self.break_stream();
         println!("{text}");
+    }
+
+    fn status_text(&self) -> String {
+        let mut parts = Vec::new();
+        if self.active_models.is_empty() {
+            parts.push("model idle".to_string());
+        } else {
+            let mut models = self
+                .active_models
+                .iter()
+                .map(|(op, label)| format!("{label} {op}"))
+                .collect::<Vec<_>>();
+            models.sort();
+            parts.push(format!("model {}", models.join(", ")));
+        }
+        if self.active_tools.is_empty() {
+            parts.push("tools idle".to_string());
+        } else {
+            let mut tools = self
+                .active_tools
+                .iter()
+                .map(|(op, label)| format!("{label} {op}"))
+                .collect::<Vec<_>>();
+            tools.sort();
+            parts.push(format!("tools {}", tools.join(", ")));
+        }
+        format!("status: {}", parts.join(" · "))
+    }
+
+    fn status_line(&mut self) {
+        let line = self.paint(style::DIM, &self.status_text());
+        self.line(line);
     }
 
     /// Build the (already styled) lines a tool result renders to. Pure, so the
@@ -315,13 +352,16 @@ impl Frontend for StdoutFrontend {
             ModelSelector::Named(name) => name.as_str(),
             _ => "?",
         };
+        self.active_models.insert(op, name.to_string());
         let marker = self.paint(style::CYAN, "●");
         let label = self.paint(style::DIM, &format!("model [{name}] {op}"));
         self.line(format!("{marker} {label}"));
+        self.status_line();
     }
 
     fn on_model_end(&mut self, op: OpId, usage: &Usage) {
         let elapsed = self.take_elapsed(op);
+        self.active_models.remove(&op);
         self.metrics.add_model(usage, elapsed);
 
         // Build the per-call metric line: cost, tokens, and (if measurable)
@@ -340,14 +380,17 @@ impl Frontend for StdoutFrontend {
             parts.push(fmt_elapsed(elapsed));
         }
         if parts.is_empty() {
+            self.status_line();
             return; // no usage/timing reported
         }
         let line = self.paint(style::GRAY, &format!("  ↳ {}", parts.join(" · ")));
         self.line(line);
+        self.status_line();
     }
 
     fn on_tool_start(&mut self, op: OpId, name: &str, args: &Value) {
         self.started.insert(op, Instant::now());
+        self.active_tools.insert(op, name.to_string());
         let marker = self.paint(style::YELLOW, "⚙");
         let name = self.paint(style::BOLD, name);
         let args = self.paint(style::DIM, &truncate(&compact(args), 160));
@@ -355,10 +398,12 @@ impl Frontend for StdoutFrontend {
             "{marker} {name} {args} {}",
             self.paint(style::GRAY, &op.to_string())
         ));
+        self.status_line();
     }
 
     fn on_tool_end(&mut self, op: OpId, name: &str, result: &Value, is_error: bool) {
         let elapsed = self.take_elapsed(op);
+        self.active_tools.remove(&op);
         self.metrics.add_tool(elapsed);
         for line in self.tool_end_lines(name, result, is_error) {
             self.line(line);
@@ -367,6 +412,7 @@ impl Frontend for StdoutFrontend {
             let line = self.paint(style::GRAY, &format!("    {}", fmt_elapsed(elapsed)));
             self.line(line);
         }
+        self.status_line();
     }
 
     fn on_permission(&mut self, capability: &str, decision: &Decision) {
@@ -383,7 +429,7 @@ impl Frontend for StdoutFrontend {
     fn on_done(&mut self, reason: &DoneReason) {
         self.break_stream();
         match reason {
-            DoneReason::EndTurn => {}
+            DoneReason::EndTurn => self.status_line(),
             DoneReason::Cancelled => println!("{}", self.paint(style::YELLOW, "⚠ cancelled")),
             DoneReason::Error(msg) => {
                 eprintln!("{}", self.paint(style::RED, &format!("✗ error: {msg}")));
@@ -533,6 +579,20 @@ mod tests {
             "small result should not collapse:\n{joined}"
         );
         assert!(joined.contains("hello"));
+    }
+
+    #[test]
+    fn status_text_tracks_active_model_and_tools() {
+        let mut fe = StdoutFrontend::new().with_color(false);
+        assert_eq!(fe.status_text(), "status: model idle · tools idle");
+        fe.active_models.insert(OpId(1), "medium".to_string());
+        fe.active_tools.insert(OpId(2), "cargo_verify".to_string());
+        let status = fe.status_text();
+        assert!(status.contains("model medium op:1"));
+        assert!(status.contains("tools cargo_verify op:2"));
+        fe.active_models.remove(&OpId(1));
+        fe.active_tools.remove(&OpId(2));
+        assert_eq!(fe.status_text(), "status: model idle · tools idle");
     }
 
     /// Metrics fold model usage (tokens + cost) and tool elapsed into totals.

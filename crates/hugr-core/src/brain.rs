@@ -72,11 +72,20 @@ impl Brain {
     /// of the brain's logic.
     pub fn submit(&mut self, event: Event) {
         match event {
-            Event::UserInput { content, mode } => self.on_user_input(content, mode),
+            Event::UserInput {
+                content,
+                mode,
+                est_tokens,
+            } => self.on_user_input(content, mode, est_tokens),
             Event::UserAbort => self.cancel_all_inflight(),
 
             Event::ModelDelta { op, delta } => self.on_model_delta(op, delta),
-            Event::ModelDone { op, output, usage } => self.on_model_done(op, output, usage),
+            Event::ModelDone {
+                op,
+                output,
+                usage,
+                est_tokens,
+            } => self.on_model_done(op, output, usage, est_tokens),
             Event::ModelError { op, error } => self.on_model_error(op, error),
 
             Event::CapabilityChunk { op, chunk } => {
@@ -86,18 +95,36 @@ impl Brain {
                 op,
                 result,
                 version,
-            } => self.on_capability_done(op, result, version),
+                est_tokens,
+            } => self.on_capability_done(op, result, version, est_tokens),
             Event::CapabilityError {
                 op,
                 error,
                 conflict,
-            } => self.on_capability_error(op, error, conflict),
+                est_tokens,
+            } => self.on_capability_error(op, error, conflict, est_tokens),
 
-            Event::AgentDone { op, result } => self.on_agent_done(op, result),
-            Event::AgentError { op, error } => self.on_agent_error(op, error),
+            Event::AgentDone {
+                op,
+                result,
+                est_tokens,
+            } => self.on_agent_done(op, result, est_tokens),
+            Event::AgentError {
+                op,
+                error,
+                est_tokens,
+            } => self.on_agent_error(op, error, est_tokens),
 
-            Event::UserAnswer { op, answer } => self.on_user_answer(op, answer),
-            Event::PermissionDecision { op, decision } => self.on_permission_decision(op, decision),
+            Event::UserAnswer {
+                op,
+                answer,
+                est_tokens,
+            } => self.on_user_answer(op, answer, est_tokens),
+            Event::PermissionDecision {
+                op,
+                decision,
+                est_tokens,
+            } => self.on_permission_decision(op, decision, est_tokens),
 
             Event::OpCancelled { op } => self.on_op_cancelled(op),
 
@@ -109,9 +136,10 @@ impl Brain {
     // Event handlers
     // ========================================================================
 
-    fn on_user_input(&mut self, content: Value, mode: SteerMode) {
+    fn on_user_input(&mut self, content: Value, mode: SteerMode, est_tokens: u32) {
         self.append(Record::UserMessage {
             text: stringify(&content),
+            est_tokens,
         });
 
         if !self.state.is_busy() {
@@ -161,10 +189,11 @@ impl Brain {
         }
     }
 
-    fn on_model_done(&mut self, op: OpId, output: ModelOutput, usage: Usage) {
+    fn on_model_done(&mut self, op: OpId, output: ModelOutput, usage: Usage, est_tokens: u32) {
         self.append(Record::ModelOutput {
             op,
             output: output.clone(),
+            est_tokens,
         });
         self.end_op(op, OpOutcome::Ok, Some(usage));
 
@@ -208,7 +237,13 @@ impl Brain {
         self.done(DoneReason::Error(stringify(&error)));
     }
 
-    fn on_capability_done(&mut self, op: OpId, result: Value, version: Option<VersionRef>) {
+    fn on_capability_done(
+        &mut self,
+        op: OpId,
+        result: Value,
+        version: Option<VersionRef>,
+        est_tokens: u32,
+    ) {
         if let Some(v) = version {
             self.state.record_version(v.object, v.version);
         }
@@ -218,12 +253,19 @@ impl Brain {
             name,
             call_id,
             result,
+            est_tokens,
         });
         self.end_op(op, OpOutcome::Ok, None);
         self.maybe_resume_model_turn();
     }
 
-    fn on_capability_error(&mut self, op: OpId, error: Value, conflict: Option<VersionRef>) {
+    fn on_capability_error(
+        &mut self,
+        op: OpId,
+        error: Value,
+        conflict: Option<VersionRef>,
+        est_tokens: u32,
+    ) {
         // A stale-edit conflict refreshes the read-set so the model's next edit
         // is stamped correctly; otherwise it is an ordinary error result fed
         // back to the model (ARCHITECTURE §5.4, §7.3).
@@ -236,12 +278,13 @@ impl Brain {
             name,
             call_id,
             result: error.clone(),
+            est_tokens,
         });
         self.end_op(op, OpOutcome::Error(error), None);
         self.maybe_resume_model_turn();
     }
 
-    fn on_agent_done(&mut self, op: OpId, result: Value) {
+    fn on_agent_done(&mut self, op: OpId, result: Value, est_tokens: u32) {
         // A sub-agent result returns to the parent as a tool-result-shaped value
         // the next model turn consumes (ARCHITECTURE §13.1/§14.3): the child's
         // digest flows back as *one* value; forks diverge, results flow back.
@@ -251,24 +294,26 @@ impl Brain {
             name,
             call_id,
             result,
+            est_tokens,
         });
         self.end_op(op, OpOutcome::Ok, None);
         self.maybe_resume_model_turn();
     }
 
-    fn on_agent_error(&mut self, op: OpId, error: Value) {
+    fn on_agent_error(&mut self, op: OpId, error: Value, est_tokens: u32) {
         let (name, call_id) = self.tool_ids(op);
         self.append(Record::ToolResult {
             op,
             name,
             call_id,
             result: error.clone(),
+            est_tokens,
         });
         self.end_op(op, OpOutcome::Error(error), None);
         self.maybe_resume_model_turn();
     }
 
-    fn on_user_answer(&mut self, op: OpId, answer: Value) {
+    fn on_user_answer(&mut self, op: OpId, answer: Value, est_tokens: u32) {
         // The answer to an `AskUser` becomes a tool-result-shaped value the next
         // model turn consumes.
         let (name, call_id) = self.tool_ids(op);
@@ -277,12 +322,13 @@ impl Brain {
             name,
             call_id,
             result: answer,
+            est_tokens,
         });
         self.end_op(op, OpOutcome::Ok, None);
         self.maybe_resume_model_turn();
     }
 
-    fn on_permission_decision(&mut self, op: OpId, decision: Decision) {
+    fn on_permission_decision(&mut self, op: OpId, decision: Decision, est_tokens: u32) {
         match decision {
             Decision::Allow => {
                 // Resume the stashed tool call, reusing the same op id.
@@ -312,6 +358,7 @@ impl Brain {
                     name,
                     call_id,
                     result: result.clone(),
+                    est_tokens,
                 });
                 self.end_op(op, OpOutcome::Error(result), None);
                 self.maybe_resume_model_turn();

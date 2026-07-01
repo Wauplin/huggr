@@ -185,7 +185,7 @@ impl TurnPolicy for StaticPolicy {
         }
         for entry in log {
             match &entry.record {
-                Record::UserMessage { text } => {
+                Record::UserMessage { text, .. } => {
                     blocks.push(ContextBlock::new(
                         Role::User,
                         vec![ContentPart::Text(text.clone())],

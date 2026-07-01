@@ -18,6 +18,7 @@ fn session_events() -> Vec<Event> {
         Event::UserInput {
             content: json!("run echo hi"),
             mode: SteerMode::Queue,
+            est_tokens: 1,
         },
         // model asks for a shell tool call (op 0 is the first model call)
         tick(2),
@@ -29,6 +30,7 @@ fn session_events() -> Vec<Event> {
                 json!({ "cmd": "echo hi" }),
             )]),
             usage: Usage::new(10, 2),
+            est_tokens: 2,
         },
         // shell op (op 1) returns
         tick(3),
@@ -36,6 +38,7 @@ fn session_events() -> Vec<Event> {
             op: OpId(1),
             result: json!({ "stdout": "hi\n", "exit": 0 }),
             version: None,
+            est_tokens: 1,
         },
         // model's final answer (op 2), no tool calls → turn ends
         tick(4),
@@ -43,6 +46,7 @@ fn session_events() -> Vec<Event> {
             op: OpId(2),
             output: ModelOutput::text("It printed: hi"),
             usage: Usage::new(20, 5),
+            est_tokens: 5,
         },
     ]
 }

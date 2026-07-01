@@ -23,6 +23,7 @@ fn sample_events() -> Vec<Event> {
         Event::UserInput {
             content: json!("run `echo hi` and tell me the output"),
             mode: SteerMode::Queue,
+            est_tokens: 1,
         },
         Event::ModelDelta {
             op: OpId(1),
@@ -36,10 +37,12 @@ fn sample_events() -> Vec<Event> {
                 json!({ "cmd": "echo hi" }),
             )]),
             usage: Usage::new(42, 8),
+            est_tokens: 8,
         },
         Event::PermissionDecision {
             op: OpId(2),
             decision: Decision::Allow,
+            est_tokens: 1,
         },
         Event::CapabilityChunk {
             op: OpId(2),
@@ -49,11 +52,13 @@ fn sample_events() -> Vec<Event> {
             op: OpId(2),
             result: json!({ "stdout": "hi\n", "exit": 0 }),
             version: None,
+            est_tokens: 1,
         },
         Event::ModelDone {
             op: OpId(3),
             output: ModelOutput::text("It printed: hi"),
             usage: Usage::new(60, 5),
+            est_tokens: 5,
         },
     ]
 }
@@ -66,6 +71,7 @@ fn sample_log() -> Vec<LogEntry> {
             at: Timestamp(1_000),
             record: Record::UserMessage {
                 text: "run `echo hi` and tell me the output".to_string(),
+                est_tokens: 10,
             },
         },
         LogEntry {
@@ -78,6 +84,7 @@ fn sample_log() -> Vec<LogEntry> {
                     "shell",
                     json!({ "cmd": "echo hi" }),
                 )]),
+                est_tokens: 8,
             },
         },
         LogEntry {
@@ -88,6 +95,7 @@ fn sample_log() -> Vec<LogEntry> {
                 name: "shell".to_string(),
                 call_id: "call_1".to_string(),
                 result: json!({ "stdout": "hi\n", "exit": 0 }),
+                est_tokens: 8,
             },
         },
         // `OpEnded` carries `OpMeta`, which is `#[non_exhaustive]` (no struct
@@ -117,6 +125,7 @@ fn sample_log() -> Vec<LogEntry> {
             record: Record::ModelOutput {
                 op: OpId(3),
                 output: ModelOutput::text("It printed: hi"),
+                est_tokens: 5,
             },
         },
         LogEntry {

@@ -50,5 +50,6 @@ pub fn user(text: &str) -> Event {
     Event::UserInput {
         content: json!(text),
         mode: hugr_core::SteerMode::Queue,
+        est_tokens: 1,
     }
 }

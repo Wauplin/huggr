@@ -1013,7 +1013,7 @@ async fn resume_from_trace_continues_the_session() {
     assert!(
         grown_logical.iter().any(|r| matches!(
             r,
-            Record::UserMessage { text } if text == "thanks"
+            Record::UserMessage { text, .. } if text == "thanks"
         )),
         "the new user turn is in the grown log"
     );
@@ -1153,7 +1153,7 @@ async fn durable_checkpoint_resumes_after_mid_turn_crash() {
     assert!(
         grown.log.iter().any(|entry| matches!(
             &entry.record,
-            Record::UserMessage { text } if text == "continue"
+            Record::UserMessage { text, .. } if text == "continue"
         )),
         "continued prompt is in the durable log"
     );
@@ -1203,7 +1203,7 @@ async fn scheduled_trigger_fires_into_named_persistent_session() {
         .filter(|entry| {
             matches!(
                 &entry.record,
-                Record::UserMessage { text } if text == "scheduled prompt"
+                Record::UserMessage { text, .. } if text == "scheduled prompt"
             )
         })
         .count();

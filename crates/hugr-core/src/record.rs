@@ -26,11 +26,23 @@ pub struct LogEntry {
 #[non_exhaustive]
 pub enum Record {
     /// A conversational message from the user.
-    UserMessage { text: String },
+    UserMessage {
+        text: String,
+        /// Host-provided approximate token count. The brain stores/sums this
+        /// value but never tokenizes content itself (ARCHITECTURE §3.5).
+        #[serde(default)]
+        est_tokens: u32,
+    },
 
     /// A consolidated model output (the authoritative result of a model call).
     /// Phase 0 stores it inline; later phases may store a [`Value`] blob ref.
-    ModelOutput { op: OpId, output: ModelOutput },
+    ModelOutput {
+        op: OpId,
+        output: ModelOutput,
+        /// Host/provider-provided approximate token count for this content.
+        #[serde(default)]
+        est_tokens: u32,
+    },
 
     /// A tool/capability result fed back into the conversation. (Also used for
     /// denials and conflicts, which are just error-shaped results to the model.)
@@ -43,6 +55,9 @@ pub enum Record {
         /// this (not the op id) to correlate the two.
         call_id: String,
         result: Value,
+        /// Host-provided approximate token count for this content.
+        #[serde(default)]
+        est_tokens: u32,
     },
 
     /// An operation ended; carries per-op metadata (timing, cost, selector) so

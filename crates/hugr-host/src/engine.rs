@@ -184,6 +184,7 @@ impl Engine {
         self.submit(Event::UserInput {
             content: json!(text),
             mode: SteerMode::Queue,
+            est_tokens: estimate_text_tokens(&text),
         });
         self.drive_to_idle().await;
     }
@@ -361,11 +362,11 @@ impl Engine {
                 self.frontend.on_tool_end(*op, &name, error, true);
             }
             // A sub-agent completing reads like a tool completing to the front-end.
-            Event::AgentDone { op, result } => {
+            Event::AgentDone { op, result, .. } => {
                 let name = self.op_labels.remove(op).unwrap_or_default();
                 self.frontend.on_tool_end(*op, &name, result, false);
             }
-            Event::AgentError { op, error } => {
+            Event::AgentError { op, error, .. } => {
                 let name = self.op_labels.remove(op).unwrap_or_default();
                 self.frontend.on_tool_end(*op, &name, error, true);
             }
@@ -390,7 +391,15 @@ impl Engine {
                     let handle = tokio::spawn(async move {
                         let sink = ModelSink::new(op, tx.clone());
                         let event = match adapter.call(request, &sink).await {
-                            Ok((output, usage)) => Event::ModelDone { op, output, usage },
+                            Ok((output, usage)) => {
+                                let est_tokens = model_output_est_tokens(&output, &usage);
+                                Event::ModelDone {
+                                    op,
+                                    output,
+                                    usage,
+                                    est_tokens,
+                                }
+                            }
                             Err(error) => Event::ModelError {
                                 op,
                                 error: json!({ "message": error.to_string() }),
@@ -418,11 +427,13 @@ impl Engine {
                         let event = match capability.invoke(args, &sink).await {
                             Ok(result) => Event::CapabilityDone {
                                 op,
+                                est_tokens: estimate_value_tokens(&result),
                                 result,
                                 version: None,
                             },
                             Err(error) => Event::CapabilityError {
                                 op,
+                                est_tokens: estimate_value_tokens(&error),
                                 error,
                                 conflict: None,
                             },
@@ -434,6 +445,9 @@ impl Engine {
                 None => {
                     let _ = self.tx.send(Event::CapabilityError {
                         op,
+                        est_tokens: estimate_value_tokens(&json!({
+                            "error": format!("unknown capability: {name}")
+                        })),
                         error: json!({ "error": format!("unknown capability: {name}") }),
                         conflict: None,
                     });
@@ -466,14 +480,21 @@ impl Engine {
             Command::RequestPermission { op, request } => {
                 let decision = self.policy.decide(&request).await;
                 self.frontend.on_permission(&request.capability, &decision);
-                let _ = self.tx.send(Event::PermissionDecision { op, decision });
+                let est_tokens = permission_decision_est_tokens(&decision);
+                let _ = self.tx.send(Event::PermissionDecision {
+                    op,
+                    decision,
+                    est_tokens,
+                });
             }
 
             Command::AskUser { op, prompt } => {
                 let answer = ask_user(&prompt.message).await;
+                let est_tokens = estimate_text_tokens(&answer);
                 let _ = self.tx.send(Event::UserAnswer {
                     op,
                     answer: Value::String(answer),
+                    est_tokens,
                 });
             }
 
@@ -535,6 +556,36 @@ fn system_clock() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+pub(crate) fn estimate_text_tokens(text: &str) -> u32 {
+    let bytes = text.len() as u64;
+    bytes.div_ceil(4).max(1).min(u32::MAX as u64) as u32
+}
+
+pub(crate) fn estimate_value_tokens(value: &Value) -> u32 {
+    match value {
+        Value::String(text) => estimate_text_tokens(text),
+        other => estimate_text_tokens(&other.to_string()),
+    }
+}
+
+pub(crate) fn model_output_est_tokens(
+    output: &hugr_core::ModelOutput,
+    usage: &hugr_core::Usage,
+) -> u32 {
+    if usage.output_tokens > 0 {
+        return usage.output_tokens.min(u32::MAX as u64) as u32;
+    }
+    estimate_text_tokens(&output.text)
+}
+
+pub(crate) fn permission_decision_est_tokens(decision: &hugr_core::Decision) -> u32 {
+    match decision {
+        hugr_core::Decision::Allow => 0,
+        hugr_core::Decision::Deny { reason } => estimate_text_tokens(reason),
+        _ => 0,
+    }
 }
 
 /// Builds an [`Engine`]: register models + capabilities, then `build()`. The

@@ -30,7 +30,10 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::task::{AbortHandle, JoinSet};
 
 use crate::capability::{CapabilityRegistry, ChunkSink};
-use crate::engine::Clock;
+use crate::engine::{
+    Clock, estimate_text_tokens, estimate_value_tokens, model_output_est_tokens,
+    permission_decision_est_tokens,
+};
 use crate::model::{ModelRegistry, ModelSink};
 use crate::policy::Policy;
 
@@ -65,8 +68,16 @@ pub(crate) fn run_agent(
         )
         .await
         {
-            Ok(result) => Event::AgentDone { op, result },
-            Err(error) => Event::AgentError { op, error },
+            Ok(result) => Event::AgentDone {
+                op,
+                est_tokens: estimate_value_tokens(&result),
+                result,
+            },
+            Err(error) => Event::AgentError {
+                op,
+                est_tokens: estimate_value_tokens(&error),
+                error,
+            },
         };
         // If the parent has gone away (its receiver dropped), there is nothing to
         // report to — the whole subtree is being torn down anyway.
@@ -160,6 +171,7 @@ async fn drive_agent(
         Event::UserInput {
             content: json!(prompt),
             mode: SteerMode::Queue,
+            est_tokens: estimate_text_tokens(&prompt),
         },
     );
 
@@ -230,7 +242,15 @@ fn perform_child(
                     let handle = join.spawn(async move {
                         let sink = ModelSink::new(op, tx.clone());
                         let event = match adapter.call(request, &sink).await {
-                            Ok((output, usage)) => Event::ModelDone { op, output, usage },
+                            Ok((output, usage)) => {
+                                let est_tokens = model_output_est_tokens(&output, &usage);
+                                Event::ModelDone {
+                                    op,
+                                    output,
+                                    usage,
+                                    est_tokens,
+                                }
+                            }
                             Err(error) => Event::ModelError {
                                 op,
                                 error: json!({ "message": error.to_string() }),
@@ -258,11 +278,13 @@ fn perform_child(
                         let event = match capability.invoke(args, &sink).await {
                             Ok(result) => Event::CapabilityDone {
                                 op,
+                                est_tokens: estimate_value_tokens(&result),
                                 result,
                                 version: None,
                             },
                             Err(error) => Event::CapabilityError {
                                 op,
+                                est_tokens: estimate_value_tokens(&error),
                                 error,
                                 conflict: None,
                             },
@@ -272,9 +294,11 @@ fn perform_child(
                     handles.insert(op, handle);
                 }
                 None => {
+                    let error = json!({ "error": format!("unknown capability: {name}") });
                     let _ = tx.send(Event::CapabilityError {
                         op,
-                        error: json!({ "error": format!("unknown capability: {name}") }),
+                        est_tokens: estimate_value_tokens(&error),
+                        error,
                         conflict: None,
                     });
                 }
@@ -303,16 +327,23 @@ fn perform_child(
             let policy = ctx.policy.clone();
             join.spawn(async move {
                 let decision = policy.decide(&request).await;
-                let _ = tx.send(Event::PermissionDecision { op, decision });
+                let est_tokens = permission_decision_est_tokens(&decision);
+                let _ = tx.send(Event::PermissionDecision {
+                    op,
+                    decision,
+                    est_tokens,
+                });
             });
         }
 
         Command::AskUser { op, .. } => {
             // Sub-agents are non-interactive: there is no user at this layer.
             // Answer with a semantic error so the child's model can react.
+            let answer = json!({ "error": "ask_user_unsupported_in_sub_agent" });
             let _ = ctx.tx.send(Event::UserAnswer {
                 op,
-                answer: json!({ "error": "ask_user_unsupported_in_sub_agent" }),
+                est_tokens: estimate_value_tokens(&answer),
+                answer,
             });
         }
 

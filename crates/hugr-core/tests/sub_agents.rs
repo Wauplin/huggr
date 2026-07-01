@@ -46,17 +46,20 @@ fn model_delegates_to_sub_agent_and_folds_result() {
                 op: OpId(0),
                 output: tool_output("call-1", "task", json!({ "prompt": "do the thing" })),
                 usage: usage(),
+                est_tokens: 1,
             },
             // The child returns a digest (op 1) → folds back as a tool result.
             Event::AgentDone {
                 op: OpId(1),
                 result: json!({ "text": "child did the thing", "usage": { "input_tokens": 5, "output_tokens": 7 } }),
+                est_tokens: 1,
             },
             // The parent model gives a final answer → turn done.
             Event::ModelDone {
                 op: OpId(2),
                 output: text_output("The sub-agent finished."),
                 usage: usage(),
+                est_tokens: 1,
             },
         ],
     );
@@ -119,6 +122,7 @@ fn fork_full_seeds_the_child_with_the_parent_log() {
                 op: OpId(0),
                 output: tool_output("call-1", "task", json!({ "prompt": "child" })),
                 usage: usage(),
+                est_tokens: 1,
             },
         ],
     );
@@ -146,6 +150,7 @@ fn fork_at_seeds_only_the_prefix() {
                 op: OpId(0),
                 output: tool_output("call-1", "task", json!({ "prompt": "child" })),
                 usage: usage(),
+                est_tokens: 1,
             },
         ],
     );
@@ -168,6 +173,7 @@ fn fresh_seeds_an_empty_child() {
                 op: OpId(0),
                 output: tool_output("call-1", "task", json!({ "prompt": "child" })),
                 usage: usage(),
+                est_tokens: 1,
             },
         ],
     );
@@ -195,21 +201,25 @@ fn fan_out_joins_and_replays_deterministically() {
                     ToolCall::new("b", "task", json!({ "prompt": "second" })),
                 ]),
                 usage: usage(),
+                est_tokens: 1,
             },
             // First child returns — must NOT resume the model yet.
             Event::AgentDone {
                 op: OpId(1),
                 result: json!({ "text": "first done" }),
+                est_tokens: 1,
             },
             // Second child returns — now the model resumes.
             Event::AgentDone {
                 op: OpId(2),
                 result: json!({ "text": "second done" }),
+                est_tokens: 1,
             },
             Event::ModelDone {
                 op: OpId(3),
                 output: text_output("Both workers finished."),
                 usage: usage(),
+                est_tokens: 1,
             },
         ]
     };

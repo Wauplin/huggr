@@ -551,7 +551,7 @@ fn summarize_event(event: &Event) -> String {
     use Event::*;
     match event {
         Tick { now } => format!("Tick(now={})", now.0),
-        UserInput { content, mode } => format!("UserInput({content} · {mode:?})"),
+        UserInput { content, mode, .. } => format!("UserInput({content} · {mode:?})"),
         UserAbort => "UserAbort".to_string(),
         ModelDelta { op, .. } => format!("ModelDelta(op={})", op.0),
         ModelDone { op, .. } => format!("ModelDone(op={})", op.0),
@@ -561,7 +561,7 @@ fn summarize_event(event: &Event) -> String {
         CapabilityError { op, .. } => format!("CapabilityError(op={})", op.0),
         AgentDone { op, .. } => format!("AgentDone(op={})", op.0),
         AgentError { op, .. } => format!("AgentError(op={})", op.0),
-        PermissionDecision { op, decision } => {
+        PermissionDecision { op, decision, .. } => {
             format!("PermissionDecision(op={} · {decision:?})", op.0)
         }
         OpCancelled { op } => format!("OpCancelled(op={})", op.0),

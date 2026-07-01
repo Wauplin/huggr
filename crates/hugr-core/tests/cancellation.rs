@@ -147,6 +147,7 @@ fn stale_op_cancelled_after_done_is_ignored() {
                 op: OpId(0),
                 output: text_output("done"),
                 usage: usage(),
+                est_tokens: 1,
             },
             // ...then the late cancel confirmation for the same op arrives.
             Event::OpCancelled { op: OpId(0) },
@@ -200,6 +201,7 @@ fn cancelling_a_background_op_mid_stream_does_not_end_the_turn() {
                 op: OpId(0),
                 output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
                 usage: usage(),
+                est_tokens: 1,
             },
             // Cancel just the background shell op while the model (op 2) streams.
             Event::OpCancelled { op: OpId(1) },
@@ -209,6 +211,7 @@ fn cancelling_a_background_op_mid_stream_does_not_end_the_turn() {
                 op: OpId(2),
                 output: text_output("All set."),
                 usage: usage(),
+                est_tokens: 1,
             },
         ],
     );

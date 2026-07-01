@@ -43,6 +43,7 @@ fn model_stream_and_background_shell_run_concurrently() {
                 op: OpId(0),
                 output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
                 usage: usage(),
+                est_tokens: 1,
             },
             // Now op 1 (shell) and op 2 (model) are both in flight. Their events
             // interleave in arrival order:
@@ -64,6 +65,7 @@ fn model_stream_and_background_shell_run_concurrently() {
                 op: OpId(2),
                 output: text_output("Build kicked off."),
                 usage: usage(),
+                est_tokens: 1,
             },
             // The shell (op 1) exits — reacted to instantly via the event. Its
             // result is folded in and a fresh turn (op 3) picks it up.
@@ -71,12 +73,14 @@ fn model_stream_and_background_shell_run_concurrently() {
                 op: OpId(1),
                 result: json!({ "exit_code": 0, "stdout": "Finished" }),
                 version: None,
+                est_tokens: 1,
             },
             // The final model call ends the turn.
             Event::ModelDone {
                 op: OpId(3),
                 output: text_output("Build finished successfully."),
                 usage: usage(),
+                est_tokens: 1,
             },
         ],
     );
@@ -116,6 +120,7 @@ fn concurrent_ops_replay_is_deterministic() {
                 op: OpId(0),
                 output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
                 usage: usage(),
+                est_tokens: 1,
             },
             Event::ModelDelta {
                 op: OpId(2),
@@ -129,16 +134,19 @@ fn concurrent_ops_replay_is_deterministic() {
                 op: OpId(2),
                 output: text_output("Build kicked off."),
                 usage: usage(),
+                est_tokens: 1,
             },
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "exit_code": 0 }),
                 version: None,
+                est_tokens: 1,
             },
             Event::ModelDone {
                 op: OpId(3),
                 output: text_output("Done."),
                 usage: usage(),
+                est_tokens: 1,
             },
         ]
     };
@@ -183,6 +191,7 @@ fn background_op_does_not_gate_a_concurrent_foreground_op() {
                 op: OpId(0),
                 output: two_calls,
                 usage: usage(),
+                est_tokens: 1,
             },
             // The background shell finishes first — must NOT resume the model,
             // because the foreground http op (op 2) still blocks the turn.
@@ -190,17 +199,20 @@ fn background_op_does_not_gate_a_concurrent_foreground_op() {
                 op: OpId(1),
                 result: json!({ "exit_code": 0 }),
                 version: None,
+                est_tokens: 1,
             },
             // The foreground http finishes — now the model resumes (op 3).
             Event::CapabilityDone {
                 op: OpId(2),
                 result: json!({ "status": 200 }),
                 version: None,
+                est_tokens: 1,
             },
             Event::ModelDone {
                 op: OpId(3),
                 output: text_output("All done."),
                 usage: usage(),
+                est_tokens: 1,
             },
         ],
     );

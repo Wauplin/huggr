@@ -33,6 +33,7 @@ fn representative_script() -> Vec<Event> {
             op: OpId(0),
             output: tool_output("c1", "shell", json!({ "cmd": "ls" })),
             usage: usage(),
+            est_tokens: 1,
         },
         Event::CapabilityChunk {
             op: OpId(1),
@@ -42,6 +43,7 @@ fn representative_script() -> Vec<Event> {
             op: OpId(1),
             result: json!({ "stdout": "a.txt" }),
             version: None,
+            est_tokens: 1,
         },
         Event::Tick {
             now: Timestamp(1_500),
@@ -50,6 +52,7 @@ fn representative_script() -> Vec<Event> {
             op: OpId(2),
             output: text_output("One file: a.txt."),
             usage: usage(),
+            est_tokens: 1,
         },
     ]
 }
@@ -108,6 +111,7 @@ fn deltas_do_not_affect_the_log() {
             op: OpId(0),
             output: text_output("hello"),
             usage: usage(),
+            est_tokens: 1,
         },
     ];
     let without_deltas = vec![
@@ -116,6 +120,7 @@ fn deltas_do_not_affect_the_log() {
             op: OpId(0),
             output: text_output("hello"),
             usage: usage(),
+            est_tokens: 1,
         },
     ];
 

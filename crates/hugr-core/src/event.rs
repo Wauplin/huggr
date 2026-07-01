@@ -18,6 +18,9 @@ pub enum Event {
     UserInput {
         content: Value,
         mode: SteerMode,
+        /// Host-provided approximate token count for the durable user message.
+        #[serde(default)]
+        est_tokens: u32,
     },
     /// Pure control signal: cancel current activity, no new content (e.g. ESC).
     UserAbort,
@@ -32,6 +35,10 @@ pub enum Event {
         op: OpId,
         output: ModelOutput,
         usage: Usage,
+        /// Host/provider-provided approximate token count for the durable
+        /// assistant message. The brain stores it and never tokenizes.
+        #[serde(default)]
+        est_tokens: u32,
     },
     ModelError {
         op: OpId,
@@ -50,6 +57,9 @@ pub enum Event {
         op: OpId,
         result: Value,
         version: Option<VersionRef>,
+        /// Host-provided approximate token count for the durable tool result.
+        #[serde(default)]
+        est_tokens: u32,
     },
     /// A capability failed. `conflict` is set when the host's atomic CAS
     /// rejected a stale mutation.
@@ -57,26 +67,39 @@ pub enum Event {
         op: OpId,
         error: Value,
         conflict: Option<VersionRef>,
+        /// Host-provided approximate token count for the durable tool error.
+        #[serde(default)]
+        est_tokens: u32,
     },
 
     // --- sub-agents (full handling lands in Phase 6) -------------------------
     AgentDone {
         op: OpId,
         result: Value,
+        #[serde(default)]
+        est_tokens: u32,
     },
     AgentError {
         op: OpId,
         error: Value,
+        #[serde(default)]
+        est_tokens: u32,
     },
 
     // --- brain asks ----------------------------------------------------------
     UserAnswer {
         op: OpId,
         answer: Value,
+        #[serde(default)]
+        est_tokens: u32,
     },
     PermissionDecision {
         op: OpId,
         decision: Decision,
+        /// Host-provided approximate token count for a denied permission result
+        /// routed back to the model. `Allow` produces no durable content.
+        #[serde(default)]
+        est_tokens: u32,
     },
 
     /// An op the host aborted (in response to a [`Cancel`](crate::Command::Cancel),

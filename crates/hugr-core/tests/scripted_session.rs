@@ -25,18 +25,21 @@ fn user_model_tool_model_done() {
                 op: OpId(0),
                 output: tool_output("call-1", "shell", json!({ "cmd": "ls" })),
                 usage: usage(),
+                est_tokens: 1,
             },
             // 3. Tool finishes (op 1 result) → brain calls the model again (op 2).
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "stdout": "a.txt\nb.txt" }),
                 version: None,
+                est_tokens: 1,
             },
             // 4. Model gives a final answer with no tool calls → turn is done.
             Event::ModelDone {
                 op: OpId(2),
                 output: text_output("There are two files: a.txt and b.txt."),
                 usage: usage(),
+                est_tokens: 1,
             },
         ],
     );
@@ -56,6 +59,19 @@ fn user_model_tool_model_done() {
         ),
         "unexpected command sequence: {effectful:#?}"
     );
+
+    let tokens: Vec<u32> = brain
+        .state()
+        .log()
+        .iter()
+        .filter_map(|entry| match &entry.record {
+            hugr_core::Record::UserMessage { est_tokens, .. }
+            | hugr_core::Record::ModelOutput { est_tokens, .. }
+            | hugr_core::Record::ToolResult { est_tokens, .. } => Some(*est_tokens),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tokens, vec![1, 1, 1, 1]);
 }
 
 /// The same session, but the tool requires permission. The sequence gains a
@@ -74,21 +90,25 @@ fn permissioned_tool_round_trip() {
                 op: OpId(0),
                 output: tool_output("call-1", "shell", json!({ "cmd": "rm -rf ." })),
                 usage: usage(),
+                est_tokens: 1,
             },
             // Brain asked for permission on op 1; the policy grants it.
             Event::PermissionDecision {
                 op: OpId(1),
                 decision: hugr_core::Decision::Allow,
+                est_tokens: 1,
             },
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "ok": true }),
                 version: None,
+                est_tokens: 1,
             },
             Event::ModelDone {
                 op: OpId(2),
                 output: text_output("Done."),
                 usage: usage(),
+                est_tokens: 1,
             },
         ],
     );
@@ -127,17 +147,20 @@ fn denied_permission_feeds_error_back() {
                 op: OpId(0),
                 output: tool_output("call-1", "shell", json!({ "cmd": "rm -rf ." })),
                 usage: usage(),
+                est_tokens: 1,
             },
             Event::PermissionDecision {
                 op: OpId(1),
                 decision: hugr_core::Decision::Deny {
                     reason: "too dangerous".to_string(),
                 },
+                est_tokens: 1,
             },
             Event::ModelDone {
                 op: OpId(2),
                 output: text_output("Understood, I won't."),
                 usage: usage(),
+                est_tokens: 1,
             },
         ],
     );
@@ -182,23 +205,27 @@ fn parallel_tool_calls_resume_once() {
                 op: OpId(0),
                 output: two_calls,
                 usage: usage(),
+                est_tokens: 1,
             },
             // First tool finishes — must NOT resume the model yet.
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "stdout": "x" }),
                 version: None,
+                est_tokens: 1,
             },
             // Second tool finishes — now the model resumes.
             Event::CapabilityDone {
                 op: OpId(2),
                 result: json!({ "status": 200 }),
                 version: None,
+                est_tokens: 1,
             },
             Event::ModelDone {
                 op: OpId(3),
                 output: text_output("All done."),
                 usage: usage(),
+                est_tokens: 1,
             },
         ],
     );

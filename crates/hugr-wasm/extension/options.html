@@ -24,6 +24,7 @@
 
     input[type="text"],
     input[type="password"],
+    textarea,
     select {
       width: 100%;
       padding: 8px;
@@ -32,6 +33,11 @@
       border: 1px solid var(--border);
       border-radius: 8px;
       font: inherit;
+    }
+
+    textarea {
+      min-height: 88px;
+      resize: vertical;
     }
 
     .row {
@@ -93,6 +99,10 @@
     <label for="autoApprove" style="margin: 0; font-weight: 400;">Yolo navigation tools (skip the auto-approve
       judge)</label>
   </div>
+
+  <label for="mcpServers">MCP servers</label>
+  <textarea id="mcpServers" spellcheck="false" placeholder='[{ "name": "fs", "command": "mcp-filesystem", "args": ["."] }]'></textarea>
+  <div class="hint">Chrome extensions cannot spawn stdio MCP servers directly. These declarations are stored for a native bridge; use the CLI <code>--mcp</code> path today.</div>
 
   <div class="footer">
     <button id="save" class="btn primary">Save</button>

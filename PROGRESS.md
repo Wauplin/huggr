@@ -204,6 +204,18 @@ Tests:
 - `crates/hugr-cli/src/main.rs` unit tests pin command-spec splitting and JSON config parsing for string and object MCP entries.
 - Verification run: `cargo test -p hugr-cli`.
 
+### C3 — Browser MCP limitation and settings fallback ✅
+
+Done:
+
+- The Chrome extension settings now store an `mcpServers` JSON array with the same name/command/args shape used by the CLI config, so user intent is configurable without changing the WASM brain contract.
+- The browser host explicitly documents and surfaces the MV3 limitation: extension pages cannot spawn local stdio subprocesses, so stdio MCP is unavailable without a native bridge or future browser-compatible transport. The side panel warns when MCP declarations are configured but inactive.
+- The extension README documents the supported fallback: use the native CLI `--mcp <cmd>` or `HUGR_CONFIG` MCP section today; the browser declarations are reserved for a native bridge / browser transport.
+
+Tests:
+
+- Verification run: `cargo test -p hugr-wasm`.
+
 ## Phase 0 — Pure core skeleton (no IO) ✅
 
 **Goal:** the brain exists as a pure state machine with zero IO.

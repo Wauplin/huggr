@@ -684,6 +684,12 @@ async function boot() {
   if (!currentConfig.apiKey) {
     banner("No API key set — open Settings (⚙) to add one before chatting.", "warn");
   }
+  if ((currentConfig.mcpServers || []).length) {
+    banner(
+      "MCP stdio servers are configured but unavailable in the browser host; use the CLI --mcp path or a future native bridge.",
+      "warn",
+    );
+  }
 
   startSession(currentConfig);
 }

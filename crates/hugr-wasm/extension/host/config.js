@@ -3,7 +3,8 @@
 // so the user sets these once on the Options page.
 
 /** @typedef {{ small: string, medium: string, big: string }} TierModels */
-/** @typedef {{ apiKey: string, baseUrl: string, model?: string, models: TierModels, autoApprove: boolean, temperature: number }} Config */
+/** @typedef {{ name?: string, command?: string, cmd?: string, args?: string[] }} McpServer */
+/** @typedef {{ apiKey: string, baseUrl: string, model?: string, models: TierModels, autoApprove: boolean, temperature: number, mcpServers: McpServer[] }} Config */
 
 /** Defaults mirror the native adapter: the Hugging Face router, OpenAI-compatible. */
 export const DEFAULTS = {
@@ -21,6 +22,9 @@ export const DEFAULTS = {
   // When true, navigation tools run in yolo mode and skip the judge.
   autoApprove: false,
   temperature: 0.2,
+  // Browser MV3 cannot spawn stdio MCP servers. Keep declarations here so the
+  // settings UI can document the fallback and a future bridge can reuse them.
+  mcpServers: [],
 };
 
 /** Load the merged config (defaults + stored overrides). @returns {Promise<Config>} */
@@ -35,6 +39,7 @@ export async function loadConfig() {
   for (const tier of ["small", "medium", "big"]) {
     if (!merged.models[tier]) merged.models[tier] = legacyModel;
   }
+  merged.mcpServers = Array.isArray(stored.mcpServers) ? stored.mcpServers : DEFAULTS.mcpServers;
   return merged;
 }
 

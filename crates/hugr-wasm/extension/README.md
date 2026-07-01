@@ -39,6 +39,8 @@ The header includes a new-chat button that clears the panel and starts a fresh W
 
 Each assistant response shows the logical tier it used (`small`, `medium`, or `big`). The composer tier menu defaults to `auto`; choosing a tier injects a recorded one-turn `ModelOverride` event and clears after the next normal model call consumes it.
 
+MCP server declarations can be saved in Settings, but Chrome MV3 pages cannot spawn local stdio subprocesses, so the browser host does not load stdio MCP directly. The supported fallback today is the native CLI `--mcp <cmd>` / `HUGR_CONFIG` path; the stored browser declarations are reserved for a future native bridge or browser-compatible MCP transport.
+
 ## The tools
 
 Read-only (no permission): `list_tabs`, `get_current_page`, `get_page_text`, `get_page_links`, `get_page_outline`, `get_interactive_elements`, `wait_for_page`.
@@ -54,4 +56,5 @@ Agent-UX: `ask_user_confirmation` (yes/no card), `show_plan` (numbered plan card
 - Chrome refuses script injection into privileged pages (`chrome://`, the Web Store, the PDF viewer, the new-tab page); the read tools return a clear semantic error there.
 - MV3 requires `'wasm-unsafe-eval'` in the extension CSP to instantiate WebAssembly — see `manifest.json`.
 - No clicking/typing/form submission by design (this build is read + navigate only).
+- Stdio MCP servers are not available from the browser host without a native bridge; configure and use them from the CLI for now.
 - Sub-agents (`Command::StartAgent`) are not wired in the browser host; they surface as a semantic error rather than hanging.

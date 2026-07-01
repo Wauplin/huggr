@@ -214,6 +214,16 @@ impl Engine {
         self.submit(Event::ModelOverride { selector });
     }
 
+    /// Persist a user-accepted/edited plan as durable future context
+    /// (ROADMAP_2 D4).
+    pub fn accept_plan(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.submit(Event::PlanAccepted {
+            est_tokens: estimate_text_tokens(&text),
+            text,
+        });
+    }
+
     /// A cloneable handle for injecting [`Event`]s into the running loop from
     /// *outside* a turn — e.g. a Ctrl-C / signal handler sending
     /// [`Event::UserAbort`] while [`user_turn`](Self::user_turn) is awaiting the

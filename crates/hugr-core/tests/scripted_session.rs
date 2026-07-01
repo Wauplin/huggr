@@ -200,6 +200,48 @@ fn versioned_tool_calls_stamp_expected_version_and_route_conflict_retry() {
 }
 
 #[test]
+fn accepted_plan_persists_and_projects_into_future_context() {
+    let mut brain = Brain::with_default_policy();
+    let commands = run_script(
+        &mut brain,
+        vec![
+            Event::PlanAccepted {
+                text: "1. Inspect failing test\n2. Patch parser\n3. Run cargo test".to_string(),
+                est_tokens: 12,
+            },
+            user("continue"),
+        ],
+    );
+
+    assert!(brain.state().log().iter().any(|entry| {
+        matches!(
+            &entry.record,
+            Record::Plan { text, est_tokens } if text.contains("Patch parser") && *est_tokens == 12
+        )
+    }));
+
+    let request = commands
+        .iter()
+        .find_map(|cmd| match cmd {
+            Command::StartModelCall { request, .. } => Some(request),
+            _ => None,
+        })
+        .expect("model request");
+    let rendered = request
+        .blocks
+        .iter()
+        .flat_map(|block| &block.content)
+        .filter_map(|part| match part {
+            ContentPart::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Accepted task plan"));
+    assert!(rendered.contains("Patch parser"));
+}
+
+#[test]
 fn skill_invocation_records_activation_and_projects_instructions() {
     let skill = SkillDescriptor::new(
         "rust-reviewer",

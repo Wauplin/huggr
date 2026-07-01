@@ -93,6 +93,10 @@ impl Brain {
             Event::UserAbort => self.cancel_all_inflight(),
             Event::CompactContext => self.on_compact_context(),
             Event::ModelOverride { selector } => self.state.set_model_override(selector),
+            Event::PlanAccepted { text, est_tokens } => {
+                self.append(Record::Plan { text, est_tokens });
+                self.checkpoint();
+            }
 
             Event::ModelDelta { op, delta } => self.on_model_delta(op, delta),
             Event::ModelDone {
@@ -939,6 +943,7 @@ fn render_summary_record(seq: Seq, record: &Record) -> Option<String> {
         Record::SkillActivated { id, title, .. } => {
             Some(format!("log:{} skill {} ({}) activated", seq.0, id, title))
         }
+        Record::Plan { text, .. } => Some(format!("log:{} accepted plan: {}", seq.0, text)),
         Record::OpEnded { .. } => None,
     }
 }

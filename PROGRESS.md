@@ -296,6 +296,19 @@ Tests:
 - `hugr-host::capabilities::patch::tests::patch_previews_applies_reverts_and_conflicts` proves preview is non-mutating, apply mutates, duplicate apply conflicts, and revert restores the file.
 - Verification run: `cargo test -p hugr-host patch_previews_applies_reverts_and_conflicts -q`.
 
+### D4 — Plan mode ✅
+
+Done:
+
+- `hugr-core` now accepts `Event::PlanAccepted` and appends durable `Record::Plan` entries with host-supplied token estimates. The default projection renders accepted plans as system context for future turns, and compaction summaries include them.
+- `hugr-host::Engine::accept_plan` injects accepted/edited plans through the normal event path so traces replay the same context.
+- `hugr-cli` exposes `/plan accept <text>`, `/plan edit <text>`, `/plan reject`, and `/plan`/`/status` display of the active durable plan.
+
+Tests:
+
+- `crates/hugr-core/tests/scripted_session.rs::accepted_plan_persists_and_projects_into_future_context` proves an accepted plan is recorded durably and projected into the next model request.
+- Verification run: `cargo test -p hugr-core accepted_plan_persists_and_projects_into_future_context -q`; `cargo check -p hugr-cli -q`.
+
 ## Phase 0 — Pure core skeleton (no IO) ✅
 
 **Goal:** the brain exists as a pure state machine with zero IO.

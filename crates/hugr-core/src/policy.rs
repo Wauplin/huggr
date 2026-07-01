@@ -784,6 +784,22 @@ impl TurnPolicy for StaticPolicy {
                         "active skill instructions from durable record",
                     ));
                 }
+                Record::Plan { text, est_tokens } => {
+                    let disposition = ContextDisposition::included(ContextBlock::new(
+                        Role::System,
+                        vec![ContentPart::Text(format!(
+                            "Accepted task plan from durable log:{}:\n{}",
+                            entry.seq.0, text
+                        ))],
+                    ));
+                    totals.add(&disposition, *est_tokens);
+                    entries.push(ContextPlanEntry::new(
+                        ContextSource::log_entry(entry.seq),
+                        *est_tokens,
+                        disposition,
+                        "accepted task plan from durable record",
+                    ));
+                }
                 // OpEnded entries are bookkeeping (timing/cost); they do not
                 // contribute to model context, but the plan still explains why
                 // the block is omitted.

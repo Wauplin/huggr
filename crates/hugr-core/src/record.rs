@@ -126,6 +126,14 @@ pub enum Record {
         est_tokens: u32,
     },
 
+    /// A user-accepted task plan. This is durable context, not model
+    /// self-restatement, so future turns can project it directly (ROADMAP_2 D4).
+    Plan {
+        text: String,
+        #[serde(default)]
+        est_tokens: u32,
+    },
+
     /// An operation ended; carries per-op metadata (timing, cost, selector) so
     /// latency and spend are queryable from the trace itself (ARCHITECTURE §4.1).
     OpEnded {
@@ -145,7 +153,9 @@ impl Record {
             | Record::ToolResult { op, .. }
             | Record::Summary { op, .. }
             | Record::OpEnded { op, .. } => Some(*op),
-            Record::UserMessage { .. } | Record::SkillActivated { .. } => None,
+            Record::UserMessage { .. } | Record::SkillActivated { .. } | Record::Plan { .. } => {
+                None
+            }
         }
     }
 
@@ -157,7 +167,9 @@ impl Record {
             | Record::ModelOutput { est_tokens, .. }
             | Record::ToolResult { est_tokens, .. } => Some(*est_tokens),
             Record::Summary { est_tokens_out, .. } => Some(*est_tokens_out),
-            Record::SkillActivated { est_tokens, .. } => Some(*est_tokens),
+            Record::SkillActivated { est_tokens, .. } | Record::Plan { est_tokens, .. } => {
+                Some(*est_tokens)
+            }
             Record::OpEnded { .. } => None,
         }
     }

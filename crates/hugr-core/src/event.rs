@@ -35,6 +35,13 @@ pub enum Event {
     ModelOverride {
         selector: Option<ModelSelector>,
     },
+    /// Host/user accepted or edited a short task plan. The accepted plan is
+    /// durable context for future turns (ROADMAP_2 D4).
+    PlanAccepted {
+        text: String,
+        #[serde(default)]
+        est_tokens: u32,
+    },
 
     // --- model streaming (transport only; never logged) ---------------------
     ModelDelta {

@@ -719,6 +719,10 @@ async fn handle_repl_command(
             print_skills(engine, host_status);
             Ok(true)
         }
+        "/plan" => {
+            handle_plan_command(engine, parts.collect::<Vec<_>>().join(" "));
+            Ok(true)
+        }
         _ if command.starts_with('/') => {
             eprintln!("unknown command: {line}");
             Ok(true)
@@ -757,6 +761,31 @@ fn print_tier_override(engine: &Engine) {
     }
 }
 
+fn handle_plan_command(engine: &mut Engine, rest: String) {
+    let rest = rest.trim();
+    if rest.is_empty() {
+        print_active_plan(engine);
+        return;
+    }
+    let Some((action, text)) = rest.split_once(char::is_whitespace) else {
+        match rest {
+            "reject" => println!("plan rejected"),
+            "accept" | "edit" => eprintln!("usage: /plan {rest} <plan text>"),
+            _ => eprintln!("usage: /plan [accept <text>|edit <text>|reject]"),
+        }
+        return;
+    };
+    let text = text.trim();
+    match action {
+        "accept" | "edit" if !text.is_empty() => {
+            engine.accept_plan(text.to_string());
+            println!("accepted plan recorded");
+        }
+        "accept" | "edit" => eprintln!("usage: /plan {action} <plan text>"),
+        _ => eprintln!("usage: /plan [accept <text>|edit <text>|reject]"),
+    }
+}
+
 fn print_status(engine: &Engine, tier_mapping: &str, host_status: &HostStatus) {
     let plan = engine.context_plan();
     let report = spend_report(engine.brain().state().log());
@@ -770,6 +799,7 @@ fn print_status(engine: &Engine, tier_mapping: &str, host_status: &HostStatus) {
     );
     print_mcp_status(host_status);
     print_active_skill(engine);
+    print_active_plan(engine);
     print_spend_report(&report);
 }
 
@@ -826,6 +856,26 @@ fn active_skill(engine: &Engine) -> Option<String> {
         .rev()
         .find_map(|entry| match &entry.record {
             Record::SkillActivated { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+}
+
+fn print_active_plan(engine: &Engine) {
+    match active_plan(engine) {
+        Some(plan) => println!("plan: {plan}"),
+        None => println!("plan: none"),
+    }
+}
+
+fn active_plan(engine: &Engine) -> Option<String> {
+    engine
+        .brain()
+        .state()
+        .log()
+        .iter()
+        .rev()
+        .find_map(|entry| match &entry.record {
+            Record::Plan { text, .. } => Some(text.clone()),
             _ => None,
         })
 }
@@ -1003,6 +1053,7 @@ fn summarize_event(event: &Event) -> String {
         UserAbort => "UserAbort".to_string(),
         CompactContext => "CompactContext".to_string(),
         ModelOverride { selector } => format!("ModelOverride({selector:?})"),
+        PlanAccepted { text, .. } => format!("PlanAccepted({text})"),
         ModelDelta { op, .. } => format!("ModelDelta(op={})", op.0),
         ModelDone { op, .. } => format!("ModelDone(op={})", op.0),
         ModelError { op, .. } => format!("ModelError(op={})", op.0),

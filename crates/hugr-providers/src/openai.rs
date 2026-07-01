@@ -11,8 +11,12 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use hugr_core::{ContentPart, ModelOutput, ModelRequest, Role, StopReason, ToolCall, Usage};
+use hugr_core::{
+    ContentPart, ModelOutput, ModelRequest, ModelSelector, Role, SamplingParams, StopReason,
+    ToolCall, Usage,
+};
 use hugr_host::{ModelAdapter, ModelSink};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 // Defaults target the Hugging Face router (an OpenAI-compatible endpoint). The
@@ -35,6 +39,7 @@ pub struct OpenAiAdapter {
     api_key: String,
     model: String,
     base_url: String,
+    default_params: SamplingParams,
     max_attempts: u32,
 }
 
@@ -46,6 +51,7 @@ impl OpenAiAdapter {
             api_key: api_key.into(),
             model: model.into(),
             base_url: DEFAULT_BASE_URL.to_string(),
+            default_params: SamplingParams::default(),
             max_attempts: DEFAULT_MAX_ATTEMPTS,
         }
     }
@@ -70,6 +76,7 @@ impl OpenAiAdapter {
             api_key,
             model,
             base_url,
+            default_params: SamplingParams::default(),
             max_attempts: DEFAULT_MAX_ATTEMPTS,
         })
     }
@@ -83,6 +90,13 @@ impl OpenAiAdapter {
     /// Override the concrete model id (e.g. from a CLI flag).
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
+        self
+    }
+
+    /// Set adapter-default sampling parameters. Per-request parameters from the
+    /// brain still win when present; these are host-side tier defaults.
+    pub fn with_default_params(mut self, params: SamplingParams) -> Self {
+        self.default_params = params;
         self
     }
 
@@ -196,10 +210,14 @@ impl OpenAiAdapter {
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools);
         }
-        if let Some(t) = request.params.temperature {
+        if let Some(t) = request
+            .params
+            .temperature
+            .or(self.default_params.temperature)
+        {
             body["temperature"] = json!(t);
         }
-        if let Some(m) = request.params.max_tokens {
+        if let Some(m) = request.params.max_tokens.or(self.default_params.max_tokens) {
             body["max_tokens"] = json!(m);
         }
         body
@@ -249,6 +267,173 @@ impl OpenAiAdapter {
             attempt += 1;
         }
     }
+}
+
+/// One logical tier's host-side model configuration.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct TierModelConfig {
+    pub model: String,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+}
+
+impl TierModelConfig {
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            temperature: None,
+            max_tokens: None,
+        }
+    }
+
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = Some(max_tokens);
+        self
+    }
+
+    fn sampling(&self) -> SamplingParams {
+        let mut params = SamplingParams::new();
+        if let Some(temperature) = self.temperature {
+            params = params.with_temperature(temperature);
+        }
+        if let Some(max_tokens) = self.max_tokens {
+            params = params.with_max_tokens(max_tokens);
+        }
+        params
+    }
+}
+
+/// The three shipped tiers. This is provider/host config, not a core type:
+/// changing a tier's concrete HF router model id does not change the brain.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct TierModelConfigSet {
+    #[serde(default = "default_base_url")]
+    pub base_url: String,
+    pub small: TierModelConfig,
+    pub medium: TierModelConfig,
+    pub big: TierModelConfig,
+}
+
+impl TierModelConfigSet {
+    pub fn new(
+        base_url: impl Into<String>,
+        small: TierModelConfig,
+        medium: TierModelConfig,
+        big: TierModelConfig,
+    ) -> Self {
+        Self {
+            base_url: base_url.into(),
+            small,
+            medium,
+            big,
+        }
+    }
+
+    /// Default HF-router mapping. All tiers intentionally point at the same
+    /// concrete model until the product chooses distinct defaults.
+    pub fn hf_router_default() -> Self {
+        let tier = TierModelConfig::new(DEFAULT_MODEL);
+        Self::new(DEFAULT_BASE_URL, tier.clone(), tier.clone(), tier)
+    }
+
+    /// Read the `models` section from `HUGR_CONFIG` (JSON), falling back to the
+    /// built-in HF-router defaults. Environment overrides are then applied:
+    /// `OPENAI_BASE_URL` for the endpoint and `OPENAI_MODEL` for all tiers.
+    pub fn from_env() -> anyhow::Result<Self> {
+        let mut config = match std::env::var_os("HUGR_CONFIG") {
+            Some(path) => {
+                let text = std::fs::read_to_string(&path).with_context(|| {
+                    format!(
+                        "reading Hugr config from {}",
+                        PathBuf::from(&path).display()
+                    )
+                })?;
+                let root: Value = serde_json::from_str(&text).with_context(|| {
+                    format!(
+                        "parsing Hugr config from {}",
+                        PathBuf::from(&path).display()
+                    )
+                })?;
+                match root.get("models") {
+                    Some(models) => serde_json::from_value(models.clone()).context(
+                        "parsing `models` section; expected small/medium/big tier config",
+                    )?,
+                    None => Self::hf_router_default(),
+                }
+            }
+            None => Self::hf_router_default(),
+        };
+
+        if let Ok(base_url) = std::env::var("OPENAI_BASE_URL") {
+            config.base_url = base_url;
+        }
+        if let Ok(model) = std::env::var("OPENAI_MODEL") {
+            config = config.with_all_models(model);
+        }
+        Ok(config)
+    }
+
+    /// Override all three tiers to one concrete model id.
+    pub fn with_all_models(mut self, model: impl Into<String>) -> Self {
+        let model = model.into();
+        self.small.model = model.clone();
+        self.medium.model = model.clone();
+        self.big.model = model;
+        self
+    }
+
+    /// Stable banner/debug representation of the shipped tier mapping.
+    pub fn mapping_summary(&self) -> String {
+        format!(
+            "small={} medium={} big={}",
+            self.small.model, self.medium.model, self.big.model
+        )
+    }
+
+    /// Iterator over `(selector, tier_config)` for host registry wiring.
+    pub fn tiers(&self) -> [(ModelSelector, &TierModelConfig); 3] {
+        [
+            (ModelSelector::named("small"), &self.small),
+            (ModelSelector::named("medium"), &self.medium),
+            (ModelSelector::named("big"), &self.big),
+        ]
+    }
+
+    pub fn adapter_for_tier(
+        &self,
+        api_key: impl Into<String>,
+        tier: &TierModelConfig,
+    ) -> OpenAiAdapter {
+        OpenAiAdapter::new(api_key, tier.model.clone())
+            .with_base_url(self.base_url.clone())
+            .with_default_params(tier.sampling())
+    }
+
+    /// Build one adapter per shipped tier using the same API-key resolution as
+    /// [`OpenAiAdapter::from_env`].
+    pub fn adapters_from_env(&self) -> anyhow::Result<Vec<(ModelSelector, OpenAiAdapter)>> {
+        let api_key = resolve_api_key().context(
+            "no API key found: set OPENAI_API_KEY or HF_TOKEN, or log in with `hf auth login`",
+        )?;
+        Ok(self
+            .tiers()
+            .into_iter()
+            .map(|(selector, tier)| (selector, self.adapter_for_tier(api_key.clone(), tier)))
+            .collect())
+    }
+}
+
+fn default_base_url() -> String {
+    DEFAULT_BASE_URL.to_string()
 }
 
 /// Whether an HTTP status should be retried: `429 Too Many Requests` and any

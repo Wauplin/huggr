@@ -572,7 +572,7 @@ impl Default for EngineBuilder {
             policy: None,
             frontend: None,
             clock: None,
-            selector: ModelSelector::named("big"),
+            selector: ModelSelector::named("medium"),
             system_prompt: None,
             sampling: SamplingParams::default(),
             agents: Vec::new(),
@@ -603,7 +603,7 @@ impl EngineBuilder {
     }
 
     fn selector_is_default(&self) -> bool {
-        self.selector == ModelSelector::named("big")
+        self.selector == ModelSelector::named("medium")
     }
 
     /// Override which logical selector the turn policy calls each turn.

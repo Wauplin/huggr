@@ -22,7 +22,7 @@ use hugr_host::{
     CheckpointCadence, CronExpr, Engine, EngineBuilder, Inspector, Policy, Schedule,
     StdoutFrontend, Trace, TriggerTarget,
 };
-use hugr_providers::OpenAiAdapter;
+use hugr_providers::TierModelConfigSet;
 
 const SYSTEM_PROMPT: &str = "\
 You are Hugr, a helpful coding agent running in a terminal. You can run shell \
@@ -45,8 +45,8 @@ struct Cli {
     #[arg(short = 'y', long = "yes")]
     yes: bool,
 
-    /// Override the default model id (defaults to the `OPENAI_MODEL` env var,
-    /// then the built-in `google/gemma-4-31B-it:together`).
+    /// Override the model id for all tiers (defaults to the `OPENAI_MODEL` env
+    /// var, then the built-in HF router model).
     #[arg(short = 'm', long = "model")]
     model: Option<String>,
 
@@ -202,7 +202,9 @@ async fn main() -> Result<()> {
 /// Drive a live agent session (one-shot or interactive), optionally recording it.
 async fn run_session(cli: Cli) -> Result<()> {
     let policy = select_policy(cli.yes);
-    let adapter = build_adapter(cli.model)?;
+    let models = build_model_config(cli.model)?;
+    let mapping = models.mapping_summary();
+    let base_url = models.base_url.clone();
     let recording = cli.record.is_some();
     let mode = if cli.yes {
         "auto-approve"
@@ -211,8 +213,8 @@ async fn run_session(cli: Cli) -> Result<()> {
     };
     print_banner(&format!(
         "hugr · model {} · {} · {mode}{}",
-        adapter.model(),
-        adapter.base_url(),
+        mapping,
+        base_url,
         if recording { " · recording" } else { "" },
     ));
 
@@ -226,7 +228,7 @@ async fn run_session(cli: Cli) -> Result<()> {
     };
 
     // --- the "CLI on a laptop" host: ~10 lines on top of hugr-host ----------
-    let mut builder = base_builder(adapter, policy)
+    let mut builder = base_builder(models, policy)?
         .record(recording)
         .frontend(Box::new(frontend));
     if let Some(path) = cli.record.clone() {
@@ -274,20 +276,22 @@ async fn run_resume(
     let out_path = record.unwrap_or_else(|| trace_path.clone());
 
     let policy = select_policy(yes);
-    let adapter = build_adapter(model)?;
+    let models = build_model_config(model)?;
+    let mapping = models.mapping_summary();
+    let base_url = models.base_url.clone();
     let mode = if yes { "auto-approve" } else { "interactive" };
     print_banner(&format!(
         "hugr · resuming {} ({} events) · model {} · {} · {mode} · recording → {}",
         trace_path.display(),
         trace.events.len(),
-        adapter.model(),
-        adapter.base_url(),
+        mapping,
+        base_url,
         out_path.display(),
     ));
 
     // Resume rebuilds the brain from the trace (with zero IO) and restores the
     // recorded policy; `.resume` implies recording so the grown session re-saves.
-    let mut engine = base_builder(adapter, policy)
+    let mut engine = base_builder(models, policy)?
         .resume(trace)
         .checkpoint(out_path.clone(), CheckpointCadence::EveryEvent)
         .build();
@@ -330,14 +334,16 @@ async fn run_schedule(args: ScheduleArgs) -> Result<()> {
     };
 
     loop {
-        let adapter = build_adapter(args.model.clone())?;
+        let models = build_model_config(args.model.clone())?;
+        let mapping = models.mapping_summary();
+        let base_url = models.base_url.clone();
         print_banner(&format!(
             "hugr · scheduled fire {} · model {} · {} · {mode}",
             schedule.cron.source(),
-            adapter.model(),
-            adapter.base_url(),
+            mapping,
+            base_url,
         ));
-        let path = hugr_host::fire_once(base_builder(adapter, policy.clone()), &schedule).await?;
+        let path = hugr_host::fire_once(base_builder(models, policy.clone())?, &schedule).await?;
         eprintln!("scheduled fire recorded → {}", path.display());
 
         if args.once {
@@ -382,13 +388,14 @@ fn select_policy(yes: bool) -> Arc<dyn Policy> {
     }
 }
 
-/// Build the model adapter from the environment, applying a `--model` override.
-fn build_adapter(model: Option<String>) -> Result<OpenAiAdapter> {
-    let mut adapter = OpenAiAdapter::from_env()?;
+/// Build the model tier config from `HUGR_CONFIG`/environment, applying a
+/// `--model` override to all three tiers.
+fn build_model_config(model: Option<String>) -> Result<TierModelConfigSet> {
+    let mut models = TierModelConfigSet::from_env()?;
     if let Some(model) = model {
-        adapter = adapter.with_model(model);
+        models = models.with_all_models(model);
     }
-    Ok(adapter)
+    Ok(models)
 }
 
 /// Print a startup banner to stderr, dimmed only on a real terminal (and not
@@ -404,9 +411,12 @@ fn print_banner(text: &str) {
 /// The shared "CLI on a laptop" host: register the model + capabilities and the
 /// permission policy. Callers add `.record()`/`.resume()`/`.frontend()` and
 /// `.build()`. Keeping this in one place is what keeps the host setup ~10 lines.
-fn base_builder(adapter: OpenAiAdapter, policy: Arc<dyn Policy>) -> EngineBuilder {
-    Engine::builder()
-        .model(ModelSelector::named("big"), Arc::new(adapter))
+fn base_builder(models: TierModelConfigSet, policy: Arc<dyn Policy>) -> Result<EngineBuilder> {
+    let mut builder = Engine::builder().default_model(ModelSelector::named("medium"));
+    for (selector, adapter) in models.adapters_from_env()? {
+        builder = builder.model(selector, Arc::new(adapter));
+    }
+    Ok(builder
         .capability(Arc::new(Shell))
         .capability(Arc::new(FsRead))
         .capability(Arc::new(FsWrite))
@@ -416,7 +426,7 @@ fn base_builder(adapter: OpenAiAdapter, policy: Arc<dyn Policy>) -> EngineBuilde
         // The child reuses this host's tools (optionally narrowed via `tools`).
         .agent(task_agent_schema(), AgentSeed::ForkFull)
         .system_prompt(SYSTEM_PROMPT)
-        .policy(policy)
+        .policy(policy))
 }
 
 /// The schema advertised for the built-in `task` sub-agent tool.

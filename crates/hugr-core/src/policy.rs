@@ -98,7 +98,7 @@ pub struct StaticPolicy {
 impl Default for StaticPolicy {
     fn default() -> Self {
         Self {
-            model: ModelSelector::named("big"),
+            model: ModelSelector::named("medium"),
             tools: Vec::new(),
             permissioned: Vec::new(),
             background: Vec::new(),

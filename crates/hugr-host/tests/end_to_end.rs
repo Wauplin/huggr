@@ -13,7 +13,7 @@ use hugr_core::{
     ToolSchema, Usage, Value,
 };
 use hugr_host::capabilities::Shell;
-use hugr_host::policy::DenyAll;
+use hugr_host::policy::{AutoApprove, DenyAll};
 use hugr_host::{
     Capability, CheckpointCadence, ChunkSink, CronExpr, Engine, Frontend, ModelAdapter, ModelSink,
     Policy, Schedule, TriggerTarget,
@@ -210,6 +210,114 @@ async fn denied_permission_routes_error_back_to_model() {
 
     let text = capture.text.lock().unwrap().clone();
     assert!(text.contains("Okay, I won't run that."));
+}
+
+struct JudgeModel {
+    calls: Arc<Mutex<u32>>,
+}
+
+impl JudgeModel {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            calls: Arc::new(Mutex::new(0)),
+        })
+    }
+}
+
+#[async_trait]
+impl ModelAdapter for JudgeModel {
+    async fn call(
+        &self,
+        request: ModelRequest,
+        _sink: &ModelSink,
+    ) -> anyhow::Result<(ModelOutput, Usage)> {
+        *self.calls.lock().unwrap() += 1;
+        let body = request
+            .blocks
+            .iter()
+            .flat_map(|b| &b.content)
+            .map(|part| match part {
+                hugr_core::ContentPart::Text(text) => text.as_str(),
+                _ => "",
+            })
+            .collect::<String>();
+        let verdict = if body.contains("rm -rf") {
+            json!({ "safe": false, "reason": "destructive shell command" })
+        } else {
+            json!({ "safe": true, "reason": "benign bounded command" })
+        };
+        Ok((ModelOutput::text(verdict.to_string()), Usage::new(3, 2)))
+    }
+}
+
+#[tokio::test]
+async fn auto_approve_denies_risky_shell_and_replay_uses_recorded_verdict() {
+    let capture = Capture::default();
+    let judge = JudgeModel::new();
+    let model = MockModel::new([
+        ModelOutput::tool_calls(vec![ToolCall::new(
+            "call-1",
+            "shell",
+            json!({ "cmd": "rm -rf ." }),
+        )]),
+        ModelOutput::text("I will choose a safer approach."),
+    ]);
+
+    let mut engine = Engine::builder()
+        .model(ModelSelector::named("medium"), model)
+        .capability(Arc::new(Shell))
+        .policy(Arc::new(AutoApprove::new(judge.clone())) as Arc<dyn Policy>)
+        .frontend(Box::new(capture.clone()))
+        .clock(deterministic_clock())
+        .record(true)
+        .build();
+
+    engine.user_turn("clean the repo".into()).await;
+
+    let tool_results = count_tool_results(engine.brain().state().log());
+    assert_eq!(tool_results.len(), 1);
+    assert_eq!(tool_results[0].1["error"], json!("permission_denied"));
+    assert_eq!(
+        tool_results[0].1["reason"],
+        json!("destructive shell command")
+    );
+    assert_eq!(*judge.calls.lock().unwrap(), 1);
+    assert!(capture.text.lock().unwrap().contains("safer approach"));
+
+    let trace = engine.trace().expect("recording enabled");
+    hugr_replay::verify(&trace).expect("replay should reuse PermissionDecision events");
+}
+
+#[tokio::test]
+async fn auto_approve_allows_benign_shell() {
+    let judge = JudgeModel::new();
+    let model = MockModel::new([
+        ModelOutput::tool_calls(vec![ToolCall::new(
+            "call-1",
+            "shell",
+            json!({ "cmd": "echo auto-approve-ok" }),
+        )]),
+        ModelOutput::text("The command was safe."),
+    ]);
+
+    let mut engine = Engine::builder()
+        .model(ModelSelector::named("medium"), model)
+        .capability(Arc::new(Shell))
+        .policy(Arc::new(AutoApprove::new(judge.clone())) as Arc<dyn Policy>)
+        .clock(deterministic_clock())
+        .build();
+
+    engine.user_turn("run a harmless command".into()).await;
+
+    let tool_results = count_tool_results(engine.brain().state().log());
+    assert_eq!(tool_results.len(), 1);
+    assert!(
+        tool_results[0].1["stdout"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("auto-approve-ok")
+    );
+    assert_eq!(*judge.calls.lock().unwrap(), 1);
 }
 
 /// A scripted model that reports per-call **cost** in `Usage.extra` (mirroring a

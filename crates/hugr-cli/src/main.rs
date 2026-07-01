@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use hugr_core::{AgentSeed, Command, Event, ModelSelector, ToolSchema};
 use hugr_host::capabilities::{FsRead, FsWrite, Http, Shell};
-use hugr_host::policy::{AllowAll, Interactive};
+use hugr_host::policy::{AllowAll, AutoApprove};
 use hugr_host::{
     CheckpointCadence, CronExpr, Engine, EngineBuilder, Inspector, Policy, Schedule,
     StdoutFrontend, Trace, TriggerTarget,
@@ -201,16 +201,12 @@ async fn main() -> Result<()> {
 
 /// Drive a live agent session (one-shot or interactive), optionally recording it.
 async fn run_session(cli: Cli) -> Result<()> {
-    let policy = select_policy(cli.yes);
     let models = build_model_config(cli.model)?;
+    let policy = select_policy(cli.yes, &models)?;
     let mapping = models.mapping_summary();
     let base_url = models.base_url.clone();
     let recording = cli.record.is_some();
-    let mode = if cli.yes {
-        "auto-approve"
-    } else {
-        "interactive"
-    };
+    let mode = if cli.yes { "yolo" } else { "auto-approve" };
     print_banner(&format!(
         "hugr · model {} · {} · {mode}{}",
         mapping,
@@ -275,11 +271,11 @@ async fn run_resume(
     // Default: write the grown session back to the same file (so it accumulates).
     let out_path = record.unwrap_or_else(|| trace_path.clone());
 
-    let policy = select_policy(yes);
     let models = build_model_config(model)?;
+    let policy = select_policy(yes, &models)?;
     let mapping = models.mapping_summary();
     let base_url = models.base_url.clone();
-    let mode = if yes { "auto-approve" } else { "interactive" };
+    let mode = if yes { "yolo" } else { "auto-approve" };
     print_banner(&format!(
         "hugr · resuming {} ({} events) · model {} · {} · {mode} · recording → {}",
         trace_path.display(),
@@ -326,15 +322,11 @@ async fn run_schedule(args: ScheduleArgs) -> Result<()> {
     let cron = CronExpr::parse(&args.cron)?;
     let target = schedule_target(args.trace, args.session, args.sessions_dir, args.fresh)?;
     let schedule = Schedule::new(cron, target, prompt);
-    let policy = select_policy(args.yes);
-    let mode = if args.yes {
-        "auto-approve"
-    } else {
-        "interactive"
-    };
+    let mode = if args.yes { "yolo" } else { "auto-approve" };
 
     loop {
         let models = build_model_config(args.model.clone())?;
+        let policy = select_policy(args.yes, &models)?;
         let mapping = models.mapping_summary();
         let base_url = models.base_url.clone();
         print_banner(&format!(
@@ -379,12 +371,18 @@ fn schedule_target(
     }
 }
 
-/// The host permission policy for the chosen approval mode (`-y` = allow-all).
-fn select_policy(yes: bool) -> Arc<dyn Policy> {
-    if yes {
-        Arc::new(AllowAll)
+/// The host permission policy for the chosen approval mode (`--yolo` = allow-all).
+fn select_policy(yolo: bool, models: &TierModelConfigSet) -> Result<Arc<dyn Policy>> {
+    if yolo {
+        Ok(Arc::new(AllowAll))
     } else {
-        Arc::new(Interactive)
+        let judge = models
+            .adapters_from_env()?
+            .into_iter()
+            .find(|(selector, _)| *selector == ModelSelector::named("small"))
+            .map(|(_, adapter)| adapter)
+            .context("model tier config did not include a `small` judge tier")?;
+        Ok(Arc::new(AutoApprove::new(Arc::new(judge))))
     }
 }
 

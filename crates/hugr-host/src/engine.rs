@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hugr_core::{
-    AgentSeed, Brain, Command, Event, ModelSelector, OpId, SamplingParams, StaticPolicy, SteerMode,
-    Timestamp, ToolSchema, Value,
+    AgentSeed, Brain, Command, ContextPlan, Event, ModelSelector, OpId, SamplingParams,
+    StaticPolicy, SteerMode, Timestamp, ToolSchema, Value,
 };
 use serde_json::json;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -192,6 +192,19 @@ impl Engine {
     /// Read-only access to the underlying brain (log, op table, …).
     pub fn brain(&self) -> &Brain {
         &self.brain
+    }
+
+    /// Inspect the exact context plan the brain would use for the next normal
+    /// model call, without mutating state or starting a turn.
+    pub fn context_plan(&self) -> ContextPlan {
+        self.brain.context_plan()
+    }
+
+    /// Fire one manual compaction pass and drive it to completion. If there is
+    /// no compactable span, the brain emits a notice and remains idle.
+    pub async fn compact_context(&mut self) {
+        self.submit(Event::CompactContext);
+        self.drive_to_idle().await;
     }
 
     /// A cloneable handle for injecting [`Event`]s into the running loop from

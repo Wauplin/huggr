@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use hugr_core::{
-    DoneReason, ModelOutput, ModelRequest, ModelSelector, OpOutcome, OutputEvent, Record, ToolCall,
-    ToolSchema, Usage, Value,
+    ContentPart, ContextDisposition, DoneReason, ModelOutput, ModelRequest, ModelSelector,
+    OpOutcome, OutputEvent, Record, ToolCall, ToolSchema, Usage, Value,
 };
 use hugr_host::capabilities::Shell;
 use hugr_host::policy::{AutoApprove, DenyAll};
@@ -175,6 +175,75 @@ async fn multi_turn_session_with_real_shell() {
         first_request.blocks.first().map(|b| b.role),
         Some(hugr_core::Role::System)
     ));
+}
+
+#[tokio::test]
+async fn context_plan_inspection_and_manual_compaction_feed_next_request() {
+    let capture = Capture::default();
+    let model = MockModel::new([
+        ModelOutput::text("Old answer."),
+        ModelOutput::text("Old turn summary."),
+        ModelOutput::text("Next answer."),
+    ]);
+
+    let mut engine = Engine::builder()
+        .model(ModelSelector::named("medium"), model.clone())
+        .model(ModelSelector::named("small"), model.clone())
+        .default_model(ModelSelector::named("medium"))
+        .frontend(Box::new(capture))
+        .clock(deterministic_clock())
+        .build();
+
+    engine
+        .user_turn("old details that can be summarized".into())
+        .await;
+    let before = engine.context_plan();
+    assert!(
+        before
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.disposition, ContextDisposition::Included { .. }))
+    );
+    let before_used = before.totals.used_tokens;
+
+    engine.compact_context().await;
+    let after = engine.context_plan();
+    assert!(
+        after.totals.used_tokens < before_used,
+        "manual compaction should reduce the planned request size"
+    );
+    assert!(
+        after
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.disposition, ContextDisposition::Referenced { .. }))
+    );
+    assert!(
+        after
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.disposition, ContextDisposition::Summarized { .. }))
+    );
+
+    engine.user_turn("next request".into()).await;
+    let requests = model.requests.lock().unwrap();
+    let next_request = requests.last().expect("next turn model request recorded");
+    assert!(next_request.blocks.iter().any(|block| {
+        block.content.iter().any(|part| {
+            matches!(
+                part,
+                ContentPart::Ref { reference, .. } if reference == "log:0"
+            )
+        })
+    }));
+    assert!(next_request.blocks.iter().any(|block| {
+        block.content.iter().any(|part| {
+            matches!(
+                part,
+                ContentPart::Text(text) if text.contains("Old turn summary.")
+            )
+        })
+    }));
 }
 
 #[tokio::test]

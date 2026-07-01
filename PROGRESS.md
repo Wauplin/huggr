@@ -79,6 +79,20 @@ Tests:
 - `crates/hugr-core/tests/scripted_session.rs::manual_compaction_event_runs_one_pass_without_starting_turn` pins the single-event command sequence, summary metadata, idle postcondition, and replay equality.
 - Verification run: `cargo test -p hugr-core`.
 
+### A5 — CLI context inspection and compact command ✅
+
+Done:
+
+- `Brain::context_plan()` and `Engine::context_plan()` expose the same pure projection the reducer uses for the next normal model turn, without mutating state or starting a call.
+- `Engine::compact_context()` injects `Event::CompactContext` and drives the resulting manual compaction pass to idle.
+- The CLI REPL now handles `/context` and `/compact`. `/context` prints budget totals plus every plan entry's source, disposition, token estimate, and reason. `/compact` fires the A4 trigger; one-shot CLI invocations can also run these slash commands directly.
+- `hugr replay --step` recognizes `CompactContext`, and the README documents the new REPL commands.
+
+Tests:
+
+- `crates/hugr-host/tests/end_to_end.rs::context_plan_inspection_and_manual_compaction_feed_next_request` proves the host-facing plan reflects the real projection, manual compaction reduces the planned request, and the next model request contains the expected summary and log reference.
+- Verification run: `cargo test -p hugr-host context_plan_inspection_and_manual_compaction_feed_next_request -q`; `cargo check -p hugr-cli`.
+
 ## Phase 0 — Pure core skeleton (no IO) ✅
 
 **Goal:** the brain exists as a pure state machine with zero IO.

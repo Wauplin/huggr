@@ -18,8 +18,8 @@ use serde_json::json;
 use crate::command::{Command, DoneReason, OutputEvent, PermissionRequest};
 use crate::event::{Decision, Event, SteerMode, VersionRef};
 use crate::model::{
-    ContentPart, ContextBlock, ModelDelta, ModelOutput, ModelRequest, ModelSelector, Role,
-    SamplingParams, ToolCall, Usage,
+    ContentPart, ContextBlock, ContextPlan, ModelDelta, ModelOutput, ModelRequest, ModelSelector,
+    Role, SamplingParams, ToolCall, Usage,
 };
 use crate::policy::{AgentSeed, StaticPolicy, TurnPolicy};
 use crate::primitives::{OpId, Seq, Value};
@@ -64,6 +64,14 @@ impl Brain {
     /// Read-only access to the brain's derived state (log, op table, …).
     pub fn state(&self) -> &BrainState {
         &self.state
+    }
+
+    /// Inspect the context projection that the next normal model turn would
+    /// render. Pure and synchronous: the same [`TurnPolicy`] hooks used by the
+    /// reducer's turn-start path produce this plan.
+    pub fn context_plan(&self) -> ContextPlan {
+        let budget = self.policy.context_budget(&self.state);
+        self.policy.project_context(self.state.log(), budget)
     }
 
     /// Drain the commands the brain wants the host to perform. Pure, instant.

@@ -15,7 +15,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use hugr_core::{AgentSeed, Command, Event, ModelSelector, ToolSchema};
+use hugr_core::{
+    AgentSeed, Command, ContextDisposition, ContextPlan, ContextSource, Event, ModelSelector,
+    ToolSchema,
+};
 use hugr_host::capabilities::{FsRead, FsWrite, Http, Shell};
 use hugr_host::policy::{AllowAll, AutoApprove};
 use hugr_host::{
@@ -460,7 +463,10 @@ async fn drive_session(
     out_path: Option<&std::path::Path>,
 ) -> Result<()> {
     if !prompt.is_empty() {
-        engine.user_turn(prompt.join(" ")).await;
+        let text = prompt.join(" ");
+        if !handle_repl_command(engine, &text).await? {
+            engine.user_turn(text).await;
+        }
         engine.session_end();
         return save_recording(engine, out_path);
     }
@@ -479,10 +485,86 @@ async fn drive_session(
         if line.is_empty() {
             continue;
         }
+        if handle_repl_command(engine, line).await? {
+            continue;
+        }
         engine.user_turn(line.to_string()).await;
     }
 
     save_recording(engine, out_path)
+}
+
+async fn handle_repl_command(engine: &mut Engine, line: &str) -> Result<bool> {
+    match line {
+        "/context" => {
+            print_context_plan(&engine.context_plan());
+            Ok(true)
+        }
+        "/compact" => {
+            engine.compact_context().await;
+            Ok(true)
+        }
+        _ if line.starts_with('/') => {
+            eprintln!("unknown command: {line}");
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn print_context_plan(plan: &ContextPlan) {
+    let totals = &plan.totals;
+    println!(
+        "context: {}/{} tokens used (included {}, summarized {}, referenced {}, omitted {})",
+        totals.used_tokens,
+        plan.budget.max_tokens,
+        totals.included_tokens,
+        totals.summarized_tokens,
+        totals.referenced_tokens,
+        totals.omitted_tokens
+    );
+    println!(
+        "blocks: retained {} · summaries {} · refs {} · omitted {}",
+        count_disposition(plan, "included"),
+        count_disposition(plan, "summarized"),
+        count_disposition(plan, "referenced"),
+        count_disposition(plan, "omitted")
+    );
+    for entry in &plan.entries {
+        println!(
+            "- {} · {} · {} tok · {}",
+            context_source_label(&entry.source),
+            disposition_label(&entry.disposition),
+            entry.est_tokens,
+            entry.reason
+        );
+    }
+}
+
+fn count_disposition(plan: &ContextPlan, kind: &str) -> usize {
+    plan.entries
+        .iter()
+        .filter(|entry| disposition_label(&entry.disposition) == kind)
+        .count()
+}
+
+fn context_source_label(source: &ContextSource) -> String {
+    match source {
+        ContextSource::System => "system".to_string(),
+        ContextSource::LogEntry { seq } => format!("log:{}", seq.0),
+        ContextSource::Synthetic { label } => format!("synthetic:{label}"),
+        other => format!("{other:?}"),
+    }
+}
+
+fn disposition_label(disposition: &ContextDisposition) -> &'static str {
+    match disposition {
+        ContextDisposition::Included { .. } => "included",
+        ContextDisposition::Referenced { .. } => "referenced",
+        ContextDisposition::Summarized { .. } => "summarized",
+        ContextDisposition::Omitted => "omitted",
+        _ => "unknown",
+    }
 }
 
 /// Persist the recorded session, if `--record` was given.
@@ -551,6 +633,7 @@ fn summarize_event(event: &Event) -> String {
         Tick { now } => format!("Tick(now={})", now.0),
         UserInput { content, mode, .. } => format!("UserInput({content} · {mode:?})"),
         UserAbort => "UserAbort".to_string(),
+        CompactContext => "CompactContext".to_string(),
         ModelDelta { op, .. } => format!("ModelDelta(op={})", op.0),
         ModelDone { op, .. } => format!("ModelDone(op={})", op.0),
         ModelError { op, .. } => format!("ModelError(op={})", op.0),

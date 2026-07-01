@@ -846,6 +846,27 @@ impl TurnPolicy for StaticPolicy {
                         "latest durable todo snapshot",
                     ));
                 }
+                Record::Hook {
+                    phase,
+                    name,
+                    result,
+                    est_tokens,
+                } => {
+                    let disposition = ContextDisposition::included(ContextBlock::new(
+                        Role::System,
+                        vec![ContentPart::Text(format!(
+                            "Host hook from durable log:{} ({phase:?}/{name}):\n{}",
+                            entry.seq.0, result
+                        ))],
+                    ));
+                    totals.add(&disposition, *est_tokens);
+                    entries.push(ContextPlanEntry::new(
+                        ContextSource::log_entry(entry.seq),
+                        *est_tokens,
+                        disposition,
+                        "host hook result from durable record",
+                    ));
+                }
                 // OpEnded entries are bookkeeping (timing/cost); they do not
                 // contribute to model context, but the plan still explains why
                 // the block is omitted.
@@ -1107,6 +1128,7 @@ fn is_compactable_record(record: &Record) -> bool {
             | Record::ToolResult { .. }
             | Record::Plan { .. }
             | Record::TodoList { .. }
+            | Record::Hook { .. }
     )
 }
 

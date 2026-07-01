@@ -376,6 +376,20 @@ Tests:
 - `hugr-host::frontend::tests::status_text_tracks_active_model_and_tools` pins active/idle status-line rendering.
 - Verification run: `cargo test -p hugr-host status_text_tracks_active_model_and_tools -q`; `cargo check -p hugr-host -q`.
 
+### D10 — Deterministic hooks ✅
+
+Done:
+
+- `hugr-core` now has `HookPhase`, `Event::HookFired`, and durable `Record::Hook`. Hook records project into future context and are compactable content, but they do not mutate core internals.
+- `hugr-host` fires built-in deterministic hook events for session start, pre-tool, post-tool, manual compaction, and stop. These events are recorded through the same event stream as model/tool/user events, so traces replay the hook context.
+- CLI replay step output summarizes hook events as `HookFired(<phase>/<name>)`.
+
+Tests:
+
+- `crates/hugr-core/tests/scripted_session.rs::hook_records_are_durable_and_projected` proves hook events become durable projected context.
+- `crates/hugr-host/tests/end_to_end.rs::builtin_pre_tool_and_stop_hooks_are_recorded_in_trace` proves session/pre-tool/post-tool/stop hooks fire through the real engine and appear in the trace.
+- Verification run: `cargo test -p hugr-core hook_records_are_durable_and_projected -q`; `cargo test -p hugr-host builtin_pre_tool_and_stop_hooks_are_recorded_in_trace -q`; `cargo check -p hugr-host -q`.
+
 ## Phase 0 — Pure core skeleton (no IO) ✅
 
 **Goal:** the brain exists as a pure state machine with zero IO.

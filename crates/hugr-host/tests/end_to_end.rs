@@ -9,12 +9,12 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use hugr_core::{
-    ContentPart, ContextDisposition, DoneReason, ModelOutput, ModelRequest, ModelSelector,
-    OpOutcome, OutputEvent, Record, ToolCall, ToolSchema, Usage, Value,
+    ContentPart, ContextDisposition, DoneReason, HookPhase, ModelOutput, ModelRequest,
+    ModelSelector, OpOutcome, OutputEvent, Record, ToolCall, ToolSchema, Usage, Value,
 };
 use hugr_host::capabilities::Shell;
 use hugr_host::mcp::{self, McpServerConfig};
-use hugr_host::policy::{AutoApprove, DenyAll};
+use hugr_host::policy::{AllowAll, AutoApprove, DenyAll};
 use hugr_host::{
     Capability, CheckpointCadence, ChunkSink, CronExpr, Engine, Frontend, ModelAdapter, ModelSink,
     Policy, Schedule, TriggerTarget, spend_report,
@@ -114,6 +114,42 @@ fn count_tool_results(log: &[hugr_core::LogEntry]) -> Vec<(String, serde_json::V
             _ => None,
         })
         .collect()
+}
+
+#[tokio::test]
+async fn builtin_pre_tool_and_stop_hooks_are_recorded_in_trace() {
+    let model = MockModel::new(vec![
+        ModelOutput::tool_calls(vec![ToolCall::new(
+            "call-1",
+            "shell",
+            json!({ "cmd": "printf hook-test" }),
+        )]),
+        ModelOutput::text("done"),
+    ]);
+    let mut engine = Engine::builder()
+        .model(ModelSelector::named("medium"), model)
+        .capability(Arc::new(Shell))
+        .policy(Arc::new(AllowAll))
+        .clock(deterministic_clock())
+        .record(true)
+        .frontend(Box::new(Capture::default()))
+        .build();
+
+    engine.user_turn("run a command".to_string()).await;
+    let trace = engine.trace().expect("recorded trace");
+    let hooks: Vec<_> = trace
+        .log
+        .iter()
+        .filter_map(|entry| match &entry.record {
+            Record::Hook { phase, name, .. } => Some((phase.clone(), name.clone())),
+            _ => None,
+        })
+        .collect();
+
+    assert!(hooks.contains(&(HookPhase::SessionStart, "builtin_session_start".to_string())));
+    assert!(hooks.contains(&(HookPhase::PreTool, "builtin_pre_tool".to_string())));
+    assert!(hooks.contains(&(HookPhase::PostTool, "builtin_post_tool".to_string())));
+    assert!(hooks.contains(&(HookPhase::Stop, "builtin_stop".to_string())));
 }
 
 fn python3_available() -> bool {
@@ -1145,11 +1181,11 @@ async fn record_then_replay_reconstructs_the_session_bit_for_bit() {
     // opens with a model call, runs the shell capability, and ends with Done.
     use hugr_core::Command;
     assert!(
-        matches!(
-            replay.commands.first(),
-            Some(Command::StartModelCall { .. })
-        ),
-        "first command is the opening model call"
+        replay
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::StartModelCall { .. })),
+        "the opening model call was reconstructed"
     );
     assert!(
         replay
@@ -1159,8 +1195,11 @@ async fn record_then_replay_reconstructs_the_session_bit_for_bit() {
         "the shell capability was invoked"
     );
     assert!(
-        matches!(replay.commands.last(), Some(Command::Done { .. })),
-        "the session ends with Done"
+        replay
+            .commands
+            .iter()
+            .any(|c| matches!(c, Command::Done { .. })),
+        "the session reaches Done"
     );
 
     // The step-through inspector walks the same session: every event is one

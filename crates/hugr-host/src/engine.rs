@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hugr_core::{
-    AgentSeed, Brain, Command, ContextPlan, Event, ModelSelector, OpId, RoutingPolicy,
+    AgentSeed, Brain, Command, ContextPlan, Event, HookPhase, ModelSelector, OpId, RoutingPolicy,
     SamplingParams, SkillDescriptor, StaticPolicy, SteerMode, Timestamp, TodoItem, ToolSchema,
     Value,
 };
@@ -172,6 +172,7 @@ pub struct Engine {
     /// The logical model a sub-agent uses when its config doesn't name one
     /// (ARCHITECTURE §13.1); the child reuses the host's model registry.
     default_model: ModelSelector,
+    session_started: bool,
 }
 
 impl Engine {
@@ -182,6 +183,7 @@ impl Engine {
     /// Submit one conversational user message and drive the resulting turn (and
     /// any tool round-trips) to completion.
     pub async fn user_turn(&mut self, text: String) {
+        self.ensure_session_started();
         self.submit(Event::UserInput {
             content: json!(text),
             mode: SteerMode::Queue,
@@ -204,6 +206,11 @@ impl Engine {
     /// Fire one manual compaction pass and drive it to completion. If there is
     /// no compactable span, the brain emits a notice and remains idle.
     pub async fn compact_context(&mut self) {
+        self.fire_hook(
+            HookPhase::Compaction,
+            "builtin_compaction",
+            json!({ "message": "manual compaction requested" }),
+        );
         self.submit(Event::CompactContext);
         self.drive_to_idle().await;
     }
@@ -276,6 +283,28 @@ impl Engine {
         {
             self.checkpoint();
         }
+    }
+
+    fn ensure_session_started(&mut self) {
+        if self.session_started {
+            return;
+        }
+        self.session_started = true;
+        self.fire_hook(
+            HookPhase::SessionStart,
+            "builtin_session_start",
+            json!({ "message": "session started" }),
+        );
+    }
+
+    fn fire_hook(&mut self, phase: HookPhase, name: &str, result: Value) {
+        let est_tokens = estimate_value_tokens(&result);
+        self.submit(Event::HookFired {
+            phase,
+            name: name.to_string(),
+            result,
+            est_tokens,
+        });
     }
 
     /// Build a [`Trace`] of the session so far (the captured event stream + the
@@ -358,8 +387,22 @@ impl Engine {
             // Otherwise block until any task produces the next event.
             match self.rx.recv().await {
                 Some(event) => {
+                    let post_tool_hook = match &event {
+                        Event::CapabilityDone { op, result, .. } => Some((
+                            "builtin_post_tool",
+                            json!({ "op": op.0, "ok": true, "result": result }),
+                        )),
+                        Event::CapabilityError { op, error, .. } => Some((
+                            "builtin_post_tool",
+                            json!({ "op": op.0, "ok": false, "error": error }),
+                        )),
+                        _ => None,
+                    };
                     self.observe(&event);
                     self.submit(event);
+                    if let Some((name, result)) = post_tool_hook {
+                        self.fire_hook(HookPhase::PostTool, name, result);
+                    }
                 }
                 None => break,
             }
@@ -459,6 +502,11 @@ impl Engine {
 
             Command::StartCapability { op, name, args } => match self.caps.get(&name) {
                 Some(capability) => {
+                    self.fire_hook(
+                        HookPhase::PreTool,
+                        "builtin_pre_tool",
+                        json!({ "op": op.0, "capability": name.clone(), "args": args.clone() }),
+                    );
                     self.frontend.on_tool_start(op, &name, &args);
                     self.op_labels.insert(op, name.clone());
                     let tx = self.tx.clone();
@@ -571,7 +619,14 @@ impl Engine {
                 self.checkpoint();
             }
 
-            Command::Done { reason } => self.frontend.on_done(&reason),
+            Command::Done { reason } => {
+                self.fire_hook(
+                    HookPhase::Stop,
+                    "builtin_stop",
+                    json!({ "reason": format!("{reason:?}") }),
+                );
+                self.frontend.on_done(&reason);
+            }
 
             // Forward-compatible: a newer core may add commands this host
             // doesn't know about yet (ARCHITECTURE §2.4).
@@ -908,6 +963,7 @@ impl EngineBuilder {
             compaction: self.compaction,
             policy_config,
             default_model: self.selector,
+            session_started: false,
         }
     }
 }

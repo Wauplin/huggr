@@ -1408,6 +1408,7 @@ fn summarize_event(event: &Event) -> String {
         ModelOverride { selector } => format!("ModelOverride({selector:?})"),
         PlanAccepted { text, .. } => format!("PlanAccepted({text})"),
         TodoUpdated { items, .. } => format!("TodoUpdated({} items)", items.len()),
+        HookFired { phase, name, .. } => format!("HookFired({phase:?}/{name})"),
         ModelDelta { op, .. } => format!("ModelDelta(op={})", op.0),
         ModelDone { op, .. } => format!("ModelDone(op={})", op.0),
         ModelError { op, .. } => format!("ModelError(op={})", op.0),

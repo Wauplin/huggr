@@ -11,6 +11,18 @@ use crate::model::{ModelDelta, ModelOutput, ModelSelector, Usage};
 use crate::primitives::{ObjectKey, OpId, Timestamp, Value};
 use crate::record::TodoItem;
 
+/// Host hook lifecycle phase (ROADMAP_2 D10). Hooks are host-side reactions
+/// reported into the pure brain as deterministic events.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum HookPhase {
+    SessionStart,
+    PreTool,
+    PostTool,
+    Compaction,
+    Stop,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Event {
@@ -47,6 +59,14 @@ pub enum Event {
     /// into future context (ROADMAP_2 D5).
     TodoUpdated {
         items: Vec<TodoItem>,
+        #[serde(default)]
+        est_tokens: u32,
+    },
+    /// A host-side hook fired and produced an opaque result/warning/context.
+    HookFired {
+        phase: HookPhase,
+        name: String,
+        result: Value,
         #[serde(default)]
         est_tokens: u32,
     },

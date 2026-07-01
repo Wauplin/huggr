@@ -101,6 +101,20 @@ impl Brain {
                 self.append(Record::TodoList { items, est_tokens });
                 self.checkpoint();
             }
+            Event::HookFired {
+                phase,
+                name,
+                result,
+                est_tokens,
+            } => {
+                self.append(Record::Hook {
+                    phase,
+                    name,
+                    result,
+                    est_tokens,
+                });
+                self.checkpoint();
+            }
 
             Event::ModelDelta { op, delta } => self.on_model_delta(op, delta),
             Event::ModelDone {
@@ -965,6 +979,15 @@ fn render_summary_record(seq: Seq, record: &Record) -> Option<String> {
                 .map(|item| format!("[{}] {}", if item.done { "x" } else { " " }, item.text))
                 .collect::<Vec<_>>()
                 .join("; ")
+        )),
+        Record::Hook {
+            phase,
+            name,
+            result,
+            ..
+        } => Some(format!(
+            "log:{} hook {:?}/{}: {}",
+            seq.0, phase, name, result
         )),
         Record::OpEnded { .. } => None,
     }

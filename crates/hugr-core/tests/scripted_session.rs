@@ -296,6 +296,49 @@ fn todo_state_persists_and_projects_latest_progress() {
 }
 
 #[test]
+fn hook_records_are_durable_and_projected() {
+    let mut brain = Brain::with_default_policy();
+    let commands = run_script(
+        &mut brain,
+        vec![
+            Event::HookFired {
+                phase: hugr_core::HookPhase::PreTool,
+                name: "lint".to_string(),
+                result: json!({ "warning": "about to run cargo_verify" }),
+                est_tokens: 4,
+            },
+            user("continue"),
+        ],
+    );
+
+    assert!(brain.state().log().iter().any(|entry| {
+        matches!(
+            &entry.record,
+            Record::Hook { name, .. } if name == "lint"
+        )
+    }));
+    let request = commands
+        .iter()
+        .find_map(|cmd| match cmd {
+            Command::StartModelCall { request, .. } => Some(request),
+            _ => None,
+        })
+        .expect("model request");
+    let rendered = request
+        .blocks
+        .iter()
+        .flat_map(|block| &block.content)
+        .filter_map(|part| match part {
+            ContentPart::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Host hook"));
+    assert!(rendered.contains("about to run cargo_verify"));
+}
+
+#[test]
 fn skill_invocation_records_activation_and_projects_instructions() {
     let skill = SkillDescriptor::new(
         "rust-reviewer",

@@ -145,6 +145,17 @@ pub trait TurnPolicy: Send + Sync {
     /// is decided for normal model turns (ARCHITECTURE §2.5; ROADMAP_2 B1).
     fn choose_model(&self, state: &BrainState, inputs: &RoutingInputs) -> ModelSelector;
 
+    /// Explain a selector choice for trace-visible observability. This must be
+    /// pure for the same reason [`choose_model`](Self::choose_model) is pure.
+    fn explain_model_choice(
+        &self,
+        _state: &BrainState,
+        _inputs: &RoutingInputs,
+        _selector: &ModelSelector,
+    ) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Pick the token budget the next context projection plans against.
     fn context_budget(&self, _state: &BrainState) -> TokenBudget {
         TokenBudget::default()
@@ -418,6 +429,65 @@ impl TurnPolicy for RoutingPolicy {
         }
 
         self.medium.clone()
+    }
+
+    fn explain_model_choice(
+        &self,
+        state: &BrainState,
+        inputs: &RoutingInputs,
+        selector: &ModelSelector,
+    ) -> Vec<String> {
+        if inputs.override_selector.as_ref() == Some(selector) {
+            return vec!["manual per-turn tier override".to_string()];
+        }
+
+        match inputs.phase {
+            RoutingPhase::Compaction => return vec!["compaction uses small tier".to_string()],
+            RoutingPhase::PermissionJudge => {
+                return vec!["permission judge uses small tier".to_string()];
+            }
+            RoutingPhase::SessionTitle => return vec!["session title uses small tier".to_string()],
+            RoutingPhase::QuickClassification => {
+                return vec!["quick classification uses small tier".to_string()];
+            }
+            RoutingPhase::Normal | RoutingPhase::ToolFollowup => {}
+        }
+
+        let recent_user = recent_user_text(state.log());
+        if selector == &self.small {
+            if recent_user.as_deref().is_some_and(is_small_text_task) {
+                return vec!["quick naming/classification task uses small tier".to_string()];
+            }
+            return vec!["small tier selected by routing policy".to_string()];
+        }
+
+        if selector == &self.big {
+            let mut reasons = Vec::new();
+            if inputs.recent_failures >= self.recent_failure_threshold {
+                reasons.push(format!(
+                    "recent failure count {} >= threshold {}",
+                    inputs.recent_failures, self.recent_failure_threshold
+                ));
+            }
+            if matches!(inputs.tool_risk, ToolRisk::Denied | ToolRisk::Failed) {
+                reasons.push(format!("recent tool risk is {:?}", inputs.tool_risk));
+            }
+            if inputs.context_pressure >= self.context_pressure_threshold {
+                reasons.push(format!(
+                    "context pressure {:.2} >= threshold {:.2}",
+                    inputs.context_pressure, self.context_pressure_threshold
+                ));
+            }
+            if recent_user.as_deref().is_some_and(is_big_text_task) {
+                reasons.push("hard repo-wide/architecture prompt".to_string());
+            }
+            if reasons.is_empty() {
+                reasons.push("big tier selected by routing policy".to_string());
+            }
+            return reasons;
+        }
+
+        vec!["default interaction tier".to_string()]
     }
 
     fn context_budget(&self, state: &BrainState) -> TokenBudget {

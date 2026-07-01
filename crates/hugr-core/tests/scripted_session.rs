@@ -182,6 +182,12 @@ fn routing_policy_deterministically_uses_small_medium_and_big() {
             conflict: None,
             est_tokens: 1,
         },
+        Event::ModelDone {
+            op: OpId(2),
+            output: text_output("I see the failing test."),
+            usage: usage(),
+            est_tokens: 1,
+        },
     ];
     let mut big_brain = Brain::new(Box::new(RoutingPolicy::default()));
     let big_commands = run_script(&mut big_brain, failure_script.clone());
@@ -189,6 +195,31 @@ fn routing_policy_deterministically_uses_small_medium_and_big() {
         last_model_selector(&big_commands),
         Some(ModelSelector::Named(name)) if name == "big"
     ));
+    let big_routing = big_brain
+        .state()
+        .log()
+        .iter()
+        .find_map(|entry| match &entry.record {
+            Record::OpEnded {
+                op: OpId(2), meta, ..
+            } => meta.routing.as_ref(),
+            _ => None,
+        })
+        .expect("big model op records routing metadata");
+    assert_eq!(big_routing.selector, ModelSelector::named("big"));
+    assert!(
+        big_routing
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("recent failure count")),
+        "routing reasons: {:?}",
+        big_routing.reasons
+    );
+    assert!(
+        big_routing.inputs["recent_failures"].as_u64().unwrap_or(0) >= 2,
+        "routing inputs: {}",
+        big_routing.inputs
+    );
 
     let mut replay_brain = Brain::new(Box::new(RoutingPolicy::default()));
     let replay_commands = run_script(&mut replay_brain, failure_script);

@@ -23,7 +23,9 @@ use crate::model::{
 };
 use crate::policy::{AgentSeed, RoutingInputs, RoutingPhase, StaticPolicy, TurnPolicy};
 use crate::primitives::{OpId, Seq, Value};
-use crate::record::{LogEntry, OpMeta, OpOutcome, Record, SeqRange, SummaryCoverage};
+use crate::record::{
+    LogEntry, OpMeta, OpOutcome, Record, RoutingDecision, SeqRange, SummaryCoverage,
+};
 use crate::state::{BrainState, OpKind};
 
 /// The pure, sans-IO agent core. Construct one with a [`TurnPolicy`], feed it
@@ -465,11 +467,18 @@ impl Brain {
         let inputs =
             RoutingInputs::from_state(&self.state, &plan, next_routing_phase(self.state.log()));
         let selector = self.policy.choose_model(&self.state, &inputs);
+        let routing = RoutingDecision::new(
+            selector.clone(),
+            self.policy
+                .explain_model_choice(&self.state, &inputs, &selector),
+        )
+        .with_inputs(serde_json::to_value(&inputs).unwrap_or(Value::Null));
         let request = plan.to_model_request();
         self.state.mark(
             op,
             OpKind::Model {
                 selector: selector.clone(),
+                routing,
                 text_so_far: String::new(),
             },
         );
@@ -508,10 +517,27 @@ impl Brain {
     ) {
         let op = self.state.alloc_op();
         let selector = ModelSelector::named("small");
+        let routing = RoutingDecision::new(
+            selector.clone(),
+            vec![if resume_turn {
+                "automatic compaction uses small tier".to_string()
+            } else {
+                "manual compaction uses small tier".to_string()
+            }],
+        )
+        .with_inputs(json!({
+            "phase": "Compaction",
+            "summary_of": {
+                "start": summary_of.start.0,
+                "end": summary_of.end.0,
+            },
+            "est_tokens_in": est_tokens_in,
+        }));
         let request = self.compaction_request(summary_of);
         let kind = if resume_turn {
             OpKind::Compaction {
                 selector: selector.clone(),
+                routing,
                 summary_of,
                 est_tokens_in,
                 text_so_far: String::new(),
@@ -519,6 +545,7 @@ impl Brain {
         } else {
             OpKind::ManualCompaction {
                 selector: selector.clone(),
+                routing,
                 summary_of,
                 est_tokens_in,
                 text_so_far: String::new(),
@@ -751,15 +778,20 @@ impl Brain {
     /// append an `OpEnded` record so latency/cost are queryable from the trace.
     fn end_op(&mut self, op: OpId, outcome: OpOutcome, usage: Option<Usage>) {
         let now = self.state.now();
-        let (started_at, model) = match self.state.get_op(op) {
-            Some(entry) => (entry.started_at, entry.kind.selector()),
-            None => (now, None),
+        let (started_at, model, routing) = match self.state.get_op(op) {
+            Some(entry) => (
+                entry.started_at,
+                entry.kind.selector(),
+                entry.kind.routing(),
+            ),
+            None => (now, None, None),
         };
         self.state.remove_op(op);
         let meta = OpMeta {
             started_at,
             ended_at: now,
             model,
+            routing,
             usage,
             extra: json!(null),
         };

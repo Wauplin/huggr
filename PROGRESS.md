@@ -134,6 +134,20 @@ Tests:
 - `crates/hugr-core/tests/scripted_session.rs::routing_policy_deterministically_uses_small_medium_and_big` proves deterministic routing across all three tiers and replay equality from the same recorded events.
 - Verification run: `cargo test -p hugr-core -q`; `cargo test -p hugr-replay -q`; `cargo check -p hugr-host -q`.
 
+### B3 — Trace-visible routing/spend metadata ✅
+
+Done:
+
+- `OpMeta` now carries optional `RoutingDecision` metadata for model ops: chosen selector, routing reasons, and an opaque snapshot of the pure routing inputs. Normal model calls record the policy's explanation; automatic/manual compaction records its small-tier compaction reason.
+- Per-op selector, usage, and injected start/end timestamps remain on `OpMeta`, so model tokens and latency are trace-visible. Provider cost is still read host-side from `Usage.extra`, preserving the core's narrow-waist rule.
+- `hugr-host::spend_report(log)` scans only trace/log `OpEnded` records and returns per-tier calls, input/output tokens, cost, latency, and recent routing decisions. B4 status output builds on this.
+
+Tests:
+
+- The routing-policy scripted test now asserts that the escalated `big` call's `OpMeta.routing` contains the selector, failure reason, and recorded input snapshot.
+- `crates/hugr-host/tests/end_to_end.rs::metrics_flow_through_engine` asserts per-tier spend and recent routing decisions are queryable from the engine log via `spend_report`.
+- Verification run: `cargo test -p hugr-core -q`; `cargo test -p hugr-host metrics_flow_through_engine -q`.
+
 ## Phase 0 — Pure core skeleton (no IO) ✅
 
 **Goal:** the brain exists as a pure state machine with zero IO.

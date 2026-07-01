@@ -167,7 +167,36 @@ pub struct OpMeta {
     pub ended_at: Timestamp,
     /// Which logical model (for model ops).
     pub model: Option<ModelSelector>,
+    /// Why this selector was chosen, for trace-visible routing/spend analysis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<RoutingDecision>,
     /// Tokens / cost, when applicable.
     pub usage: Option<Usage>,
     pub extra: Value,
+}
+
+/// Trace-visible routing metadata for a model op (ROADMAP_2 B3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct RoutingDecision {
+    pub selector: ModelSelector,
+    pub reasons: Vec<String>,
+    /// Opaque snapshot of the pure routing inputs. The brain stores this for
+    /// observability but does not interpret it after the decision is made.
+    pub inputs: Value,
+}
+
+impl RoutingDecision {
+    pub fn new(selector: ModelSelector, reasons: Vec<String>) -> Self {
+        Self {
+            selector,
+            reasons,
+            inputs: Value::Null,
+        }
+    }
+
+    pub fn with_inputs(mut self, inputs: Value) -> Self {
+        self.inputs = inputs;
+        self
+    }
 }

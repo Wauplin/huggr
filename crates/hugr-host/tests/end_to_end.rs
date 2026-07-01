@@ -16,7 +16,7 @@ use hugr_host::capabilities::Shell;
 use hugr_host::policy::{AutoApprove, DenyAll};
 use hugr_host::{
     Capability, CheckpointCadence, ChunkSink, CronExpr, Engine, Frontend, ModelAdapter, ModelSink,
-    Policy, Schedule, TriggerTarget,
+    Policy, Schedule, TriggerTarget, spend_report,
 };
 use serde_json::json;
 
@@ -467,6 +467,24 @@ async fn metrics_flow_through_engine() {
 
     // The session-end hook fired exactly once (the totals footer point).
     assert_eq!(*capture.session_ends.lock().unwrap(), 1);
+
+    let spend = spend_report(engine.brain().state().log());
+    let big = spend
+        .tiers
+        .iter()
+        .find(|tier| tier.selector == ModelSelector::named("big"))
+        .expect("big tier spend is queryable from OpMeta");
+    assert_eq!(big.model_calls, 2);
+    assert_eq!(big.input_tokens, 200);
+    assert_eq!(big.output_tokens, 100);
+    assert!((big.cost.unwrap_or_default() - 0.0020).abs() < f64::EPSILON);
+    assert!(
+        spend
+            .recent_routing
+            .iter()
+            .any(|decision| decision.selector == ModelSelector::named("big")),
+        "routing reasons should be queryable from the log"
+    );
 }
 
 /// A background capability whose `invoke` blocks until explicitly released, and

@@ -63,5 +63,5 @@ pub use policy::{
     ToolRisk, TurnPolicy,
 };
 pub use primitives::{ObjectKey, OpId, Seq, Timestamp, Value};
-pub use record::{LogEntry, OpMeta, OpOutcome, Record, SeqRange, SummaryCoverage};
+pub use record::{LogEntry, OpMeta, OpOutcome, Record, RoutingDecision, SeqRange, SummaryCoverage};
 pub use state::{BrainState, InflightOp, OpKind};

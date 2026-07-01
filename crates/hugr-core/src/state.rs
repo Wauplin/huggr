@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::command::Command;
 use crate::model::ModelSelector;
 use crate::primitives::{ObjectKey, OpId, Timestamp, Value};
-use crate::record::{LogEntry, SeqRange};
+use crate::record::{LogEntry, RoutingDecision, SeqRange};
 
 /// The brain's working state. Derived from [`log`](BrainState::log); never the
 /// source of truth itself.
@@ -193,12 +193,14 @@ pub enum OpKind {
     /// `ModelDone` is authoritative for logic.
     Model {
         selector: ModelSelector,
+        routing: RoutingDecision,
         text_so_far: String,
     },
     /// A small-tier model call that summarizes an exact log span for lossless
     /// compaction (ARCHITECTURE §3.4).
     Compaction {
         selector: ModelSelector,
+        routing: RoutingDecision,
         summary_of: SeqRange,
         est_tokens_in: u32,
         text_so_far: String,
@@ -207,6 +209,7 @@ pub enum OpKind {
     /// returns to idle after checkpointing instead of resuming a model turn.
     ManualCompaction {
         selector: ModelSelector,
+        routing: RoutingDecision,
         summary_of: SeqRange,
         est_tokens_in: u32,
         text_so_far: String,
@@ -240,6 +243,16 @@ impl OpKind {
             OpKind::Model { selector, .. }
             | OpKind::Compaction { selector, .. }
             | OpKind::ManualCompaction { selector, .. } => Some(selector.clone()),
+            _ => None,
+        }
+    }
+
+    /// The routing decision, if this is a model op.
+    pub(crate) fn routing(&self) -> Option<RoutingDecision> {
+        match self {
+            OpKind::Model { routing, .. }
+            | OpKind::Compaction { routing, .. }
+            | OpKind::ManualCompaction { routing, .. } => Some(routing.clone()),
             _ => None,
         }
     }

@@ -33,6 +33,7 @@ mod capability;
 mod coalesce;
 mod engine;
 mod frontend;
+pub mod mcp;
 mod model;
 pub mod plugins;
 pub mod policy;
@@ -45,6 +46,7 @@ pub use engine::{
     TraceCompaction,
 };
 pub use frontend::{Frontend, Metrics, StdoutFrontend};
+pub use mcp::{McpError, McpServerConfig, McpToolCapability};
 pub use model::{ModelAdapter, ModelRegistry, ModelSink};
 pub use plugins::PluginCapability;
 pub use policy::Policy;

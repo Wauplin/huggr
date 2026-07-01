@@ -438,6 +438,7 @@ dependencies = [
  "hugr-plugin-abi",
  "hugr-replay",
  "reqwest",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",

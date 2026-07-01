@@ -13,6 +13,7 @@ use hugr_core::{
     OpOutcome, OutputEvent, Record, ToolCall, ToolSchema, Usage, Value,
 };
 use hugr_host::capabilities::Shell;
+use hugr_host::mcp::{self, McpServerConfig};
 use hugr_host::policy::{AutoApprove, DenyAll};
 use hugr_host::{
     Capability, CheckpointCadence, ChunkSink, CronExpr, Engine, Frontend, ModelAdapter, ModelSink,
@@ -115,6 +116,13 @@ fn count_tool_results(log: &[hugr_core::LogEntry]) -> Vec<(String, serde_json::V
         .collect()
 }
 
+fn python3_available() -> bool {
+    std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
 #[tokio::test]
 async fn multi_turn_session_with_real_shell() {
     let capture = Capture::default();
@@ -175,6 +183,68 @@ async fn multi_turn_session_with_real_shell() {
         first_request.blocks.first().map(|b| b.role),
         Some(hugr_core::Role::System)
     ));
+}
+
+#[tokio::test]
+async fn mcp_stdio_tool_runs_through_real_engine() {
+    if !python3_available() {
+        eprintln!("skipping MCP stdio test: python3 unavailable");
+        return;
+    }
+
+    let server = r#"
+import json, sys
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    msg = json.loads(line)
+    if "id" not in msg:
+        continue
+    method = msg.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": "2024-11-05", "capabilities": {}, "serverInfo": {"name": "fake-mcp", "version": "0"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "echo", "description": "Echo a message.", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]}}]}
+    elif method == "tools/call":
+        args = msg.get("params", {}).get("arguments", {})
+        result = {"content": [{"type": "text", "text": "echo:" + str(args.get("message", ""))}], "isError": False}
+    else:
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "error": {"code": -32601, "message": "unknown method"}}), flush=True)
+        continue
+    print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}), flush=True)
+"#;
+    let caps = mcp::load_stdio(McpServerConfig::new("fake", "python3").args(["-u", "-c", server]))
+        .await
+        .expect("MCP server should describe its tools");
+
+    let model = MockModel::new([
+        ModelOutput::tool_calls(vec![ToolCall::new(
+            "call-1",
+            "mcp__fake__echo",
+            json!({ "message": "hello" }),
+        )]),
+        ModelOutput::text("The MCP server echoed hello."),
+    ]);
+    let mut builder = Engine::builder()
+        .model(ModelSelector::named("medium"), model.clone())
+        .clock(deterministic_clock());
+    for cap in caps {
+        builder = builder.capability(cap);
+    }
+    let mut engine = builder.build();
+
+    engine.user_turn("use the MCP echo tool".into()).await;
+
+    let tool_results = count_tool_results(engine.brain().state().log());
+    let (_, result) = tool_results
+        .iter()
+        .find(|(name, _)| name == "mcp__fake__echo")
+        .expect("MCP tool result should be logged");
+    assert_eq!(result["content"][0]["text"], "echo:hello");
+    assert_eq!(
+        model.requests.lock().unwrap()[0].tools[0].name,
+        "mcp__fake__echo"
+    );
 }
 
 #[tokio::test]

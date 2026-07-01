@@ -175,6 +175,21 @@ Tests:
 
 - Verification run: `cargo test -p hugr-wasm -q`; `./crates/hugr-wasm/build-extension.sh`.
 
+## Roadmap 2 Phase C — Skills & MCP
+
+### C1 — MCP stdio client ✅
+
+Done:
+
+- `hugr-host::mcp` now connects to stdio MCP servers, performs the MCP `initialize` / `notifications/initialized` handshake, discovers remote tools through `tools/list`, and exposes each tool as an ordinary `Capability` in the existing registry. No `hugr-core` contract changes were needed.
+- MCP tool names are namespaced as `mcp__<server>__<tool>` before advertisement so they coexist with built-in and plugin tools in the narrow-waist capability registry; remote arguments and results stay opaque `Value`s.
+- `tools/call` results route back as normal capability results. MCP `isError` tool responses and transport/protocol failures become error-shaped tool results the model can react to, while startup/discovery failures remain host-side load errors.
+
+Tests:
+
+- `crates/hugr-host/tests/end_to_end.rs::mcp_stdio_tool_runs_through_real_engine` starts a tiny external stdio MCP server, loads its tool into the real engine, has the model call it, and verifies the result is logged with zero core changes.
+- Verification run: `cargo test -p hugr-host`.
+
 ## Phase 0 — Pure core skeleton (no IO) ✅
 
 **Goal:** the brain exists as a pure state machine with zero IO.

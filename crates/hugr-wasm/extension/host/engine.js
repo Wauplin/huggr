@@ -15,16 +15,23 @@ Prefer concrete actions over long explanations. Use list_tabs / get_current_page
 After opening or navigating a tab, or when a page is heavy or JS-rendered (a single-page app), call wait_for_page before reading — the read tools auto-wait briefly, but wait_for_page (optionally with a CSS selector or settle_ms) is more reliable for slow content.
 Before doing several navigation steps, consider calling show_plan first, and ask_user_confirmation before anything the user might not expect. When done, give a short summary.`;
 
-/** Build the brain's StaticPolicy config from the current settings. */
+/** Build the brain's RoutingPolicy config from the current settings. */
 export function buildPolicy(config) {
   return {
-    model: { Named: "medium" },
-    tools: TOOL_SCHEMAS,
-    permissioned: PERMISSIONED,
-    background: [],
-    // `agents` is #[serde(default)] in StaticPolicy, so we can omit it.
-    params: { temperature: config.temperature, max_tokens: null },
-    system: SYSTEM_PROMPT,
+    base: {
+      model: { Named: "medium" },
+      tools: TOOL_SCHEMAS,
+      permissioned: PERMISSIONED,
+      background: [],
+      agents: [],
+      params: { temperature: config.temperature, max_tokens: null },
+      system: SYSTEM_PROMPT,
+    },
+    small: { Named: "small" },
+    medium: { Named: "medium" },
+    big: { Named: "big" },
+    recent_failure_threshold: 2,
+    context_pressure_threshold: 0.85,
   };
 }
 
@@ -54,6 +61,8 @@ export class Engine {
     this.events = [];
     /** @type {number|null} first injected Tick timestamp */
     this.createdAt = null;
+    /** @type {string|null} pending one-turn tier override */
+    this.tierOverride = null;
   }
 
   now() {
@@ -97,6 +106,12 @@ export class Engine {
   async compactContext() {
     this.feed("CompactContext");
     await this.driveToIdle();
+  }
+
+  /** Force the next normal model turn to a tier, or clear with null. */
+  overrideNextModel(tier) {
+    this.tierOverride = tier || null;
+    this.feed({ ModelOverride: { selector: tier ? { Named: tier } : null } });
   }
 
   /** Inject a UserAbort from outside a turn (the ESC / stop button). */
@@ -183,6 +198,7 @@ export class Engine {
     const controller = new AbortController();
     this.aborters.set(op, controller);
     this.frontend.onModelStart(op, model);
+    if (request?.extra?.kind !== "compaction") this.tierOverride = null;
     callModel(request, this.config, {
       model,
       onText: (t) => this.pushEvent({ ModelDelta: { op, delta: { Text: t } } }),

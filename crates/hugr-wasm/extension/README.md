@@ -35,7 +35,9 @@ The brain is `submit(eventJson)` / `poll() -> commandsJson`, synchronous and pur
 
 Assistant output and confirmation prompts render Markdown directly in the side panel, including headings, lists, quotes, code blocks, links, tables, emphasis, and task checkboxes. The renderer is dependency-free and builds DOM nodes rather than injecting model text as HTML.
 
-The header includes a new-chat button that clears the panel and starts a fresh WASM brain, a context drawer button that shows the live `ContextPlan`, a compact button that fires one lossless `CompactContext` pass, and an export button that downloads a `.jsonl` trace envelope containing metadata, the static policy, the exact submitted event stream (including injected `Tick`s), and the folded durable log. Export does not include your API key, and browser-side resume/import from that file is not wired yet.
+The header includes a new-chat button that clears the panel and starts a fresh WASM brain, a context drawer button that shows the live `ContextPlan`, a compact button that fires one lossless `CompactContext` pass, and an export button that downloads a `.jsonl` trace envelope containing metadata, the routing policy, the exact submitted event stream (including injected `Tick`s), and the folded durable log. Export does not include your API key, and browser-side resume/import from that file is not wired yet.
+
+Each assistant response shows the logical tier it used (`small`, `medium`, or `big`). The composer tier menu defaults to `auto`; choosing a tier injects a recorded one-turn `ModelOverride` event and clears after the next normal model call consumes it.
 
 ## The tools
 

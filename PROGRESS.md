@@ -162,6 +162,19 @@ Tests:
 - `crates/hugr-core/tests/scripted_session.rs::model_override_forces_one_turn_then_clears` pins the one-shot override behavior.
 - Verification run: `cargo test -p hugr-core -q`; `cargo check -p hugr-cli -q`.
 
+### B5 — Browser tier chips and override ✅
+
+Done:
+
+- The Chrome side panel now builds a `RoutingPolicy` config for the WASM brain, matching the native host's three-tier routing behavior.
+- Each assistant response bubble shows a stable tier chip (`used small`, `used medium`, or `used big`) from the `StartModelCall` selector.
+- The composer has a next-turn tier selector (`auto`/`small`/`medium`/`big`). Selecting a tier injects the same recorded `ModelOverride` event as the CLI; the browser engine clears the UI after the next normal model call consumes it.
+- The checked-in extension WASM bundle was rebuilt so the browser host understands `RoutingPolicy`, `RoutingDecision`, and `ModelOverride`.
+
+Tests:
+
+- Verification run: `cargo test -p hugr-wasm -q`; `./crates/hugr-wasm/build-extension.sh`.
+
 ## Phase 0 — Pure core skeleton (no IO) ✅
 
 **Goal:** the brain exists as a pure state machine with zero IO.

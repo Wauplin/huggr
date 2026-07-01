@@ -139,7 +139,7 @@ const HugrBrainFinalization = (typeof FinalizationRegistry === 'undefined')
     : new FinalizationRegistry(ptr => wasm.__wbg_hugrbrain_free(ptr >>> 0, 1));
 /**
  * A [`Brain`] wrapped for JavaScript. Construct one with a serialized
- * [`StaticPolicy`], then drive it with [`submit`](HugrBrain::submit) /
+ * [`RoutingPolicy`] / [`StaticPolicy`], then drive it with [`submit`](HugrBrain::submit) /
  * [`poll`](HugrBrain::poll) exactly as the native host's driver loop does.
  */
 export class HugrBrain {
@@ -213,7 +213,7 @@ export class HugrBrain {
         return HugrBrain.__wrap(ret);
     }
     /**
-     * Create a brain from a JSON-serialized [`StaticPolicy`] — the same policy
+     * Create a brain from a JSON-serialized [`RoutingPolicy`] — the same policy
      * the native [`EngineBuilder`](hugr_host) assembles (model selector,
      * advertised tools, permissioned set, system prompt). The brain branches on
      * the policy's pure decisions (`needs_permission`, `is_background`,

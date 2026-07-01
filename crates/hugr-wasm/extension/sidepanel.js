@@ -373,6 +373,13 @@ function dispositionLabel(disposition) {
   return enumType(disposition).replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
 }
 
+function selectorName(selector) {
+  const type = enumType(selector);
+  const body = enumBody(selector);
+  if (type === "Named") return String(body || "unknown");
+  return type;
+}
+
 function countDisposition(plan, kind) {
   return (plan.entries || []).filter((entry) => dispositionLabel(entry.disposition) === kind).length;
 }
@@ -435,10 +442,13 @@ class Frontend {
     scrollDown();
   }
 
-  onModelStart(op) {
+  onModelStart(op, model) {
     const row = el("div", "msg assistant");
     const bubble = el("div", "bubble");
+    const head = el("div", "response-head");
+    head.appendChild(el("span", `tier-chip tier-${selectorName(model)}`, `used ${selectorName(model)}`));
     const contentEl = el("div", "stream markdown");
+    bubble.appendChild(head);
     bubble.appendChild(contentEl);
     row.appendChild(bubble);
     logEl.appendChild(row);
@@ -631,6 +641,7 @@ function setBusy(v) {
   $("context-btn").disabled = v;
   $("compact-btn").disabled = v;
   $("export-trace-btn").disabled = v;
+  $("tier-override").disabled = v;
 }
 
 function banner(msg, kind = "info") {
@@ -645,6 +656,7 @@ function startSession(config, resetLog = false) {
   const tools = createTools(frontend); // ui.confirm / ui.showPlan live on the frontend
   const brain = new HugrBrain(JSON.stringify(buildPolicy(config)));
   engine = new Engine({ brain, config, tools, frontend });
+  $("tier-override").value = "";
   if (!$("context-drawer").classList.contains("hidden")) refreshContextDrawer();
 }
 
@@ -687,6 +699,7 @@ async function runTurn(text) {
     console.error(e);
   } finally {
     setBusy(false);
+    $("tier-override").value = engine?.tierOverride || "";
     $("input").focus();
   }
 }
@@ -737,6 +750,13 @@ $("auto-approve").addEventListener("change", (e) => {
   if (engine) engine.config.autoApprove = e.target.checked;
   if (currentConfig) currentConfig.autoApprove = e.target.checked;
   saveConfig({ autoApprove: e.target.checked });
+});
+
+$("tier-override").addEventListener("change", (e) => {
+  if (!engine) return;
+  const tier = e.target.value || null;
+  engine.overrideNextModel(tier);
+  banner(tier ? `Next turn tier: ${tier}` : "Next turn tier: auto", "info");
 });
 
 $("new-chat-btn").addEventListener("click", () => {

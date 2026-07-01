@@ -182,7 +182,7 @@ async fn read_lines(
     let mut lines = BufReader::new(pipe).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         sink.chunk(json!({ "stream": stream, "line": line }));
-        if captured.len() + line.len() + 1 <= max_output {
+        if captured.len() + line.len() < max_output {
             captured.push_str(&line);
             captured.push('\n');
         } else {

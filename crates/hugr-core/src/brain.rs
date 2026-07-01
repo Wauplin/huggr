@@ -499,10 +499,8 @@ impl Brain {
     fn start_model_turn(&mut self) {
         let budget = self.policy.context_budget(&self.state);
         let plan = self.policy.project_context(self.state.log(), budget);
-        if self.should_compact(&plan, budget) {
-            if self.start_selected_compaction(true) {
-                return;
-            }
+        if self.should_compact(&plan, budget) && self.start_selected_compaction(true) {
+            return;
         }
 
         let op = self.state.alloc_op();
@@ -602,6 +600,7 @@ impl Brain {
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn on_compaction_done(
         &mut self,
         op: OpId,

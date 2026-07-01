@@ -12,7 +12,7 @@ use crate::model::{
     ContentPart, ContextBlock, ContextBudgetTotals, ContextDisposition, ContextPlan,
     ContextPlanEntry, ContextSource, ModelSelector, Role, SamplingParams, TokenBudget, ToolSchema,
 };
-use crate::record::{LogEntry, Record};
+use crate::record::{LogEntry, Record, SummaryCoverage};
 use crate::state::BrainState;
 
 /// How to seed a **sub-agent's** log when it is spawned (ARCHITECTURE §14). A
@@ -193,10 +193,12 @@ impl TurnPolicy for StaticPolicy {
     }
 
     fn project_context(&self, log: &[LogEntry], budget: TokenBudget) -> ContextPlan {
-        // Trivial pass-through: one context block per logged message / result,
-        // in log order. No compaction, no eviction (those arrive later).
+        // One context block per logged message / result, in log order. Durable
+        // summaries evict covered source records to references without deleting
+        // the originals (ARCHITECTURE §3.4).
         let mut entries = Vec::new();
         let mut totals = ContextBudgetTotals::new();
+        let summaries = complete_summaries(log);
         if let Some(system) = &self.system {
             let disposition = ContextDisposition::included(ContextBlock::new(
                 Role::System,
@@ -211,6 +213,24 @@ impl TurnPolicy for StaticPolicy {
             ));
         }
         for entry in log {
+            if let Some(summary_seq) = covering_summary(&summaries, entry.seq) {
+                let disposition = ContextDisposition::referenced(ContextBlock::new(
+                    Role::User,
+                    vec![ContentPart::Ref {
+                        reference: format!("log:{}", entry.seq.0),
+                        summary: format!("covered by summary log:{}", summary_seq.0),
+                        est_tokens: 1,
+                    }],
+                ));
+                totals.add(&disposition, 1);
+                entries.push(ContextPlanEntry::new(
+                    ContextSource::log_entry(entry.seq),
+                    1,
+                    disposition,
+                    "source entry is covered by a durable summary",
+                ));
+                continue;
+            }
             match &entry.record {
                 Record::UserMessage { text, est_tokens } => {
                     let disposition = ContextDisposition::included(ContextBlock::new(
@@ -272,6 +292,39 @@ impl TurnPolicy for StaticPolicy {
                         "static pass-through projection",
                     ));
                 }
+                Record::Summary {
+                    text,
+                    summary_of,
+                    coverage,
+                    tier,
+                    est_tokens_in,
+                    est_tokens_out,
+                    ..
+                } => {
+                    let coverage_label = match coverage {
+                        SummaryCoverage::Complete => "complete".to_string(),
+                        SummaryCoverage::Partial { reason } => format!("partial: {reason}"),
+                    };
+                    let disposition = ContextDisposition::summarized(ContextBlock::new(
+                        Role::Assistant,
+                        vec![ContentPart::Text(format!(
+                            "Summary of log:{}..log:{} ({coverage_label}, tier {:?}, {} -> {} est tokens):\n{}",
+                            summary_of.start.0,
+                            summary_of.end.0,
+                            tier,
+                            est_tokens_in,
+                            est_tokens_out,
+                            text
+                        ))],
+                    ));
+                    totals.add(&disposition, *est_tokens_out);
+                    entries.push(ContextPlanEntry::new(
+                        ContextSource::log_entry(entry.seq),
+                        *est_tokens_out,
+                        disposition,
+                        "durable summary projection",
+                    ));
+                }
                 // OpEnded entries are bookkeeping (timing/cost); they do not
                 // contribute to model context, but the plan still explains why
                 // the block is omitted.
@@ -311,4 +364,30 @@ impl TurnPolicy for StaticPolicy {
             .find(|(name, _)| name == capability)
             .map(|(_, seed)| *seed)
     }
+}
+
+fn complete_summaries(log: &[LogEntry]) -> Vec<(crate::primitives::Seq, crate::record::SeqRange)> {
+    log.iter()
+        .filter_map(|entry| match &entry.record {
+            Record::Summary {
+                summary_of,
+                coverage: SummaryCoverage::Complete,
+                ..
+            } => Some((entry.seq, *summary_of)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn covering_summary(
+    summaries: &[(crate::primitives::Seq, crate::record::SeqRange)],
+    seq: crate::primitives::Seq,
+) -> Option<crate::primitives::Seq> {
+    summaries.iter().rev().find_map(|(summary_seq, range)| {
+        if *summary_seq != seq && range.contains(seq) {
+            Some(*summary_seq)
+        } else {
+            None
+        }
+    })
 }

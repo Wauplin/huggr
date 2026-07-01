@@ -41,6 +41,18 @@ Tests:
 - `crates/hugr-core/tests/scripted_session.rs::context_plan_explains_dispositions_and_renders_request` pins the A1 shape: budget is threaded through, every log entry gets a disposition/reason, totals use recorded token estimates, and rendering the plan produces the model request.
 - Verification run: `cargo test`.
 
+### A2 — Durable summary records ✅
+
+Done:
+
+- `hugr-core` now has durable `Record::Summary` entries with an exact inclusive `SeqRange`, explicit `SummaryCoverage`, the tier that produced the summary, and host-recorded `est_tokens_in` / `est_tokens_out`. Summaries are appended like any other log record and the source records remain untouched.
+- `StaticPolicy` projection consumes complete summaries: uncovered summaries render as `Summarized` assistant blocks, and covered source records render as explicit `ContentPart::Ref` references back to their original log seqs. Projection remains pure and synchronous; it only reads summaries already present in the log.
+
+Tests:
+
+- `crates/hugr-core/tests/scripted_session.rs::summary_records_round_trip_and_evict_covered_span_to_refs` pins JSON log round-trip for summary records and verifies a later projection evicts the covered span to references.
+- Verification run: `cargo test -p hugr-core`.
+
 ## Phase 0 — Pure core skeleton (no IO) ✅
 
 **Goal:** the brain exists as a pure state machine with zero IO.

@@ -5,8 +5,9 @@ mod common;
 
 use common::*;
 use hugr_core::{
-    Brain, Command, ContextDisposition, ContextSource, DoneReason, Event, ModelSelector, OpId,
-    StaticPolicy, TokenBudget, ToolSchema, TurnPolicy,
+    Brain, Command, ContentPart, ContextDisposition, ContextSource, DoneReason, Event, LogEntry,
+    ModelSelector, OpId, Record, Seq, SeqRange, StaticPolicy, SummaryCoverage, Timestamp,
+    TokenBudget, ToolSchema, TurnPolicy,
 };
 use serde_json::json;
 
@@ -332,4 +333,77 @@ fn context_plan_explains_dispositions_and_renders_request() {
             && matches!(plan.entries[2].disposition, ContextDisposition::Omitted)
             && plan.entries[2].reason == "operation metadata is not model context"
     );
+}
+
+/// A2: durable summaries round-trip through the log and later projections evict
+/// the exact covered source span to references rather than deleting it.
+#[test]
+fn summary_records_round_trip_and_evict_covered_span_to_refs() {
+    let log = vec![
+        LogEntry {
+            seq: Seq(0),
+            at: Timestamp(0),
+            record: Record::UserMessage {
+                text: "first long turn".to_string(),
+                est_tokens: 40,
+            },
+        },
+        LogEntry {
+            seq: Seq(1),
+            at: Timestamp(0),
+            record: Record::ModelOutput {
+                op: OpId(0),
+                output: text_output("first long answer"),
+                est_tokens: 60,
+            },
+        },
+        LogEntry {
+            seq: Seq(2),
+            at: Timestamp(0),
+            record: Record::Summary {
+                op: OpId(1),
+                text: "The first turn established the task.".to_string(),
+                summary_of: SeqRange::new(Seq(0), Seq(1)),
+                coverage: SummaryCoverage::Complete,
+                tier: ModelSelector::named("small"),
+                est_tokens_in: 100,
+                est_tokens_out: 8,
+            },
+        },
+    ];
+
+    let json = serde_json::to_string(&log).expect("summary log serializes");
+    let restored: Vec<LogEntry> = serde_json::from_str(&json).expect("summary log deserializes");
+    assert_eq!(restored, log);
+
+    let policy = StaticPolicy::default();
+    let plan = policy.project_context(&restored, TokenBudget::new(128));
+    let request = plan.to_model_request();
+
+    assert_eq!(plan.entries.len(), 3);
+    assert_eq!(request.blocks.len(), 3);
+    assert_eq!(plan.totals.referenced_tokens, 2);
+    assert_eq!(plan.totals.summarized_tokens, 8);
+
+    assert!(matches!(
+        plan.entries[0].disposition,
+        ContextDisposition::Referenced { .. }
+    ));
+    assert!(matches!(
+        plan.entries[1].disposition,
+        ContextDisposition::Referenced { .. }
+    ));
+    assert!(matches!(
+        plan.entries[2].disposition,
+        ContextDisposition::Summarized { .. }
+    ));
+
+    assert!(matches!(
+        &request.blocks[0].content[0],
+        ContentPart::Ref {
+            reference,
+            summary,
+            est_tokens: 1,
+        } if reference == "log:0" && summary == "covered by summary log:2"
+    ));
 }

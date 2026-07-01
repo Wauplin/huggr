@@ -245,6 +245,30 @@ impl Trace {
         Ok(())
     }
 
+    /// Atomically write the trace to disk as JSON by writing a sibling temp
+    /// file and renaming it into place. Native hosts use this for crash-resume
+    /// checkpoints so a process kill cannot leave a half-written trace at the
+    /// target path (ARCHITECTURE §15.1).
+    pub fn save_atomic(&self, path: impl AsRef<Path>) -> Result<(), TraceError> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("trace.json");
+        let tmp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+
+        std::fs::write(&tmp, self.to_json()?)?;
+        if let Err(err) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(err.into());
+        }
+        Ok(())
+    }
+
     /// Read a trace from disk and parse it (version-checked).
     pub fn load(path: impl AsRef<Path>) -> Result<Self, TraceError> {
         let bytes = std::fs::read(path)?;

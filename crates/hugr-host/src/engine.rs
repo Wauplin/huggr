@@ -6,6 +6,7 @@
 //! here; the brain stays synchronous and single-threaded.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -25,6 +26,52 @@ use crate::coalesce::Coalescer;
 use crate::frontend::{Frontend, StdoutFrontend};
 use crate::model::{ModelRegistry, ModelSink};
 use crate::policy::{AllowAll, Policy};
+
+/// How aggressively a recording engine persists its trace checkpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CheckpointCadence {
+    /// Only save when the brain emits [`Command::Checkpoint`].
+    OnCommand,
+    /// Save after every host event submitted to the brain. This is the durable
+    /// crash-resume mode: a kill during a model/tool op still leaves a trace
+    /// whose fold reconstructs the in-flight op table (ARCHITECTURE §15.1).
+    EveryEvent,
+    /// Save after every N host events, plus on [`Command::Checkpoint`].
+    EveryNEvents(usize),
+}
+
+impl CheckpointCadence {
+    fn due_after_event(self, events_since_checkpoint: usize) -> bool {
+        match self {
+            CheckpointCadence::OnCommand => false,
+            CheckpointCadence::EveryEvent => true,
+            CheckpointCadence::EveryNEvents(n) => events_since_checkpoint >= n.max(1),
+        }
+    }
+}
+
+/// How a resumed host reconciles ops that were in flight when the previous
+/// process died.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CrashResumePolicy {
+    /// Append recorded [`Event::OpCancelled`] events for stale in-flight ops and
+    /// let the brain fold the cancellation exactly as if the old host had
+    /// confirmed an abort before exiting. This is replay-safe and conservative;
+    /// idempotent re-issue can be added as another host policy later.
+    CancelInflight,
+}
+
+/// Durable log compaction policy for native checkpoints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TraceCompaction {
+    /// Preserve the full event stream and consolidated log. Phase 7 makes the
+    /// policy explicit, but keeps the default lossless because the log is the
+    /// source of truth and destructive compaction would break replay.
+    PreserveFull,
+}
 
 /// Captures the exact ordered [`Event`] stream the host feeds the brain, so the
 /// session can be persisted as a [`Trace`] and replayed bit-for-bit later
@@ -111,6 +158,12 @@ pub struct Engine {
     /// When recording is enabled, the captured event stream for the trace
     /// (ARCHITECTURE §12). `None` when recording is off (zero overhead).
     recorder: Option<Recorder>,
+    /// Optional durable checkpoint target. When set, the engine writes the
+    /// current trace atomically according to `checkpoint_cadence`.
+    checkpoint_path: Option<PathBuf>,
+    checkpoint_cadence: CheckpointCadence,
+    events_since_checkpoint: usize,
+    compaction: TraceCompaction,
     /// The brain's policy config, serialized once at build time, so a recorded
     /// trace can carry it (the brain branches on the policy's pure decisions —
     /// permission/background — so replay needs the same policy, §6.3).
@@ -175,6 +228,13 @@ impl Engine {
         }
         self.brain.submit(tick);
         self.brain.submit(event);
+        self.events_since_checkpoint += 1;
+        if self
+            .checkpoint_cadence
+            .due_after_event(self.events_since_checkpoint)
+        {
+            self.checkpoint();
+        }
     }
 
     /// Build a [`Trace`] of the session so far (the captured event stream + the
@@ -205,6 +265,29 @@ impl Engine {
             None => Err(TraceError::Io(std::io::Error::other(
                 "engine is not recording; build it with .record()",
             ))),
+        }
+    }
+
+    /// Save the current recorded trace atomically to the configured checkpoint
+    /// target, if any. Errors are reported to the front-end as notices because
+    /// the driver loop methods are intentionally infallible.
+    fn checkpoint(&mut self) {
+        let Some(path) = self.checkpoint_path.clone() else {
+            return;
+        };
+        let result = match self.trace() {
+            Some(trace) => match self.compaction {
+                TraceCompaction::PreserveFull => trace.save_atomic(&path),
+            },
+            None => Err(TraceError::Io(std::io::Error::other(
+                "engine is not recording; checkpoint requires .record()",
+            ))),
+        };
+        match result {
+            Ok(()) => self.events_since_checkpoint = 0,
+            Err(err) => self
+                .frontend
+                .on_notice(&format!("checkpoint failed ({}): {err}", path.display())),
         }
     }
 
@@ -416,7 +499,10 @@ impl Engine {
             // just drops finished task handles so they don't accumulate. A host
             // that wanted incremental on-disk persistence could `save_trace`
             // here too.
-            Command::Checkpoint => self.tasks.retain(|_, h| !h.is_finished()),
+            Command::Checkpoint => {
+                self.tasks.retain(|_, h| !h.is_finished());
+                self.checkpoint();
+            }
 
             Command::Done { reason } => self.frontend.on_done(&reason),
 
@@ -468,6 +554,10 @@ pub struct EngineBuilder {
     /// tool schema to the model and carries a fork seed strategy (§14).
     agents: Vec<(ToolSchema, AgentSeed)>,
     record: bool,
+    checkpoint_path: Option<PathBuf>,
+    checkpoint_cadence: CheckpointCadence,
+    crash_resume: CrashResumePolicy,
+    compaction: TraceCompaction,
     /// When set, the brain is pre-seeded by replaying this trace's recorded
     /// events into it (with zero IO), and the recorder is pre-loaded with those
     /// same events so the continued session re-saves the full history (P3-4).
@@ -487,6 +577,10 @@ impl Default for EngineBuilder {
             sampling: SamplingParams::default(),
             agents: Vec::new(),
             record: false,
+            checkpoint_path: None,
+            checkpoint_cadence: CheckpointCadence::OnCommand,
+            crash_resume: CrashResumePolicy::CancelInflight,
+            compaction: TraceCompaction::PreserveFull,
             resume: None,
         }
     }
@@ -573,6 +667,29 @@ impl EngineBuilder {
         self
     }
 
+    /// Persist this recording to `path` during the run. This implies
+    /// [`record`](Self::record): checkpoints are just the current trace written
+    /// atomically at the chosen cadence (ARCHITECTURE §12.2/§15.1).
+    pub fn checkpoint(mut self, path: impl Into<PathBuf>, cadence: CheckpointCadence) -> Self {
+        self.record = true;
+        self.checkpoint_path = Some(path.into());
+        self.checkpoint_cadence = cadence;
+        self
+    }
+
+    /// Set how a resumed trace reconciles stale in-flight ops left by a crash.
+    pub fn crash_resume_policy(mut self, policy: CrashResumePolicy) -> Self {
+        self.crash_resume = policy;
+        self
+    }
+
+    /// Set the checkpoint compaction policy. The Phase 7 native host exposes
+    /// the policy explicitly and defaults to lossless full-trace preservation.
+    pub fn compaction(mut self, compaction: TraceCompaction) -> Self {
+        self.compaction = compaction;
+        self
+    }
+
     /// Resume a session from a saved [`Trace`] (P3-4). The built engine's brain
     /// is reconstructed by re-feeding the trace's recorded events into it (with
     /// **zero IO** — the host does *not* re-run the model/shell/http for events
@@ -593,6 +710,7 @@ impl EngineBuilder {
     }
 
     pub fn build(self) -> Engine {
+        let clock = self.clock.unwrap_or_else(|| Arc::new(system_clock));
         // The brain's policy and recorder depend on whether we are resuming a
         // trace. Resume restores the *recorded* policy (so the continued session
         // branches identically and re-verifies) and rebuilds the brain from the
@@ -612,7 +730,8 @@ impl EngineBuilder {
                 let _ = hugr_replay::drive(&mut brain, &events);
                 // Pre-seed the recorder with the same events (moved, not cloned) so
                 // a later `save_trace` carries old + new (ARCHITECTURE §6.3).
-                let recorder = Recorder::seed(events, trace.meta.created_at);
+                let mut recorder = Recorder::seed(events, trace.meta.created_at);
+                reconcile_crashed_ops(&mut brain, &mut recorder, self.crash_resume, &clock);
                 (brain, Some(recorder), trace.policy)
             }
             None => {
@@ -652,15 +771,43 @@ impl EngineBuilder {
             frontend: self
                 .frontend
                 .unwrap_or_else(|| Box::new(StdoutFrontend::new())),
-            clock: self.clock.unwrap_or_else(|| Arc::new(system_clock)),
+            clock,
             tx,
             rx,
             tasks: HashMap::new(),
             op_labels: HashMap::new(),
             coalescer: Coalescer::new(),
             recorder,
+            checkpoint_path: self.checkpoint_path,
+            checkpoint_cadence: self.checkpoint_cadence,
+            events_since_checkpoint: 0,
+            compaction: self.compaction,
             policy_config,
             default_model: self.selector,
+        }
+    }
+}
+
+fn reconcile_crashed_ops(
+    brain: &mut Brain,
+    recorder: &mut Recorder,
+    policy: CrashResumePolicy,
+    clock: &Clock,
+) {
+    match policy {
+        CrashResumePolicy::CancelInflight => {
+            let stale: Vec<OpId> = brain.state().inflight().keys().copied().collect();
+            for op in stale {
+                let tick = Event::Tick {
+                    now: Timestamp(clock()),
+                };
+                recorder.record(&tick);
+                brain.submit(tick);
+
+                let cancelled = Event::OpCancelled { op };
+                recorder.record(&cancelled);
+                brain.submit(cancelled);
+            }
         }
     }
 }

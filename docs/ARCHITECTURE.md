@@ -597,7 +597,7 @@ Key points:
 
 ### 12.2 Saving is a host capability, not core logic
 
-The brain emits `Command::Checkpoint`; the host serializes the current trace (append-only, so checkpointing is cheap — usually just flushing new events). The core never decides *where* a trace goes (disk, IndexedDB in a browser, an HTTP endpoint, a Hub repo) — that's a host capability. Same core, any storage.
+The brain emits `Command::Checkpoint`; the host serializes the current trace (append-only, so checkpointing is cheap — usually just flushing new events). Implemented in the native host: `EngineBuilder::checkpoint(path, cadence)` writes atomic trace checkpoints (`Trace::save_atomic`) either on `Command::Checkpoint`, after every submitted host event, or after every N events. The core never decides *where* a trace goes (disk, IndexedDB in a browser, an HTTP endpoint, a Hub repo) — that's a host capability. Same core, any storage.
 
 ### 12.3 Loading / replay / portability
 
@@ -690,6 +690,8 @@ Resume is replay (§6.3) followed by going live:
    - **Cancel:** append `OpCancelled` for them and let the brain decide next. The choice is itself logged, so the resumed session stays replayable.
 3. Continue the live driver loop.
 
+Implemented native-host policy: `CrashResumePolicy::CancelInflight` is the conservative default and appends recorded `OpCancelled` events for stale in-flight ops before going live; idempotent re-issue remains a future host policy. `CheckpointCadence::EveryEvent` is the crash-safe recording mode because the checkpoint captures the event that created the in-flight op before the op produces a terminal result.
+
 This is why resume is *not* a feature to bolt on later — it's the same machinery as replay, available from Phase 3.
 
 ### 15.2 Scheduling / cron
@@ -708,8 +710,9 @@ struct Schedule { cron: CronExpr, target: TriggerTarget, prompt: String }
 enum TriggerTarget { ResumeSession(SessionId), Persistent(SessionId), FreshSession }
 ```
 
-A fire is just: (optionally load a trace →) inject a `UserInput`/trigger event → run the driver loop → checkpoint. Because the durable session is a trace, a cron job that "continues a conversation" and one that "starts fresh" differ only in whether a trace is loaded first. No special core support is needed beyond resume
-+ event injection — both of which already exist.
+A fire is just: (optionally load a trace →) inject a `UserInput`/trigger event → run the driver loop → checkpoint. Because the durable session is a trace, a cron job that "continues a conversation" and one that "starts fresh" differ only in whether a trace is loaded first. No special core support is needed beyond resume + event injection — both of which already exist.
+
+Implemented native-host surface: `hugr_host::Schedule` pairs a `CronExpr` (`@every 10s`, `@every 5m`, `* * * * *`, `*/N * * * *`) with a `TriggerTarget` (`ResumeExisting`, `NamedPersistent`, or `FreshSession`) and a prompt; `fire_once` performs one fire by building or resuming an engine, running one user turn, and checkpointing the trace. The CLI exposes this as `hugr schedule --cron ... --trace|--session|--fresh ... [prompt...]` with `--once` for a single fire.
 
 ## 16. How §§12–15 reinforce each other
 

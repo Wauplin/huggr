@@ -14,7 +14,10 @@ use hugr_core::{
 };
 use hugr_host::capabilities::Shell;
 use hugr_host::policy::DenyAll;
-use hugr_host::{Capability, ChunkSink, Engine, Frontend, ModelAdapter, ModelSink, Policy};
+use hugr_host::{
+    Capability, CheckpointCadence, ChunkSink, CronExpr, Engine, Frontend, ModelAdapter, ModelSink,
+    Policy, Schedule, TriggerTarget,
+};
 use serde_json::json;
 
 /// A scripted model: each `call` pops the next queued output and records the
@@ -1044,6 +1047,168 @@ async fn resume_from_trace_continues_the_session() {
     let replay = hugr_host::hugr_replay::verify(&regrown)
         .expect("the resumed session must replay bit-for-bit");
     assert_eq!(replay.log, grown_log);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A model call that starts, streams a partial delta, and then never returns.
+/// Dropping its task simulates killing the process mid-turn.
+struct PendingModel {
+    started: tokio::sync::mpsc::UnboundedSender<()>,
+}
+
+#[async_trait]
+impl ModelAdapter for PendingModel {
+    async fn call(
+        &self,
+        _request: ModelRequest,
+        sink: &ModelSink,
+    ) -> anyhow::Result<(ModelOutput, Usage)> {
+        sink.text("partial answer");
+        let _ = self.started.send(());
+        let () = std::future::pending().await;
+        unreachable!("pending model never completes")
+    }
+}
+
+async fn wait_for_checkpoint_with_delta(path: &std::path::Path) -> hugr_host::Trace {
+    for _ in 0..100 {
+        if let Ok(trace) = hugr_host::Trace::load(path) {
+            if trace
+                .events
+                .iter()
+                .any(|event| matches!(event, hugr_core::Event::ModelDelta { .. }))
+            {
+                return trace;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!(
+        "checkpoint never captured a model delta at {}",
+        path.display()
+    );
+}
+
+/// Phase 7 exit criterion: a checkpoint written during an in-flight model call
+/// can be loaded after a simulated crash. The resumed host records the
+/// conservative crash policy (`OpCancelled` for the stale op), rebuilds to an
+/// idle brain, and can continue with a new turn from the same trace.
+#[tokio::test]
+async fn durable_checkpoint_resumes_after_mid_turn_crash() {
+    let dir = std::env::temp_dir().join(format!("hugr-host-crash-resume-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("session.trace.json");
+
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+    let pending = Arc::new(PendingModel {
+        started: started_tx,
+    });
+
+    let path_for_task = path.clone();
+    let handle = tokio::spawn(async move {
+        let mut engine = Engine::builder()
+            .model(ModelSelector::named("big"), pending)
+            .frontend(Box::new(Capture::default()))
+            .clock(deterministic_clock())
+            .checkpoint(path_for_task, CheckpointCadence::EveryEvent)
+            .build();
+        engine.user_turn("start then crash".into()).await;
+    });
+
+    started_rx.recv().await.expect("pending model should start");
+    let saved = wait_for_checkpoint_with_delta(&path).await;
+    handle.abort();
+
+    let continued_model = MockModel::new([ModelOutput::text("continued after crash")]);
+    let mut resumed = Engine::builder()
+        .model(ModelSelector::named("big"), continued_model.clone())
+        .frontend(Box::new(Capture::default()))
+        .clock(deterministic_clock())
+        .resume(saved)
+        .checkpoint(path.clone(), CheckpointCadence::EveryEvent)
+        .build();
+
+    assert_eq!(
+        resumed.brain().state().inflight_len(),
+        0,
+        "crash resume cancels stale in-flight ops before going live"
+    );
+    assert!(
+        resumed.brain().state().log().iter().any(|entry| matches!(
+            &entry.record,
+            Record::OpEnded {
+                outcome: OpOutcome::Cancelled { .. },
+                ..
+            }
+        )),
+        "resumed log records the stale op cancellation"
+    );
+
+    resumed.user_turn("continue".into()).await;
+    resumed.session_end();
+    resumed.save_trace(&path).expect("checkpointed trace saves");
+
+    let grown = hugr_host::Trace::load(&path).expect("reload grown crash trace");
+    assert!(
+        grown.log.iter().any(|entry| matches!(
+            &entry.record,
+            Record::UserMessage { text } if text == "continue"
+        )),
+        "continued prompt is in the durable log"
+    );
+    hugr_host::hugr_replay::verify(&grown).expect("grown crash trace replays");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Phase 7 exit criterion: a host-side scheduled trigger fires a prompt into a
+/// named persistent session. The second fire resumes the same trace and appends
+/// a second user turn.
+#[tokio::test]
+async fn scheduled_trigger_fires_into_named_persistent_session() {
+    let dir = std::env::temp_dir().join(format!("hugr-host-scheduler-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let model = MockModel::new([
+        ModelOutput::text("first scheduled answer"),
+        ModelOutput::text("second scheduled answer"),
+    ]);
+    let schedule = Schedule::new(
+        CronExpr::parse("@every 1s").unwrap(),
+        TriggerTarget::NamedPersistent {
+            dir: dir.clone(),
+            name: "nightly".to_string(),
+        },
+        "scheduled prompt",
+    );
+
+    for _ in 0..2 {
+        hugr_host::fire_once(
+            Engine::builder()
+                .model(ModelSelector::named("big"), model.clone())
+                .frontend(Box::new(Capture::default()))
+                .clock(deterministic_clock()),
+            &schedule,
+        )
+        .await
+        .expect("scheduled fire succeeds");
+    }
+
+    let path = dir.join("nightly.trace.json");
+    let trace = hugr_host::Trace::load(&path).expect("named session trace exists");
+    let scheduled_messages = trace
+        .log
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.record,
+                Record::UserMessage { text } if text == "scheduled prompt"
+            )
+        })
+        .count();
+    assert_eq!(scheduled_messages, 2);
+    hugr_host::hugr_replay::verify(&trace).expect("scheduled trace replays");
 
     std::fs::remove_dir_all(&dir).ok();
 }

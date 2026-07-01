@@ -252,6 +252,25 @@ Done:
 
 Tests (+7): `hugr-plugin-abi` protocol round-trip + wire-shape + hand-written-JSON decode unit tests; `hugr-example-plugin/tests/e2e.rs` — the subprocess transport `describe`s + `invoke`s the real plugin process (streamed chunk forwarded, unknown tool is a semantic `Err`), and the agent calls the `uppercase` plugin tool **end-to-end through the real engine** with the result folded into the durable log; a standalone-binary sanity check.
 
+## Phase 7 — Durable resume & scheduling (cron) ✅
+
+**Goal:** survive crashes; fire prompts on a schedule (ARCHITECTURE §15), without pulling any IO into `hugr-core`.
+
+Done:
+
+- Durable checkpoints in the native host: `EngineBuilder::checkpoint(path, cadence)` implies recording and writes the current trace atomically during the run. `CheckpointCadence` is explicit: `OnCommand` saves when the brain emits `Command::Checkpoint`, `EveryEvent` saves after each host event submitted to the brain (the crash-safe mode that captures “op N is in flight” mid-turn), and `EveryNEvents(n)` trades write frequency for durability. `Trace::save_atomic` writes a sibling temp file and renames it into place, creating parent directories when needed.
+- Resume-after-crash reconciliation: `EngineBuilder::resume(trace)` still re-folds the recorded event stream with zero IO, and now, if that fold reconstructs stale in-flight ops from a killed process, applies `CrashResumePolicy::CancelInflight` by appending recorded `OpCancelled` events under fresh injected `Tick`s before going live. That records the policy choice in the trace itself, so the grown trace remains replayable bit-for-bit. Idempotent re-issue is left as a future host policy; cancel is the conservative default.
+- Compaction policy made explicit: `TraceCompaction::PreserveFull` is the native default and only Phase 7 policy. It deliberately keeps the full event stream plus consolidated log because the log is the source of truth; destructive log compaction would break replay/resume. This lands the checkpoint policy surface without changing the core or losing history.
+- Host-side scheduler: new `hugr_host::scheduler` surface (`CronExpr`, `Schedule`, `TriggerTarget`, `fire_once`) parses a minimal cron cadence (`@every 10s`, `@every 5m`, `* * * * *`, `*/N * * * *`) and fires a prompt into one of the three roadmap targets: `ResumeExisting { trace }`, `NamedPersistent { dir, name }`, or `FreshSession { trace }`. A fire is exactly the architecture story: optionally load a trace, build/resume an engine, inject one `UserInput`, run the driver loop, and checkpoint the trace.
+- CLI scheduling: `hugr schedule --cron ... --trace|--session|--fresh ... [prompt...]` runs the same host scheduler. `--once` performs one fire and exits; without it, the CLI sleeps for the parsed cadence and fires repeatedly. Live `--record` and `hugr resume` now use durable `EveryEvent` checkpoints, so a killed process leaves a usable trace behind.
+
+Tests (+2 end-to-end Phase 7 tests): `hugr-host/tests/end_to_end.rs::durable_checkpoint_resumes_after_mid_turn_crash` starts a model call that streams a partial delta and then hangs, waits for an `EveryEvent` checkpoint, aborts the engine task to simulate a process kill, loads the checkpoint into a fresh engine, asserts stale in-flight work is recorded as `Cancelled`, continues with a new turn, saves the grown trace, and `verify()`s it bit-for-bit. `::scheduled_trigger_fires_into_named_persistent_session` fires the same `Schedule` twice into a named persistent session; the second fire resumes the existing trace, appends a second user message, and the final trace verifies.
+
+**Exit criteria — met:**
+
+- ✅ Kill the process mid-turn; resume and continue correctly from the trace.
+- ✅ A scheduled trigger fires a prompt into a session on a cron cadence.
+
 [`replay`]: crates/hugr-replay/src/replay.rs
 [`verify`]: crates/hugr-replay/src/replay.rs
 [`Inspector`]: crates/hugr-replay/src/replay.rs

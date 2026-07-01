@@ -18,7 +18,10 @@ use clap::{Parser, Subcommand};
 use hugr_core::{AgentSeed, Command, Event, ModelSelector, ToolSchema};
 use hugr_host::capabilities::{FsRead, FsWrite, Http, Shell};
 use hugr_host::policy::{AllowAll, Interactive};
-use hugr_host::{Engine, EngineBuilder, Inspector, Policy, StdoutFrontend, Trace};
+use hugr_host::{
+    CheckpointCadence, CronExpr, Engine, EngineBuilder, Inspector, Policy, Schedule,
+    StdoutFrontend, Trace, TriggerTarget,
+};
 use hugr_providers::OpenAiAdapter;
 
 const SYSTEM_PROMPT: &str = "\
@@ -107,6 +110,50 @@ enum Cmd {
         #[arg(long = "record", value_name = "PATH")]
         record: Option<PathBuf>,
     },
+
+    /// Fire a prompt on a host-side cron cadence. Each fire injects the prompt
+    /// into a resumed trace, a named persistent session, or a fresh trace.
+    Schedule {
+        /// Cron cadence. Supported: `@every 10s`, `@every 5m`, `* * * * *`,
+        /// `*/N * * * *`.
+        #[arg(long = "cron", default_value = "@every 1h")]
+        cron: String,
+
+        /// Run one fire and exit instead of sleeping forever.
+        #[arg(long = "once")]
+        once: bool,
+
+        /// Resume this existing trace on every fire.
+        #[arg(long = "trace", value_name = "PATH")]
+        trace: Option<PathBuf>,
+
+        /// Target a named persistent session under `--sessions-dir`.
+        #[arg(long = "session", value_name = "NAME")]
+        session: Option<String>,
+
+        /// Directory for named persistent sessions.
+        #[arg(
+            long = "sessions-dir",
+            value_name = "DIR",
+            default_value = ".hugr/sessions"
+        )]
+        sessions_dir: PathBuf,
+
+        /// Start a fresh session per fire and write it to this trace path.
+        #[arg(long = "fresh", value_name = "PATH")]
+        fresh: Option<PathBuf>,
+
+        /// Approve every tool call without prompting (the allow-all mode).
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+
+        /// Override the default model id used for scheduled fires.
+        #[arg(short = 'm', long = "model")]
+        model: Option<String>,
+
+        /// Prompt to inject on each scheduled fire.
+        prompt: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -122,6 +169,30 @@ async fn main() -> Result<()> {
             model,
             record,
         }) => return run_resume(trace, prompt, yes, model, record).await,
+        Some(Cmd::Schedule {
+            cron,
+            once,
+            trace,
+            session,
+            sessions_dir,
+            fresh,
+            yes,
+            model,
+            prompt,
+        }) => {
+            return run_schedule(ScheduleArgs {
+                cron,
+                once,
+                trace,
+                session,
+                sessions_dir,
+                fresh,
+                yes,
+                model,
+                prompt,
+            })
+            .await;
+        }
         None => {}
     }
 
@@ -158,6 +229,9 @@ async fn run_session(cli: Cli) -> Result<()> {
     let mut builder = base_builder(adapter, policy)
         .record(recording)
         .frontend(Box::new(frontend));
+    if let Some(path) = cli.record.clone() {
+        builder = builder.checkpoint(path, CheckpointCadence::EveryEvent);
+    }
     // Load any --plugin programs and register their tools as capabilities.
     for spec in &cli.plugins {
         let mut parts = spec.split_whitespace();
@@ -213,7 +287,10 @@ async fn run_resume(
 
     // Resume rebuilds the brain from the trace (with zero IO) and restores the
     // recorded policy; `.resume` implies recording so the grown session re-saves.
-    let mut engine = base_builder(adapter, policy).resume(trace).build();
+    let mut engine = base_builder(adapter, policy)
+        .resume(trace)
+        .checkpoint(out_path.clone(), CheckpointCadence::EveryEvent)
+        .build();
 
     drive_session(
         &mut engine,
@@ -222,6 +299,78 @@ async fn run_resume(
         Some(out_path.as_path()),
     )
     .await
+}
+
+struct ScheduleArgs {
+    cron: String,
+    once: bool,
+    trace: Option<PathBuf>,
+    session: Option<String>,
+    sessions_dir: PathBuf,
+    fresh: Option<PathBuf>,
+    yes: bool,
+    model: Option<String>,
+    prompt: Vec<String>,
+}
+
+async fn run_schedule(args: ScheduleArgs) -> Result<()> {
+    let prompt = args.prompt.join(" ");
+    anyhow::ensure!(
+        !prompt.trim().is_empty(),
+        "scheduled prompt cannot be empty"
+    );
+    let cron = CronExpr::parse(&args.cron)?;
+    let target = schedule_target(args.trace, args.session, args.sessions_dir, args.fresh)?;
+    let schedule = Schedule::new(cron, target, prompt);
+    let policy = select_policy(args.yes);
+    let mode = if args.yes {
+        "auto-approve"
+    } else {
+        "interactive"
+    };
+
+    loop {
+        let adapter = build_adapter(args.model.clone())?;
+        print_banner(&format!(
+            "hugr · scheduled fire {} · model {} · {} · {mode}",
+            schedule.cron.source(),
+            adapter.model(),
+            adapter.base_url(),
+        ));
+        let path = hugr_host::fire_once(base_builder(adapter, policy.clone()), &schedule).await?;
+        eprintln!("scheduled fire recorded → {}", path.display());
+
+        if args.once {
+            break;
+        }
+        tokio::time::sleep(schedule.cron.interval()).await;
+    }
+    Ok(())
+}
+
+fn schedule_target(
+    trace: Option<PathBuf>,
+    session: Option<String>,
+    sessions_dir: PathBuf,
+    fresh: Option<PathBuf>,
+) -> Result<TriggerTarget> {
+    let selected = trace.is_some() as u8 + session.is_some() as u8 + fresh.is_some() as u8;
+    anyhow::ensure!(
+        selected == 1,
+        "choose exactly one schedule target: --trace, --session, or --fresh"
+    );
+    if let Some(trace) = trace {
+        Ok(TriggerTarget::ResumeExisting { trace })
+    } else if let Some(name) = session {
+        Ok(TriggerTarget::NamedPersistent {
+            dir: sessions_dir,
+            name,
+        })
+    } else {
+        Ok(TriggerTarget::FreshSession {
+            trace: fresh.expect("selected checked above"),
+        })
+    }
 }
 
 /// The host permission policy for the chosen approval mode (`-y` = allow-all).

@@ -125,17 +125,19 @@
 
 ---
 
-## Phase 7 — Durable resume & scheduling (cron)
+## Phase 7 — Durable resume & scheduling (cron) ✅
 
 **Goal.** Survive crashes; fire on a schedule.
 
-- Resume-after-crash: load the persisted log, replay the fold, re-issue or cancel ops that were in-flight at crash time (recorded policy choice).
-- Host-side scheduler firing triggers into: (a) a resumed existing session, (b) a named persistent session, (c) a fresh session per fire.
-- Checkpoint cadence + compaction-of-log policy.
+- ✅ **Resume-after-crash:** `EngineBuilder::checkpoint(path, cadence)` writes atomic trace checkpoints during the run (including `EveryEvent`, which captures mid-turn in-flight state), and `EngineBuilder::resume(trace)` now reconciles stale in-flight ops with the conservative recorded `CrashResumePolicy::CancelInflight` policy by appending `OpCancelled` events before going live. The choice is replayable because it is recorded in the trace; idempotent re-issue remains a future host policy.
+- ✅ **Host-side scheduler:** `hugr_host::Schedule` / `TriggerTarget` / `fire_once` fire prompts into (a) a resumed existing trace, (b) a named persistent session, or (c) a fresh trace. The CLI gains `hugr schedule --cron ... --trace|--session|--fresh ... [prompt...]`, with `--once` for one-shot fires and a loop otherwise.
+- ✅ **Checkpoint cadence + compaction policy:** checkpoint cadence is explicit (`OnCommand`, `EveryEvent`, `EveryNEvents`), trace writes are atomic (`Trace::save_atomic`), and the native compaction policy is explicit and lossless (`TraceCompaction::PreserveFull`) so durable traces keep the full event stream + consolidated log as the source of truth.
 
 **Exit criteria.**
-- Kill the process mid-turn; resume and continue correctly from the trace.
-- A scheduled trigger fires a prompt into a session on a cron cadence.
+- ✅ Kill the process mid-turn; resume and continue correctly from the trace. Covered by `hugr-host/tests/end_to_end.rs::durable_checkpoint_resumes_after_mid_turn_crash`.
+- ✅ A scheduled trigger fires a prompt into a session on a cron cadence. Covered by `hugr-host/tests/end_to_end.rs::scheduled_trigger_fires_into_named_persistent_session`.
+
+**Phase 7 is complete.**
 
 ---
 
@@ -145,7 +147,7 @@
 
 - Additional provider adapters (OpenAI, others) with cache/reasoning/tool-call fidelity preserved.
 - Usage/cost accounting as events; per-op, per-sub-agent attribution.
-- `hugr-js` (Node/Deno) bindings.
+- `hugr-js` (Node/Deno) and `hugr-py` bindings.
 - Docs, examples, conformance tests for hosts and plugins.
 
 **Exit criteria.**

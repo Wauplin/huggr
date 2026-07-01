@@ -36,13 +36,18 @@ mod frontend;
 mod model;
 pub mod plugins;
 pub mod policy;
+mod scheduler;
 
 pub use capability::{Capability, CapabilityRegistry, ChunkSink};
-pub use engine::{Clock, Engine, EngineBuilder, EventSender};
+pub use engine::{
+    CheckpointCadence, Clock, CrashResumePolicy, Engine, EngineBuilder, EventSender,
+    TraceCompaction,
+};
 pub use frontend::{Frontend, Metrics, StdoutFrontend};
 pub use model::{ModelAdapter, ModelRegistry, ModelSink};
 pub use plugins::PluginCapability;
 pub use policy::Policy;
+pub use scheduler::{CronExpr, Schedule, ScheduleError, TriggerTarget, fire_once};
 
 // Re-export the plugin ABI so a host embedder needs only `hugr-host` to load
 // plugins (the ABI crate lives behind us, like `hugr-replay`).

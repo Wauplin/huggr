@@ -348,6 +348,68 @@ function downloadText(filename, text, type) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+function enumType(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "Unknown";
+  return Object.keys(value)[0] || "Unknown";
+}
+
+function enumBody(value) {
+  if (!value || typeof value !== "object") return null;
+  const key = Object.keys(value)[0];
+  return key ? value[key] : null;
+}
+
+function sourceLabel(source) {
+  const type = enumType(source);
+  const body = enumBody(source);
+  if (type === "System") return "system";
+  if (type === "LogEntry") return `log:${body?.seq ?? "?"}`;
+  if (type === "Synthetic") return `synthetic:${body?.label ?? "?"}`;
+  return type;
+}
+
+function dispositionLabel(disposition) {
+  return enumType(disposition).replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+}
+
+function countDisposition(plan, kind) {
+  return (plan.entries || []).filter((entry) => dispositionLabel(entry.disposition) === kind).length;
+}
+
+function renderContextPlan(plan) {
+  const body = $("context-body");
+  const totals = plan.totals || {};
+  const summary = el("div", "context-summary");
+  const stats = [
+    ["Used", `${totals.used_tokens || 0}/${plan.budget?.max_tokens || 0}`],
+    ["Retained", String(countDisposition(plan, "included"))],
+    ["Summaries", String(countDisposition(plan, "summarized"))],
+    ["Refs", String(countDisposition(plan, "referenced"))],
+    ["Omitted", String(countDisposition(plan, "omitted"))],
+    ["Tools", String(plan.tools?.length || 0)],
+  ];
+  for (const [label, value] of stats) {
+    const stat = el("div", "context-stat");
+    stat.appendChild(el("strong", null, value));
+    stat.append(label);
+    summary.appendChild(stat);
+  }
+
+  const entries = el("div", "context-entries");
+  for (const entry of plan.entries || []) {
+    const disposition = dispositionLabel(entry.disposition);
+    const row = el("div", "context-entry");
+    row.appendChild(el("span", "context-source", sourceLabel(entry.source)));
+    row.appendChild(el("span", `context-disposition ${disposition}`, disposition));
+    row.appendChild(el("span", "context-tokens", `${entry.est_tokens || 0}`));
+    row.appendChild(el("span", "context-reason", entry.reason || ""));
+    entries.appendChild(row);
+  }
+
+  body.replaceChildren(summary, entries);
+}
+
 // ---------------------------------------------------------------------------
 // The front-end: turns brain OutputEvents + lifecycle hooks into DOM.
 // ---------------------------------------------------------------------------
@@ -566,6 +628,8 @@ function setBusy(v) {
   $("stop").classList.toggle("hidden", !v);
   $("input").disabled = v;
   $("new-chat-btn").disabled = v;
+  $("context-btn").disabled = v;
+  $("compact-btn").disabled = v;
   $("export-trace-btn").disabled = v;
 }
 
@@ -581,6 +645,22 @@ function startSession(config, resetLog = false) {
   const tools = createTools(frontend); // ui.confirm / ui.showPlan live on the frontend
   const brain = new HugrBrain(JSON.stringify(buildPolicy(config)));
   engine = new Engine({ brain, config, tools, frontend });
+  if (!$("context-drawer").classList.contains("hidden")) refreshContextDrawer();
+}
+
+function refreshContextDrawer() {
+  if (!engine) return;
+  try {
+    renderContextPlan(engine.contextPlan());
+  } catch (e) {
+    banner(`Failed to inspect context: ${e?.message || e}`, "warn");
+    console.error(e);
+  }
+}
+
+function openContextDrawer() {
+  $("context-drawer").classList.remove("hidden");
+  refreshContextDrawer();
 }
 
 async function boot() {
@@ -628,6 +708,30 @@ $("input").addEventListener("keydown", (e) => {
 });
 
 $("stop").addEventListener("click", () => engine?.abort());
+
+$("context-btn").addEventListener("click", () => {
+  if (busy) return;
+  if ($("context-drawer").classList.contains("hidden")) openContextDrawer();
+  else $("context-drawer").classList.add("hidden");
+});
+
+$("context-close").addEventListener("click", () => $("context-drawer").classList.add("hidden"));
+
+$("compact-btn").addEventListener("click", async () => {
+  if (busy || !engine) return;
+  setBusy(true);
+  try {
+    await engine.compactContext();
+    if (!$("context-drawer").classList.contains("hidden")) refreshContextDrawer();
+    banner("Compaction requested.", "info");
+  } catch (e) {
+    banner(`Failed to compact context: ${e?.message || e}`, "warn");
+    console.error(e);
+  } finally {
+    setBusy(false);
+    $("input").focus();
+  }
+});
 
 $("auto-approve").addEventListener("change", (e) => {
   if (engine) engine.config.autoApprove = e.target.checked;

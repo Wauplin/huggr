@@ -88,6 +88,17 @@ export class Engine {
     await this.driveToIdle();
   }
 
+  /** Inspect the context plan the next normal model turn would use. */
+  contextPlan() {
+    return JSON.parse(this.brain.contextPlanJson());
+  }
+
+  /** Fire one manual compaction pass and drive it to completion. */
+  async compactContext() {
+    this.feed("CompactContext");
+    await this.driveToIdle();
+  }
+
   /** Inject a UserAbort from outside a turn (the ESC / stop button). */
   abort() {
     // UserAbort is a unit enum variant → the bare string "UserAbort".

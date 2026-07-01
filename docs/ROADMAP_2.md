@@ -68,7 +68,7 @@ These narrow the design deliberately. The architecture doc keeps the general mec
 - **A3** `[Brain]` — ✅ Implemented. Implement the **compaction sub-loop** (ARCHITECTURE §3.4): when a projection crosses a high-water mark, emit a `small`-tier `StartModelCall` over the span to compact, append its consolidated summary, then re-project. **Exit:** a long scripted trace compacts automatically; replay reproduces it from log + recorded token metadata *without* re-running the summariser.
 - **A4** `[Brain]` — ✅ Implemented. Manual compaction trigger reduced to an injected event/command the hosts can fire. **Exit:** a single event triggers one compaction pass deterministically.
 - **A5** `[CLI]` — ✅ Implemented. `/context` (inspect the current `ContextPlan`: budget used, retained turns, summaries, large refs, omission reasons) and `/compact` (fire A4). **Exit:** `/context` output matches the `ModelRequest` actually sent; `/compact` shrinks the next request without mutating prior records.
-- **A6** `[Browser]` — Context drawer (same info as `/context`) and a compact button (fires A4). **Exit:** the drawer reflects the real projection; the button compacts.
+- **A6** `[Browser]` — ✅ Implemented. Context drawer (same info as `/context`) and a compact button (fires A4). **Exit:** the drawer reflects the real projection; the button compacts.
 
 ---
 

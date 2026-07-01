@@ -93,6 +93,20 @@ Tests:
 - `crates/hugr-host/tests/end_to_end.rs::context_plan_inspection_and_manual_compaction_feed_next_request` proves the host-facing plan reflects the real projection, manual compaction reduces the planned request, and the next model request contains the expected summary and log reference.
 - Verification run: `cargo test -p hugr-host context_plan_inspection_and_manual_compaction_feed_next_request -q`; `cargo check -p hugr-cli`.
 
+### A6 — Browser context drawer and compact button ✅
+
+Done:
+
+- `hugr-wasm` now exposes `contextPlanJson()` over the JSON binding, backed by the same `Brain::context_plan()` projection API as the native host.
+- The browser engine exposes `contextPlan()` and `compactContext()`. Manual browser compaction feeds the recorded `CompactContext` event and drives the resulting model pass to idle.
+- The Chrome side panel has a context drawer showing budget usage, retained blocks, summaries, refs, omissions, tools, and every plan entry's source/disposition/token count/reason.
+- A compact button fires one A4 compaction pass and refreshes the drawer. The checked-in extension WASM bundle was rebuilt with `./crates/hugr-wasm/build-extension.sh`.
+
+Tests:
+
+- `crates/hugr-wasm/src/lib.rs::tests::context_plan_json_exposes_projection` pins the JSON binding.
+- Verification run: `cargo test -p hugr-wasm -q`; `./crates/hugr-wasm/build-extension.sh`.
+
 ## Phase 0 — Pure core skeleton (no IO) ✅
 
 **Goal:** the brain exists as a pure state machine with zero IO.

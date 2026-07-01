@@ -86,6 +86,12 @@ impl Core {
     pub fn log_json(&self) -> Result<String, String> {
         serde_json::to_string(self.inner.state().log()).map_err(|e| format!("serializing log: {e}"))
     }
+
+    /// The current pure context projection plan as JSON.
+    pub fn context_plan_json(&self) -> Result<String, String> {
+        serde_json::to_string(&self.inner.context_plan())
+            .map_err(|e| format!("serializing context plan: {e}"))
+    }
 }
 
 /// A [`Brain`] wrapped for JavaScript. Construct one with a serialized
@@ -155,6 +161,14 @@ impl HugrBrain {
     pub fn log_json(&self) -> Result<String, JsError> {
         self.core.log_json().map_err(|e| JsError::new(&e))
     }
+
+    /// The current pure [`ContextPlan`](hugr_core::ContextPlan), serialized as
+    /// JSON for browser UI inspection. This is the same projection the next
+    /// normal model turn would render.
+    #[wasm_bindgen(js_name = contextPlanJson)]
+    pub fn context_plan_json(&self) -> Result<String, JsError> {
+        self.core.context_plan_json().map_err(|e| JsError::new(&e))
+    }
 }
 
 /// The `hugr-wasm` version this binding was built from, exposed so the JS host
@@ -222,5 +236,20 @@ mod tests {
             .err()
             .expect("should error");
         assert!(err.contains("invalid policy JSON"), "err: {err}");
+    }
+
+    #[test]
+    fn context_plan_json_exposes_projection() {
+        let mut core = Core::default_policy();
+        core.submit(r#"{ "Tick": { "now": 1 } }"#).unwrap();
+        core.submit(r#"{ "UserInput": { "content": "hello", "mode": "Queue", "est_tokens": 2 } }"#)
+            .unwrap();
+
+        let plan = core.context_plan_json().unwrap();
+        assert!(plan.contains("\"used_tokens\":2"), "plan: {plan}");
+        assert!(
+            plan.contains("static pass-through projection"),
+            "plan: {plan}"
+        );
     }
 }

@@ -95,6 +95,7 @@ fn sample_log() -> Vec<LogEntry> {
                 name: "shell".to_string(),
                 call_id: "call_1".to_string(),
                 result: json!({ "stdout": "hi\n", "exit": 0 }),
+                version: None,
                 est_tokens: 8,
             },
         },

@@ -12,10 +12,10 @@ use serde_json::json;
 
 use crate::model::{
     ContentPart, ContextBlock, ContextBudgetTotals, ContextDisposition, ContextPlan,
-    ContextPlanEntry, ContextSource, ModelSelector, Role, SamplingParams, TokenBudget, ToolSchema,
-    ToolVersioning,
+    ContextPlanEntry, ContextSource, ModelOutput, ModelRequest, ModelSelector, Role,
+    SamplingParams, TokenBudget, ToolSchema, ToolVersioning,
 };
-use crate::primitives::Value;
+use crate::primitives::{Seq, Value};
 use crate::record::{LogEntry, Record, SeqRange, SummaryCoverage};
 use crate::state::BrainState;
 
@@ -262,6 +262,55 @@ pub trait TurnPolicy: Send + Sync {
         plan: &ContextPlan,
     ) -> Option<CompactionTarget> {
         default_compaction_target(log, plan)
+    }
+
+    /// Build the model request for one compaction pass over `summary_of`.
+    ///
+    /// The default keeps the built-in summarization strategy **in the core** so
+    /// every host gets it for free (ARCHITECTURE §3.4): an English summarization
+    /// prompt plus a per-record rendering of the span (see
+    /// [`render_summary_record`](Self::render_summary_record)). Override this to
+    /// customize the prompt, language, or format without touching the reducer
+    /// (agent strategy lives in the policy, ARCHITECTURE §2.5). This is pure —
+    /// it only *reads* the log; compaction is a separate model op (§3.4).
+    fn compaction_request(&self, log: &[LogEntry], summary_of: SeqRange) -> ModelRequest {
+        let mut rendered = String::new();
+        for entry in log.iter().filter(|entry| summary_of.contains(entry.seq)) {
+            if let Some(line) = self.render_summary_record(entry.seq, &entry.record) {
+                if !rendered.is_empty() {
+                    rendered.push('\n');
+                }
+                rendered.push_str(&line);
+            }
+        }
+        let mut request = ModelRequest::new(
+            vec![
+                ContextBlock::new(
+                    Role::System,
+                    vec![ContentPart::Text(COMPACTION_SYSTEM_PROMPT.to_string())],
+                ),
+                ContextBlock::new(Role::User, vec![ContentPart::Text(rendered)]),
+            ],
+            Vec::new(),
+            SamplingParams::default(),
+        );
+        request.extra = serde_json::json!({
+            "kind": "compaction",
+            "summary_of": {
+                "start": summary_of.start.0,
+                "end": summary_of.end.0,
+            },
+        });
+        request
+    }
+
+    /// Render one durable log record into a single line of summarization input,
+    /// or `None` to omit it (e.g. pure `OpEnded` bookkeeping). A *provided*
+    /// method so the default rendering lives here and the reducer never needs an
+    /// edit when a new `Record` variant is added (ARCHITECTURE §2.4). Override to
+    /// change the wording/format a summary is built from.
+    fn render_summary_record(&self, seq: Seq, record: &Record) -> Option<String> {
+        default_render_summary_record(seq, record)
     }
 
     /// Whether invoking `capability` requires a permission round-trip.
@@ -1233,6 +1282,16 @@ fn default_compaction_target(log: &[LogEntry], plan: &ContextPlan) -> Option<Com
         }
     }
 
+    // Never let the span boundary fall *inside* a tool_use/tool_result group.
+    // If `end` landed on a `ModelOutput` carrying tool calls, its answering
+    // `ToolResult`s may sit past `end`; summarizing the assistant tool_use away
+    // (projected as a `Ref`) while leaving the paired tool_result `Included`
+    // yields an orphaned tool_result and a provider 400 — exactly when
+    // auto-compaction was meant to rescue the session. Extend `end` to swallow
+    // the whole group so the follow-up projection is always a valid provider
+    // message sequence (ARCHITECTURE §2.4/§4.5).
+    let (end, est_tokens_in) = extend_past_tool_group(log, end, est_tokens_in);
+
     if est_tokens_in == 0 {
         return None;
     }
@@ -1241,6 +1300,99 @@ fn default_compaction_target(log: &[LogEntry], plan: &ContextPlan) -> Option<Com
         SeqRange::new(start, end),
         est_tokens_in,
     ))
+}
+
+/// If the record at `end` is a `ModelOutput` with tool calls, extend `end` to
+/// the last `ToolResult` answering them (adding their token estimates), so a
+/// compaction span never splits a tool_use/tool_result group (ARCHITECTURE
+/// §2.4/§4.5). Returns the (possibly unchanged) end seq and token total. Any
+/// call whose result is not yet in the log is left as-is: projection renders the
+/// covered `ModelOutput` as a `Ref`, dropping its tool_use entirely, so no
+/// dangling tool_use reaches the provider either.
+fn extend_past_tool_group(
+    log: &[LogEntry],
+    end: crate::primitives::Seq,
+    mut est_tokens_in: u32,
+) -> (crate::primitives::Seq, u32) {
+    let Some(entry) = log
+        .binary_search_by_key(&end, |candidate| candidate.seq)
+        .ok()
+        .map(|index| &log[index])
+    else {
+        return (end, est_tokens_in);
+    };
+    let Record::ModelOutput { output, .. } = &entry.record else {
+        return (end, est_tokens_in);
+    };
+    let mut new_end = end;
+    for call in &output.tool_calls {
+        if let Some(result) = find_tool_result_for_call(log, end, &call.id) {
+            if result.seq > new_end {
+                new_end = result.seq;
+                est_tokens_in =
+                    est_tokens_in.saturating_add(result.record.content_est_tokens().unwrap_or(0));
+            }
+        }
+    }
+    (new_end, est_tokens_in)
+}
+
+/// The built-in English summarization system prompt. Kept here (not in the
+/// reducer) so hosts inherit it for free yet can override
+/// [`compaction_request`](TurnPolicy::compaction_request) (ARCHITECTURE §3.4).
+const COMPACTION_SYSTEM_PROMPT: &str = "Summarize the provided Hugr log span for future context. Preserve user intent, decisions, tool results, and unresolved work. Return concise plain text only.";
+
+/// The built-in per-record rendering used to assemble compaction input. Kept as
+/// a free fn so [`TurnPolicy::render_summary_record`]'s default can delegate to
+/// it and a host override can still fall back for the records it doesn't care to
+/// customize.
+fn default_render_summary_record(seq: Seq, record: &Record) -> Option<String> {
+    match record {
+        Record::UserMessage { text, .. } => Some(format!("log:{} user: {}", seq.0, text)),
+        Record::ModelOutput { output, .. } => {
+            Some(format!("log:{} assistant: {}", seq.0, summary_text(output)))
+        }
+        Record::ToolResult { name, result, .. } => {
+            Some(format!("log:{} tool {}: {}", seq.0, name, result))
+        }
+        Record::Summary { text, .. } => Some(format!("log:{} summary: {}", seq.0, text)),
+        Record::SkillActivated { id, title, .. } => {
+            Some(format!("log:{} skill {} ({}) activated", seq.0, id, title))
+        }
+        Record::Plan { text, .. } => Some(format!("log:{} accepted plan: {}", seq.0, text)),
+        Record::TodoList { items, .. } => Some(format!(
+            "log:{} todo state: {}",
+            seq.0,
+            items
+                .iter()
+                .map(|item| format!("[{}] {}", if item.done { "x" } else { " " }, item.text))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )),
+        Record::Hook {
+            phase,
+            name,
+            result,
+            ..
+        } => Some(format!(
+            "log:{} hook {:?}/{}: {}",
+            seq.0, phase, name, result
+        )),
+        Record::OpEnded { .. } => None,
+    }
+}
+
+/// The text used to represent a model output in summarization input: its text,
+/// or a JSON encoding of its tool calls when it made no textual reply.
+fn summary_text(output: &ModelOutput) -> String {
+    if !output.text.is_empty() {
+        return output.text.clone();
+    }
+    if output.tool_calls.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(&output.tool_calls).unwrap_or_default()
+    }
 }
 
 fn is_compactable_record(record: &Record) -> bool {

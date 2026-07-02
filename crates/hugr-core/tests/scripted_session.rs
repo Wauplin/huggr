@@ -7,10 +7,10 @@ use std::sync::{Arc, Mutex};
 
 use common::*;
 use hugr_core::{
-    Brain, Command, ContentPart, ContextDisposition, ContextPlan, ContextSource, DoneReason, Event,
-    LogEntry, ModelSelector, OpId, Record, Role, RoutingInputs, RoutingPhase, RoutingPolicy, Seq,
-    SeqRange, SkillDescriptor, StaticPolicy, SummaryCoverage, Timestamp, TokenBudget, ToolRisk,
-    ToolSchema, ToolVersioning, TurnPolicy, VersionRef,
+    Brain, Command, ContentPart, ContextBlock, ContextDisposition, ContextPlan, ContextSource,
+    DoneReason, Event, LogEntry, ModelSelector, OpId, Record, Role, RoutingInputs, RoutingPhase,
+    RoutingPolicy, SamplingParams, Seq, SeqRange, SkillDescriptor, StaticPolicy, SummaryCoverage,
+    Timestamp, TokenBudget, ToolRisk, ToolSchema, ToolVersioning, TurnPolicy, VersionRef,
 };
 use serde_json::json;
 
@@ -1050,7 +1050,7 @@ fn automatic_compaction_summarizes_then_reprojects_and_replays() {
                 Command::Done {
                     reason: DoneReason::EndTurn
                 },
-            ] if *model == ModelSelector::named("small")
+            ] if *model == ModelSelector::named("medium")
                 && request.tools.is_empty()
                 && request.extra["kind"] == "compaction"
                 && *turn_model == ModelSelector::named("medium")
@@ -1077,7 +1077,11 @@ fn automatic_compaction_summarizes_then_reprojects_and_replays() {
         })
         .expect("summary record is appended");
     assert_eq!(*summary.0, SeqRange::new(Seq(0), Seq(1)));
-    assert_eq!(*summary.1, ModelSelector::named("small"));
+    // Compaction is now routed through `TurnPolicy::choose_model` with the
+    // `Compaction` phase (no longer hardcoded to `small`). `StaticPolicy` has a
+    // single tier, so it falls back to its default model (`medium`) rather than
+    // requiring a registered `small` model.
+    assert_eq!(*summary.1, ModelSelector::named("medium"));
     assert_eq!(*summary.2, 20);
     assert_eq!(*summary.3, 3);
     assert_eq!(summary.4, "Old turn summary.");
@@ -1140,7 +1144,7 @@ fn manual_compaction_event_runs_one_pass_without_starting_turn() {
                     request
                 },
                 Command::Checkpoint,
-            ] if *model == ModelSelector::named("small")
+            ] if *model == ModelSelector::named("medium")
                 && request.extra["kind"] == "compaction"
                 && request.extra["summary_of"]["start"] == 0
                 && request.extra["summary_of"]["end"] == 0
@@ -1166,7 +1170,9 @@ fn manual_compaction_event_runs_one_pass_without_starting_turn() {
         })
         .expect("summary record is appended");
     assert_eq!(*summary.0, SeqRange::new(Seq(0), Seq(0)));
-    assert_eq!(*summary.1, ModelSelector::named("small"));
+    // Routed through `choose_model` (Compaction phase); `StaticPolicy` falls
+    // back to its default `medium` model instead of a hardcoded `small` tier.
+    assert_eq!(*summary.1, ModelSelector::named("medium"));
     assert_eq!(*summary.2, 10);
     assert_eq!(*summary.3, 3);
     assert_eq!(summary.4, "Manual summary.");
@@ -1459,5 +1465,434 @@ fn model_error_replay_is_deterministic() {
             ))
         },
         deferred,
+    );
+}
+
+/// A prior log heavy enough to cross a small high-water budget: one user turn
+/// and one assistant answer (the shape reused by the A3/A4 compaction tests).
+fn compaction_prior_log() -> Vec<LogEntry> {
+    vec![
+        LogEntry {
+            seq: Seq(0),
+            at: Timestamp(0),
+            record: Record::UserMessage {
+                text: "old user turn with many details".to_string(),
+                est_tokens: 10,
+            },
+        },
+        LogEntry {
+            seq: Seq(1),
+            at: Timestamp(0),
+            record: Record::ModelOutput {
+                op: OpId(0),
+                output: text_output("old assistant answer with many details"),
+                est_tokens: 10,
+            },
+        },
+    ]
+}
+
+/// New user turn (crosses the high-water mark → compaction), then the summary
+/// model result, then the real turn's final answer.
+fn compaction_script() -> Vec<Event> {
+    vec![
+        Event::UserInput {
+            content: json!("new request"),
+            mode: hugr_core::SteerMode::Queue,
+            est_tokens: 1,
+        },
+        Event::ModelDone {
+            op: OpId(1),
+            output: text_output("Old turn summary."),
+            usage: usage(),
+            est_tokens: 3,
+        },
+        Event::ModelDone {
+            op: OpId(2),
+            output: text_output("Final answer."),
+            usage: usage(),
+            est_tokens: 1,
+        },
+    ]
+}
+
+/// Tool_result ids in a request that have no preceding tool_use id — an invalid
+/// provider message sequence (the 400 auto-compaction must never cause).
+fn unmatched_tool_results(request: &hugr_core::ModelRequest) -> Vec<String> {
+    let mut tool_use_ids = std::collections::HashSet::new();
+    let mut unmatched = Vec::new();
+    for block in &request.blocks {
+        for part in &block.content {
+            match part {
+                ContentPart::ToolUse { id, .. } => {
+                    tool_use_ids.insert(id.clone());
+                }
+                ContentPart::ToolResult { id, .. } => {
+                    if !tool_use_ids.contains(id) {
+                        unmatched.push(id.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    unmatched
+}
+
+/// Fix 1: the compaction span must never end between a `ModelOutput` carrying a
+/// tool call and the `ToolResult` that answers it. The naive token boundary here
+/// lands on seq 1 (the tool_use); the selector must extend the span to seq 2 so
+/// the follow-up projection stays a valid provider message sequence.
+#[test]
+fn compaction_span_never_splits_a_tool_use_result_group() {
+    let log = vec![
+        LogEntry {
+            seq: Seq(0),
+            at: Timestamp(0),
+            record: Record::UserMessage {
+                text: "please run ls".to_string(),
+                est_tokens: 10,
+            },
+        },
+        LogEntry {
+            seq: Seq(1),
+            at: Timestamp(0),
+            record: Record::ModelOutput {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "ls" })),
+                est_tokens: 10,
+            },
+        },
+        LogEntry {
+            seq: Seq(2),
+            at: Timestamp(0),
+            record: Record::ToolResult {
+                op: OpId(0),
+                name: "shell".to_string(),
+                call_id: "call-1".to_string(),
+                result: json!({ "ok": true }),
+                version: None,
+                est_tokens: 10,
+            },
+        },
+        LogEntry {
+            seq: Seq(3),
+            at: Timestamp(0),
+            record: Record::ModelOutput {
+                op: OpId(1),
+                output: text_output("done"),
+                est_tokens: 10,
+            },
+        },
+    ];
+    let policy = StaticPolicy::default();
+    let plan = policy.project_context(&log, TokenBudget::new(20));
+    let target = policy
+        .select_compaction_span(&log, &plan)
+        .expect("a compaction span is selected");
+    // Span ends on the tool_result (seq 2), not mid-group on the tool_use (seq 1),
+    // and its token estimate includes the pulled-in tool_result.
+    assert_eq!(target.summary_of, SeqRange::new(Seq(0), Seq(2)));
+    assert_eq!(target.est_tokens_in, 30);
+
+    // Projecting with a summary that covers the whole group yields no orphan.
+    let summary = |range: SeqRange| LogEntry {
+        seq: Seq(4),
+        at: Timestamp(0),
+        record: Record::Summary {
+            op: OpId(2),
+            text: "summary".to_string(),
+            summary_of: range,
+            coverage: SummaryCoverage::Complete,
+            tier: ModelSelector::named("medium"),
+            est_tokens_in: 30,
+            est_tokens_out: 3,
+        },
+    };
+    let mut whole = log.clone();
+    whole.push(summary(target.summary_of));
+    let request = policy
+        .project_context(&whole, TokenBudget::new(1000))
+        .to_model_request();
+    assert!(
+        unmatched_tool_results(&request).is_empty(),
+        "orphaned tool_result in projection: {request:#?}"
+    );
+
+    // Sanity: had the span stopped mid-group at seq 1, the tool_result at seq 2
+    // would be projected orphaned — exactly the provider 400 the fix prevents.
+    let mut split = log.clone();
+    split.push(summary(SeqRange::new(Seq(0), Seq(1))));
+    let split_request = policy
+        .project_context(&split, TokenBudget::new(1000))
+        .to_model_request();
+    assert_eq!(
+        unmatched_tool_results(&split_request),
+        vec!["call-1".to_string()]
+    );
+}
+
+/// Fix 2 (a): the reducer routes the compaction model through
+/// `TurnPolicy::choose_model` with the `Compaction` phase and uses the selector
+/// the policy returns — no hardcoded tier.
+#[test]
+fn compaction_routes_the_model_through_choose_model() {
+    struct CompactionRoutingPolicy {
+        base: StaticPolicy,
+        phases: Arc<Mutex<Vec<RoutingPhase>>>,
+    }
+
+    impl TurnPolicy for CompactionRoutingPolicy {
+        fn choose_model(
+            &self,
+            state: &hugr_core::BrainState,
+            inputs: &RoutingInputs,
+        ) -> ModelSelector {
+            self.phases.lock().unwrap().push(inputs.phase);
+            if inputs.phase == RoutingPhase::Compaction {
+                ModelSelector::named("compactor")
+            } else {
+                self.base.choose_model(state, inputs)
+            }
+        }
+
+        fn context_budget(&self, state: &hugr_core::BrainState) -> TokenBudget {
+            self.base.context_budget(state)
+        }
+
+        fn project_context(&self, log: &[LogEntry], budget: TokenBudget) -> ContextPlan {
+            self.base.project_context(log, budget)
+        }
+
+        fn compaction_high_water(
+            &self,
+            state: &hugr_core::BrainState,
+            budget: TokenBudget,
+        ) -> Option<u64> {
+            self.base.compaction_high_water(state, budget)
+        }
+
+        fn needs_permission(&self, capability: &str) -> bool {
+            self.base.needs_permission(capability)
+        }
+    }
+
+    let phases = Arc::new(Mutex::new(Vec::new()));
+    let policy = CompactionRoutingPolicy {
+        base: StaticPolicy::default()
+            .with_context_budget(TokenBudget::new(20))
+            .with_compaction_high_water_percent(90),
+        phases: phases.clone(),
+    };
+    let mut brain = Brain::from_log(Box::new(policy), compaction_prior_log());
+    let commands = run_script(&mut brain, compaction_script());
+
+    assert_eq!(
+        first_model_selector(&commands),
+        Some(&ModelSelector::named("compactor")),
+        "compaction turn must use the policy-chosen selector",
+    );
+    let phases = phases.lock().unwrap();
+    assert_eq!(
+        phases.first(),
+        Some(&RoutingPhase::Compaction),
+        "choose_model is consulted with the Compaction phase first",
+    );
+    assert!(phases.contains(&RoutingPhase::Normal));
+}
+
+/// Fix 2 (b): a `RoutingPolicy` reaches its `Compaction` arm (cheap tier), while
+/// a single-tier `StaticPolicy` with no `small` model registered still compacts
+/// using its default model rather than emitting a `ModelError`.
+#[test]
+fn routing_policy_compaction_uses_small_but_static_falls_back() {
+    let base = StaticPolicy::default()
+        .with_context_budget(TokenBudget::new(20))
+        .with_compaction_high_water_percent(90);
+
+    let make_routing = || RoutingPolicy::new(base.clone());
+    let mut routed = Brain::from_log(Box::new(make_routing()), compaction_prior_log());
+    let routed_commands = run_script(&mut routed, compaction_script());
+    assert_eq!(
+        first_model_selector(&routed_commands),
+        Some(&ModelSelector::named("small")),
+        "RoutingPolicy's Compaction arm must be exercised",
+    );
+    assert_eq!(
+        last_model_selector(&routed_commands),
+        Some(&ModelSelector::named("medium")),
+        "the real turn after compaction still uses the medium tier",
+    );
+
+    // StaticPolicy has no tiers: compaction falls back to its default model.
+    let mut fallback = Brain::from_log(Box::new(base.clone()), compaction_prior_log());
+    let fallback_commands = run_script(&mut fallback, compaction_script());
+    assert_eq!(
+        first_model_selector(&fallback_commands),
+        Some(&ModelSelector::named("medium")),
+    );
+
+    // Determinism: re-feeding the same events reproduces the same commands/log.
+    let mut replay = Brain::from_log(Box::new(make_routing()), compaction_prior_log());
+    let replay_commands = run_script(&mut replay, compaction_script());
+    assert_eq!(routed_commands, replay_commands);
+    assert_eq!(routed.state().log(), replay.state().log());
+}
+
+/// Fix 3 (default): the default `compaction_request` is byte-identical to the
+/// prompt/rendering the reducer produced before the hook existed.
+#[test]
+fn default_compaction_request_is_byte_identical() {
+    let policy = StaticPolicy::default();
+    let log = vec![
+        LogEntry {
+            seq: Seq(0),
+            at: Timestamp(0),
+            record: Record::UserMessage {
+                text: "hello".to_string(),
+                est_tokens: 1,
+            },
+        },
+        LogEntry {
+            seq: Seq(1),
+            at: Timestamp(0),
+            record: Record::ModelOutput {
+                op: OpId(0),
+                output: text_output("did stuff"),
+                est_tokens: 1,
+            },
+        },
+        LogEntry {
+            seq: Seq(2),
+            at: Timestamp(0),
+            record: Record::ToolResult {
+                op: OpId(0),
+                name: "shell".to_string(),
+                call_id: "call-1".to_string(),
+                result: json!({ "ok": true }),
+                version: None,
+                est_tokens: 1,
+            },
+        },
+    ];
+
+    let request = policy.compaction_request(&log, SeqRange::new(Seq(0), Seq(2)));
+
+    assert_eq!(
+        request.blocks[0],
+        ContextBlock::new(
+            Role::System,
+            vec![ContentPart::Text(
+                "Summarize the provided Hugr log span for future context. Preserve user intent, decisions, tool results, and unresolved work. Return concise plain text only."
+                    .to_string()
+            )],
+        )
+    );
+    assert_eq!(
+        request.blocks[1],
+        ContextBlock::new(
+            Role::User,
+            vec![ContentPart::Text(
+                "log:0 user: hello\nlog:1 assistant: did stuff\nlog:2 tool shell: {\"ok\":true}"
+                    .to_string()
+            )],
+        )
+    );
+    assert!(request.tools.is_empty());
+    assert_eq!(request.params, SamplingParams::default());
+    assert_eq!(request.extra["kind"], "compaction");
+    assert_eq!(request.extra["summary_of"]["start"], 0);
+    assert_eq!(request.extra["summary_of"]["end"], 2);
+}
+
+/// Fix 3 (override): a custom policy can change the summarization rendering, and
+/// the reducer uses it — the emitted compaction request carries the custom text.
+#[test]
+fn compaction_prompt_and_rendering_are_overridable() {
+    struct CustomSummaryPolicy {
+        base: StaticPolicy,
+    }
+
+    impl TurnPolicy for CustomSummaryPolicy {
+        fn choose_model(
+            &self,
+            state: &hugr_core::BrainState,
+            inputs: &RoutingInputs,
+        ) -> ModelSelector {
+            self.base.choose_model(state, inputs)
+        }
+
+        fn context_budget(&self, state: &hugr_core::BrainState) -> TokenBudget {
+            self.base.context_budget(state)
+        }
+
+        fn project_context(&self, log: &[LogEntry], budget: TokenBudget) -> ContextPlan {
+            self.base.project_context(log, budget)
+        }
+
+        fn compaction_high_water(
+            &self,
+            state: &hugr_core::BrainState,
+            budget: TokenBudget,
+        ) -> Option<u64> {
+            self.base.compaction_high_water(state, budget)
+        }
+
+        fn needs_permission(&self, capability: &str) -> bool {
+            self.base.needs_permission(capability)
+        }
+
+        fn render_summary_record(&self, seq: Seq, record: &Record) -> Option<String> {
+            self.base
+                .render_summary_record(seq, record)
+                .map(|line| format!("CUSTOM[{}]: {line}", seq.0))
+        }
+    }
+
+    let policy = CustomSummaryPolicy {
+        base: StaticPolicy::default()
+            .with_context_budget(TokenBudget::new(20))
+            .with_compaction_high_water_percent(90),
+    };
+    let mut brain = Brain::from_log(Box::new(policy), compaction_prior_log());
+    let commands = run_script(&mut brain, compaction_script());
+
+    let request = commands
+        .iter()
+        .find_map(|command| match command {
+            Command::StartModelCall { request, .. } if request.extra["kind"] == "compaction" => {
+                Some(request)
+            }
+            _ => None,
+        })
+        .expect("a compaction model call is emitted");
+
+    let text_of = |role: Role| {
+        request
+            .blocks
+            .iter()
+            .find(|block| block.role == role)
+            .and_then(|block| {
+                block.content.iter().find_map(|part| match part {
+                    ContentPart::Text(text) => Some(text.clone()),
+                    _ => None,
+                })
+            })
+            .unwrap_or_default()
+    };
+
+    // The overridden rendering is used for the span.
+    assert!(
+        text_of(Role::User).contains("CUSTOM[0]:"),
+        "custom rendering not used: {}",
+        text_of(Role::User)
+    );
+    // The default (non-overridden) English prompt still leads the request,
+    // proving the reducer calls the default compaction_request which delegates
+    // to the overridden render_summary_record.
+    assert!(
+        text_of(Role::System).starts_with("Summarize the provided Hugr log span"),
+        "default system prompt missing: {}",
+        text_of(Role::System)
     );
 }

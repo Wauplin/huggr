@@ -17,12 +17,9 @@ use serde_json::json;
 
 use crate::command::{Command, DoneReason, OutputEvent, PermissionRequest};
 use crate::event::{Decision, Event, SteerMode, VersionRef};
-use crate::model::{
-    ContentPart, ContextBlock, ContextPlan, ModelDelta, ModelOutput, ModelRequest, ModelSelector,
-    Role, SamplingParams, ToolCall, Usage,
-};
+use crate::model::{ContextPlan, ModelDelta, ModelOutput, ModelSelector, ToolCall, Usage};
 use crate::policy::{AgentSeed, RoutingInputs, RoutingPhase, StaticPolicy, TurnPolicy};
-use crate::primitives::{OpId, Seq, Value};
+use crate::primitives::{OpId, Value};
 use crate::record::{
     LogEntry, OpMeta, OpOutcome, Record, RoutingDecision, SeqRange, SummaryCoverage,
 };
@@ -600,7 +597,7 @@ impl Brain {
         let Some(target) = self.policy.select_compaction_span(self.state.log(), plan) else {
             return false;
         };
-        self.start_compaction_turn(target.summary_of, target.est_tokens_in, resume_turn);
+        self.start_compaction_turn(target.summary_of, target.est_tokens_in, resume_turn, plan);
         true
     }
 
@@ -619,26 +616,31 @@ impl Brain {
         summary_of: SeqRange,
         est_tokens_in: u32,
         resume_turn: bool,
+        plan: &ContextPlan,
     ) {
         let op = self.state.alloc_op();
-        let selector = ModelSelector::named("small");
-        let routing = RoutingDecision::new(
-            selector.clone(),
-            vec![if resume_turn {
-                "automatic compaction uses small tier".to_string()
+        // Route the compaction model through the policy (ARCHITECTURE §2.5): the
+        // reducer must not hardcode a tier. A tiered policy can pick a cheap
+        // model for the `Compaction` phase; a single-model policy falls back to
+        // its default rather than erroring on a missing "small" model. The
+        // per-turn model override is deliberately *not* consumed here — it
+        // belongs to the real turn that resumes after compaction.
+        let inputs = RoutingInputs::from_state(&self.state, plan, RoutingPhase::Compaction);
+        let selector = self.policy.choose_model(&self.state, &inputs);
+        let mut reasons = self
+            .policy
+            .explain_model_choice(&self.state, &inputs, &selector);
+        reasons.push(
+            if resume_turn {
+                "automatic compaction pass"
             } else {
-                "manual compaction uses small tier".to_string()
-            }],
-        )
-        .with_inputs(json!({
-            "phase": "Compaction",
-            "summary_of": {
-                "start": summary_of.start.0,
-                "end": summary_of.end.0,
-            },
-            "est_tokens_in": est_tokens_in,
-        }));
-        let request = self.compaction_request(summary_of);
+                "manual compaction pass"
+            }
+            .to_string(),
+        );
+        let routing = RoutingDecision::new(selector.clone(), reasons)
+            .with_inputs(routing_inputs_snapshot(&inputs));
+        let request = self.policy.compaction_request(self.state.log(), summary_of);
         let kind = if resume_turn {
             OpKind::Compaction {
                 selector: selector.clone(),
@@ -713,51 +715,6 @@ impl Brain {
             }) => Some((*summary_of, *est_tokens_in, selector.clone(), false)),
             _ => None,
         }
-    }
-
-    fn compaction_request(&self, summary_of: SeqRange) -> ModelRequest {
-        let mut request = ModelRequest::new(
-            vec![
-                ContextBlock::new(
-                    Role::System,
-                    vec![ContentPart::Text(
-                        "Summarize the provided Hugr log span for future context. Preserve user intent, decisions, tool results, and unresolved work. Return concise plain text only.".to_string(),
-                    )],
-                ),
-                ContextBlock::new(
-                    Role::User,
-                    vec![ContentPart::Text(self.render_summary_span(summary_of))],
-                ),
-            ],
-            Vec::new(),
-            SamplingParams::default(),
-        );
-        request.extra = json!({
-            "kind": "compaction",
-            "summary_of": {
-                "start": summary_of.start.0,
-                "end": summary_of.end.0,
-            },
-        });
-        request
-    }
-
-    fn render_summary_span(&self, summary_of: SeqRange) -> String {
-        let mut rendered = String::new();
-        for entry in self
-            .state
-            .log()
-            .iter()
-            .filter(|entry| summary_of.contains(entry.seq))
-        {
-            if let Some(line) = render_summary_record(entry.seq, &entry.record) {
-                if !rendered.is_empty() {
-                    rendered.push('\n');
-                }
-                rendered.push_str(&line);
-            }
-        }
-        rendered
     }
 
     /// After a tool/agent op resolves, resume the model turn once nothing the
@@ -1099,42 +1056,6 @@ fn summary_text(output: &ModelOutput) -> String {
         String::new()
     } else {
         serde_json::to_string(&output.tool_calls).unwrap_or_default()
-    }
-}
-
-fn render_summary_record(seq: Seq, record: &Record) -> Option<String> {
-    match record {
-        Record::UserMessage { text, .. } => Some(format!("log:{} user: {}", seq.0, text)),
-        Record::ModelOutput { output, .. } => {
-            Some(format!("log:{} assistant: {}", seq.0, summary_text(output)))
-        }
-        Record::ToolResult { name, result, .. } => {
-            Some(format!("log:{} tool {}: {}", seq.0, name, result))
-        }
-        Record::Summary { text, .. } => Some(format!("log:{} summary: {}", seq.0, text)),
-        Record::SkillActivated { id, title, .. } => {
-            Some(format!("log:{} skill {} ({}) activated", seq.0, id, title))
-        }
-        Record::Plan { text, .. } => Some(format!("log:{} accepted plan: {}", seq.0, text)),
-        Record::TodoList { items, .. } => Some(format!(
-            "log:{} todo state: {}",
-            seq.0,
-            items
-                .iter()
-                .map(|item| format!("[{}] {}", if item.done { "x" } else { " " }, item.text))
-                .collect::<Vec<_>>()
-                .join("; ")
-        )),
-        Record::Hook {
-            phase,
-            name,
-            result,
-            ..
-        } => Some(format!(
-            "log:{} hook {:?}/{}: {}",
-            seq.0, phase, name, result
-        )),
-        Record::OpEnded { .. } => None,
     }
 }
 

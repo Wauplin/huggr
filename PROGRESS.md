@@ -7,6 +7,7 @@ Running log of what's implemented, phase by phase (see `docs/ROADMAP.md`).
 Done:
 
 - Added `crates/hugr-docs`, a specialized Rust CLI host that answers a single question from a docs folder and prints one JSON object with `answer`, `related_documents`, and run metadata.
+- Added a product-level Python extension for `hugr-docs`: `hugr_docs.answer(question, docs_path=None, api_key=None, base_url=None, model=None, input_usd_per_m_tokens=None, output_usd_per_m_tokens=None)` returns the same answer dictionary as the CLI JSON output, with each optional field falling back to the matching `HUGR_DOCS_*` environment variable or built-in default.
 - The crate reuses `hugr-core`, `hugr-host`, and the OpenAI-compatible streaming adapter, but does not build on `hugr-cli`; it wires its own system prompt, single logical model selector, no-op JSON frontend, and crate-specific `HUGR_DOCS_*` environment variables.
 - Tooling is deliberately read-only and scoped to the provided folder: `docs_list`, `docs_search`, `docs_read`, `docs_read_range`, `docs_read_many`, `docs_read_range_many`, and `docs_outline`. Paths are canonicalized and rejected if they escape the docs root; there is no shell, no write/edit tool, and no permission-mode option because registered docs tools are non-mutating.
 - Added range, batched, and outline docs retrieval helpers so the model can inspect specific line windows, fetch several known source files in one call, and navigate markdown-style headings without semantic indexes or metadata search.
@@ -612,7 +613,7 @@ Done:
 
 Tests (104 total across the workspace, +4): `hugr-wasm` unit tests over the native-testable `Core` — a user turn drives a `StartModelCall`, the log holds the `UserMessage`, the default policy constructs idle, and invalid event/policy JSON are clean errors. Plus out-of-band validation of the *shipped* artifact (WASM + generated glue) in Node: a full turn loop (`user → model → list_tabs → model resume → Done{EndTurn}`, 12 tools advertised) and the navigation permission round-trip (`navigate_tab → RequestPermission → Deny → model resumes`).
 
-Deferred (still open for a future Phase 4 pass): `hugr-py` (PyO3) host, the WASM *plugin* transport backend (wasmtime), size/cold-start benchmarking against §11, and browser-side trace persistence/resume (the side panel can export JSONL with events + log, but re-seeding a brain from a saved browser trace is not yet wired).
+Deferred (still open for a future Phase 4 pass): the general `hugr-py` (PyO3) `poll`/`submit` host, the WASM *plugin* transport backend (wasmtime), size/cold-start benchmarking against §11, and browser-side trace persistence/resume (the side panel can export JSONL with events + log, but re-seeding a brain from a saved browser trace is not yet wired). `hugr-docs` now has a narrower product-level Python extension for one-question docs retrieval; that does not replace the general brain binding.
 
 ## Phase 6 — Sub-agents & forks ✅ (built before Phase 4, by request)
 

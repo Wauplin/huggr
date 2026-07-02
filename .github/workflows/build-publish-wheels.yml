@@ -1,0 +1,99 @@
+name: Build & publish wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Upload to PyPI (set to 'true' to publish)"
+        required: true
+        default: "skip"
+
+# Prevent this workflow from running in parallel for the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Linux (manylinux) ───────────────────────────────────────────
+  build-linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --features python --out dist -i python3.9
+          working-directory: crates/hugr-docs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux
+          path: crates/hugr-docs/dist/*.whl
+
+  # ── macOS (Intel + Apple Silicon) ───────────────────────────────
+  build-macos-x86_64:
+    name: macOS (x86_64)
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build wheels
+        run: |
+          cd crates/hugr-docs
+          maturin build --features python --out dist -i python3.10
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos-x86_64
+          path: crates/hugr-docs/dist/*.whl
+
+  build-macos-aarch64:
+    name: macOS (arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build wheels
+        run: |
+          cd crates/hugr-docs
+          maturin build --features python --out dist -i python3.10
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos-aarch64
+          path: crates/hugr-docs/dist/*.whl
+
+  # ── Windows ─────────────────────────────────────────────────────
+  build-windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build wheels
+        run: |
+          cd crates/hugr-docs
+          maturin build --features python --out dist -i python3.10
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows
+          path: crates/hugr-docs/dist/*.whl
+
+  # ── Publish to PyPI ─────────────────────────────────────────────
+  publish:
+    name: Publish to PyPI
+    needs: [build-linux, build-macos-x86_64, build-macos-aarch64, build-windows]
+    if: github.event.inputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi-publish
+    permissions:
+      # This permission is needed for private packages to authenticate.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

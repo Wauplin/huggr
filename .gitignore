@@ -1,6 +1,7 @@
 /target
 **/*.rs.bk
 Cargo.lock.orig
+**/dist/*
 
 # Editors / OS
 .DS_Store

@@ -84,7 +84,7 @@
 **Goal.** Same brain, many environments.
 
 - ✅ `hugr-wasm`: compile `hugr-core` to WASM (`wasm-bindgen`); a **Chrome extension** host with a `fetch`-based streaming model adapter, a DOM front-end, and tab/page capabilities (read + navigate, no click/form-submit). **No backend** — an MV3 page fetches the model endpoint cross-origin directly. The binding is JSON-in/JSON-out over `submit`/`poll` (every `Event`/`Command` is already `serde`, so zero marshalling). See `crates/hugr-wasm/` and its `extension/`. The brain is byte-for-byte the same reducer as the CLI; only the host differs.
-- `hugr-py`: PyO3 bindings exposing `poll`/`submit`; a Python host script. **(deferred)**
+- `hugr-py`: PyO3 bindings exposing `poll`/`submit`; a Python host script. **(deferred)** A narrower product-level `hugr-docs` binding now exists for one-question docs retrieval, but it does not replace the general brain binding.
 - Size/start-up validation against Architecture §11 targets. The WASM module is **236 KB** (well under the < 2 MB target); formal cold-start benchmarking is **deferred**.
 
 **Exit criteria.**

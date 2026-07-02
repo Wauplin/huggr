@@ -38,12 +38,44 @@ Use `--pretty` to pretty-print the JSON and `--model <id>` to override the model
 
 The final JSON object is the only stdout output. Operational logs, model/tool lifecycle events, streamed model chunks, and errors are written to stderr so stdout remains safe to pipe into `jq`.
 
+## Python binding
+
+The crate also builds a Python extension module with one method, `hugr_docs.answer(question, docs_path=None, api_key=None, base_url=None, model=None, input_usd_per_m_tokens=None, output_usd_per_m_tokens=None)`, returning a Python `dict` with the same `answer`, `related_documents`, and `metadata` fields emitted by the CLI.
+
+Build or install it with maturin from this directory:
+
+```bash
+cd crates/hugr-docs
+maturin develop --features python
+```
+
+Then call it from Python:
+
+```python
+import hugr_docs
+
+result = hugr_docs.answer(
+    "Which repositories do I watch by default?",
+    docs_path="./archive-light-2026-07-01",
+    api_key="hf_...",
+    base_url="https://router.huggingface.co/v1",
+    model="google/gemma-4-31B-it:cerebras",
+    input_usd_per_m_tokens=1.0,
+    output_usd_per_m_tokens=1.5,
+)
+print(result["answer"])
+print(result["metadata"])
+```
+
+Each optional argument falls back independently: `docs_path` uses `HUGR_DOCS_PATH`, `api_key` uses `HUGR_DOCS_API_KEY`, `base_url` uses `HUGR_DOCS_BASE_URL` then the default endpoint, `model` uses `HUGR_DOCS_MODEL` then the default model, and pricing uses the matching env var then the built-in default. This means callers can run fully from explicit Python arguments, fully from environment variables, or mix the two.
+
 ## Configuration
 
 All environment variables are crate-specific and independent from `hugr-cli`'s `HUGR_*` configuration:
 
 | Variable | Default | Notes |
 | --- | --- | --- |
+| `HUGR_DOCS_PATH` | optional | Docs root used by the Python binding when `docs_path` is omitted. |
 | `HUGR_DOCS_API_KEY` | required | API key for the OpenAI-compatible endpoint. |
 | `HUGR_DOCS_BASE_URL` | `https://router.huggingface.co/v1` | Endpoint root; `/chat/completions` is appended by the adapter. |
 | `HUGR_DOCS_MODEL` | `google/gemma-4-31B-it:cerebras` | Default model. Must support function/tool calling. |

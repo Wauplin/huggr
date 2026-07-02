@@ -2,17 +2,20 @@ use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use hugr_core::{
-    Decision, DoneReason, ModelSelector, OpId, OpMeta, OpOutcome, OutputEvent, Record,
-    SamplingParams, ToolSchema, Usage, Value,
+    ModelSelector, OpMeta, OpOutcome, Record, SamplingParams, ToolSchema, Value,
 };
-use hugr_host::{Capability, ChunkSink, Frontend, estimate_text_tokens};
+use hugr_host::{Capability, ChunkSink, Engine, Frontend, estimate_text_tokens, policy::AllowAll};
+use hugr_providers::OpenAiAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+#[cfg(feature = "python")]
+mod python;
 
 pub const DEFAULT_MODEL: &str = "google/gemma-4-31B-it:cerebras";
 pub const DEFAULT_BASE_URL: &str = "https://router.huggingface.co/v1";
@@ -44,21 +47,88 @@ pub struct DocsConfig {
     pub sampling: SamplingParams,
 }
 
+#[non_exhaustive]
+#[derive(Clone, Debug, Default)]
+pub struct DocsConfigOptions {
+    pub api_key: Option<String>,
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub input_usd_per_m_tokens: Option<f64>,
+    pub output_usd_per_m_tokens: Option<f64>,
+}
+
+impl DocsConfigOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.api_key = Some(api_key.into());
+        self
+    }
+
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = Some(base_url.into());
+        self
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    pub fn with_input_usd_per_m_tokens(mut self, price: f64) -> Self {
+        self.input_usd_per_m_tokens = Some(price);
+        self
+    }
+
+    pub fn with_output_usd_per_m_tokens(mut self, price: f64) -> Self {
+        self.output_usd_per_m_tokens = Some(price);
+        self
+    }
+}
+
 impl DocsConfig {
     pub fn from_env(root: PathBuf, model_override: Option<String>) -> Result<Self> {
-        let api_key = std::env::var("HUGR_DOCS_API_KEY").context("set HUGR_DOCS_API_KEY")?;
-        let model = model_override
+        Self::from_options(
+            root,
+            DocsConfigOptions {
+                model: model_override,
+                ..DocsConfigOptions::default()
+            },
+        )
+    }
+
+    pub fn from_options(root: PathBuf, options: DocsConfigOptions) -> Result<Self> {
+        let api_key = options
+            .api_key
+            .or_else(|| std::env::var("HUGR_DOCS_API_KEY").ok())
+            .context("pass api_key or set HUGR_DOCS_API_KEY")?;
+        let model = options
+            .model
             .or_else(|| std::env::var("HUGR_DOCS_MODEL").ok())
             .unwrap_or_else(|| DEFAULT_MODEL.to_string());
-        let base_url =
-            std::env::var("HUGR_DOCS_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
-        let input_usd_per_m_tokens = parse_env_f64(
-            "HUGR_DOCS_INPUT_USD_PER_M_TOKENS",
-            DEFAULT_INPUT_USD_PER_M_TOKENS,
+        let base_url = options
+            .base_url
+            .or_else(|| std::env::var("HUGR_DOCS_BASE_URL").ok())
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+        let input_usd_per_m_tokens = options.input_usd_per_m_tokens.map_or_else(
+            || {
+                parse_env_f64(
+                    "HUGR_DOCS_INPUT_USD_PER_M_TOKENS",
+                    DEFAULT_INPUT_USD_PER_M_TOKENS,
+                )
+            },
+            validate_price,
         )?;
-        let output_usd_per_m_tokens = parse_env_f64(
-            "HUGR_DOCS_OUTPUT_USD_PER_M_TOKENS",
-            DEFAULT_OUTPUT_USD_PER_M_TOKENS,
+        let output_usd_per_m_tokens = options.output_usd_per_m_tokens.map_or_else(
+            || {
+                parse_env_f64(
+                    "HUGR_DOCS_OUTPUT_USD_PER_M_TOKENS",
+                    DEFAULT_OUTPUT_USD_PER_M_TOKENS,
+                )
+            },
+            validate_price,
         )?;
         let sampling = SamplingParams::new().with_temperature(0.0);
         Ok(Self {
@@ -73,13 +143,52 @@ impl DocsConfig {
     }
 }
 
+fn validate_price(value: f64) -> Result<f64> {
+    anyhow::ensure!(
+        value.is_finite() && value >= 0.0,
+        "token price must be a finite non-negative number"
+    );
+    Ok(value)
+}
+
 fn parse_env_f64(name: &str, default: f64) -> Result<f64> {
     match std::env::var(name) {
-        Ok(value) => value
-            .parse::<f64>()
-            .with_context(|| format!("parsing {name}={value:?}")),
+        Ok(value) => validate_price(
+            value
+                .parse::<f64>()
+                .with_context(|| format!("parsing {name}={value:?}"))?,
+        )
+        .with_context(|| format!("parsing {name}={value:?}")),
         Err(_) => Ok(default),
     }
+}
+
+pub async fn answer_question(config: DocsConfig, question: &str) -> Result<DocsAnswer> {
+    anyhow::ensure!(!question.trim().is_empty(), "question cannot be empty");
+    let docs = DocsRoot::new(&config.root)?;
+    let selector = ModelSelector::named("docs");
+    let adapter = OpenAiAdapter::new(config.api_key.clone(), config.model.clone())
+        .with_base_url(config.base_url.clone())
+        .with_default_params(config.sampling.clone());
+
+    let mut builder = Engine::builder()
+        .model(selector.clone(), Arc::new(adapter))
+        .default_model(selector)
+        .system_prompt(SYSTEM_PROMPT)
+        .sampling(config.sampling.clone())
+        .policy(Arc::new(AllowAll))
+        .frontend(Box::new(JsonFrontend));
+    for capability in docs.capabilities() {
+        builder = builder.capability(capability);
+    }
+
+    let mut engine = builder.build();
+    let started = Instant::now();
+    engine.user_turn(user_prompt(question)).await;
+    engine.session_end();
+
+    build_answer(engine.brain().state().log(), &config, started.elapsed())
+        .context("building JSON answer from Hugr session")
 }
 
 #[derive(Clone, Debug)]
@@ -964,190 +1073,7 @@ fn search_impl(root: &DocsRoot, args: Value) -> Result<Value> {
 #[derive(Default)]
 pub struct JsonFrontend;
 
-impl Frontend for JsonFrontend {
-    fn on_output(&mut self, event: &OutputEvent) {
-        match event {
-            OutputEvent::ModelText { op, text } => {
-                eprintln!(
-                    "[hugr-docs] model_text op={} chunk={}",
-                    op.0,
-                    one_line_json(text)
-                );
-            }
-            OutputEvent::ModelReasoning { op, text } => {
-                eprintln!(
-                    "[hugr-docs] model_reasoning op={} chunk={}",
-                    op.0,
-                    one_line_json(text)
-                );
-            }
-            OutputEvent::ToolCallStarted { op, id, name } => {
-                eprintln!(
-                    "[hugr-docs] tool_call_started op={} id={} name={}",
-                    op.0, id, name
-                );
-            }
-            OutputEvent::ToolChunk { op, chunk } => {
-                eprintln!(
-                    "[hugr-docs] tool_chunk op={} chunk={}",
-                    op.0,
-                    summarize_value(chunk)
-                );
-            }
-            OutputEvent::Notice(message) => {
-                eprintln!("[hugr-docs] notice {}", message);
-            }
-            _ => {
-                eprintln!("[hugr-docs] output {:?}", event);
-            }
-        }
-    }
-
-    fn on_notice(&mut self, message: &str) {
-        eprintln!("[hugr-docs] notice {message}");
-    }
-
-    fn on_model_start(&mut self, op: OpId, selector: &ModelSelector) {
-        eprintln!(
-            "[hugr-docs] model_start op={} selector={:?}",
-            op.0, selector
-        );
-    }
-
-    fn on_model_end(&mut self, op: OpId, usage: &Usage) {
-        eprintln!(
-            "[hugr-docs] model_end op={} input_tokens={} output_tokens={}",
-            op.0, usage.input_tokens, usage.output_tokens
-        );
-    }
-
-    fn on_tool_start(&mut self, op: OpId, name: &str, args: &Value) {
-        eprintln!(
-            "[hugr-docs] tool_start op={} name={} args={}",
-            op.0,
-            name,
-            summarize_value(args)
-        );
-    }
-
-    fn on_tool_end(&mut self, op: OpId, name: &str, result: &Value, is_error: bool) {
-        let status = if is_error { "error" } else { "ok" };
-        eprintln!(
-            "[hugr-docs] tool_end op={} name={} status={} result={}",
-            op.0,
-            name,
-            status,
-            summarize_tool_result(name, result)
-        );
-    }
-
-    fn on_permission(&mut self, capability: &str, decision: &Decision) {
-        eprintln!(
-            "[hugr-docs] permission capability={} decision={:?}",
-            capability, decision
-        );
-    }
-
-    fn on_done(&mut self, reason: &DoneReason) {
-        eprintln!("[hugr-docs] done reason={:?}", reason);
-    }
-
-    fn on_session_end(&mut self) {
-        eprintln!("[hugr-docs] session_end");
-    }
-}
-
-fn summarize_tool_result(name: &str, result: &Value) -> String {
-    if let Some(error) = result.get("error") {
-        return format!("error={}", summarize_value(error));
-    }
-    match name {
-        "docs_read" => format!(
-            "path={} bytes_returned={} truncated={} is_index={}",
-            display_json_field(result, "path"),
-            display_json_field(result, "bytes_returned"),
-            display_json_field(result, "truncated"),
-            display_json_field(result, "is_index")
-        ),
-        "docs_read_range" => format!(
-            "path={} start_line={} end_line={} bytes_returned={} truncated={} is_index={}",
-            display_json_field(result, "path"),
-            display_json_field(result, "start_line"),
-            display_json_field(result, "end_line"),
-            display_json_field(result, "bytes_returned"),
-            display_json_field(result, "truncated"),
-            display_json_field(result, "is_index")
-        ),
-        "docs_read_many" | "docs_read_range_many" => format!(
-            "documents={} errors={} truncated={}",
-            result
-                .get("documents")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0),
-            result
-                .get("errors")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0),
-            display_json_field(result, "truncated")
-        ),
-        "docs_outline" => format!(
-            "documents={} searched_files={} truncated={}",
-            result
-                .get("documents")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0),
-            display_json_field(result, "searched_files"),
-            display_json_field(result, "truncated")
-        ),
-        "docs_search" => format!(
-            "query={} matches={} searched_files={} truncated={}",
-            display_json_field(result, "query"),
-            result
-                .get("matches")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0),
-            display_json_field(result, "searched_files"),
-            display_json_field(result, "truncated")
-        ),
-        "docs_list" => format!(
-            "entries={} truncated={}",
-            result
-                .get("entries")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-                .unwrap_or(0),
-            display_json_field(result, "truncated")
-        ),
-        _ => summarize_value(result),
-    }
-}
-
-fn display_json_field(value: &Value, field: &str) -> String {
-    value
-        .get(field)
-        .map(summarize_value)
-        .unwrap_or_else(|| "null".to_string())
-}
-
-fn summarize_value(value: &Value) -> String {
-    match value {
-        Value::String(text) => one_line_json(text),
-        Value::Array(items) => format!("[{} item(s)]", items.len()),
-        Value::Object(map) => {
-            let keys = map.keys().cloned().collect::<Vec<_>>().join(",");
-            format!("{{keys={keys}}}")
-        }
-        other => other.to_string(),
-    }
-}
-
-fn one_line_json(text: &str) -> String {
-    serde_json::to_string(text).unwrap_or_else(|_| format!("{text:?}"))
-}
+impl Frontend for JsonFrontend {}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AnswerPayload {
@@ -1452,6 +1378,36 @@ mod tests {
         );
         assert_eq!(payload.answer, "A");
         assert_eq!(payload.related_documents, vec!["hub/notifications.md"]);
+    }
+
+    #[test]
+    fn config_options_use_explicit_values_without_env() {
+        let config = DocsConfig::from_options(
+            PathBuf::from("/docs"),
+            DocsConfigOptions::new()
+                .with_api_key("key")
+                .with_base_url("https://example.test/v1")
+                .with_model("provider/model")
+                .with_input_usd_per_m_tokens(2.5)
+                .with_output_usd_per_m_tokens(7.0),
+        )
+        .unwrap();
+
+        assert_eq!(config.root, PathBuf::from("/docs"));
+        assert_eq!(config.api_key, "key");
+        assert_eq!(config.base_url, "https://example.test/v1");
+        assert_eq!(config.model, "provider/model");
+        assert_eq!(config.input_usd_per_m_tokens, 2.5);
+        assert_eq!(config.output_usd_per_m_tokens, 7.0);
+
+        let err = DocsConfig::from_options(
+            PathBuf::from("/docs"),
+            DocsConfigOptions::new()
+                .with_api_key("key")
+                .with_input_usd_per_m_tokens(f64::NAN),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("token price"));
     }
 
     #[test]

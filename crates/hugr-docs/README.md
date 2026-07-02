@@ -72,7 +72,7 @@ Each tool canonicalizes paths and rejects anything outside the folder passed as 
 
 ## Answer contract
 
-The system prompt instructs the model to use only the docs tools and to finish with a JSON object containing `answer` and `related_documents`. If the docs do not contain enough evidence, it must answer: `It is not possible to find an answer in the docs.`
+The system prompt instructs the model to use only the docs tools, decompose compound questions into facets, gather evidence for every facet, and finish with a JSON object containing `answer` and `related_documents`. If the docs do not contain enough evidence, it must answer: `It is not possible to find an answer in the docs.`
 
 The CLI always emits valid JSON even if the final model text is imperfect: it parses fenced or raw JSON when possible, otherwise wraps the text as `answer`; related documents are sanitized, limited to non-index documents actually read during the run, and fall back to the full non-index read set when needed.
 

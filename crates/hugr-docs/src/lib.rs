@@ -31,7 +31,7 @@ const DEFAULT_OUTLINE_MAX_DOCUMENTS: usize = 100;
 const DEFAULT_OUTLINE_MAX_HEADINGS: usize = 1_000;
 
 pub const SYSTEM_PROMPT: &str = "\
-You are a documentation retrieval agent. Answer the user's question using only the documentation available through the provided read-only tools. Start by searching or listing the docs, then read every source document needed to support the answer. AI_INDEX.md files are navigation aids only: use them to decide what to read, but never cite them as related documents. If the docs do not contain enough evidence, say that it is not possible to find an answer in the docs. Do not use prior knowledge. Your final response must be a single JSON object with exactly these fields: answer (string) and related_documents (array of document paths relative to the docs root, excluding AI_INDEX.md).";
+You are a documentation retrieval agent. Answer the user's question using only the documentation available through the provided read-only tools. Start by using docs_search, docs_list, or docs_outline to plan retrieval, then read every source document needed to support the answer. Decompose compound questions into facets and gather evidence for every facet before answering; if a question asks about multiple concepts, comparisons, constraints, or how mechanisms differ, do not stop after the first relevant document. Prefer docs_read_many or docs_read_range_many when several sources look relevant. AI_INDEX.md files are navigation aids only: use them to decide what to read, but never cite them as related documents. If the docs do not contain enough evidence for any facet, say what cannot be found in the docs instead of filling gaps from prior knowledge. Do not use prior knowledge. Your final response must be a single JSON object with exactly these fields: answer (string) and related_documents (array of document paths relative to the docs root, excluding AI_INDEX.md).";
 
 #[derive(Clone, Debug)]
 pub struct DocsConfig {
@@ -480,10 +480,7 @@ fn read_range_document(
     let selected = if start_line > lines.len() {
         Vec::new()
     } else {
-        lines[(start_line - 1)..lines.len().min(capped_end)]
-            .iter()
-            .copied()
-            .collect::<Vec<_>>()
+        lines[(start_line - 1)..lines.len().min(capped_end)].to_vec()
     };
     let line_truncated =
         requested_end > capped_end || (end_line.is_none() && capped_end < lines.len());
@@ -1435,7 +1432,7 @@ fn usage_totals(log: &[hugr_core::LogEntry]) -> (u64, u64, usize, usize) {
 
 pub fn user_prompt(question: &str) -> String {
     format!(
-        "Question: {question}\n\nReturn only the final JSON object after using the docs tools. If the answer is absent from the docs, use this answer exactly: \"It is not possible to find an answer in the docs.\""
+        "Question: {question}\n\nBefore answering, make sure each distinct part of the question is backed by at least one read non-index document. Return only the final JSON object after using the docs tools. If the answer is absent from the docs, use this answer exactly: \"It is not possible to find an answer in the docs.\""
     )
 }
 

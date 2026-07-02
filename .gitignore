@@ -10,3 +10,5 @@ Cargo.lock.orig
 .vscode/
 
 archive*
+
+.claude/

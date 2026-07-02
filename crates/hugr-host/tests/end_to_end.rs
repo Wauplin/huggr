@@ -1628,6 +1628,34 @@ async fn parent_fans_out_to_sub_agents_and_replays() {
     assert!(child_texts.contains(&"worker-A done".to_string()));
     assert!(child_texts.contains(&"worker-B done".to_string()));
 
+    // Sub-agent spawns and completions are tool-shaped for hooks too: each of
+    // the two `task` invocations fired a PreTool hook, and each returning
+    // digest fired a PostTool hook — exactly like a capability tool. (Skill
+    // activations stay hookless: they happen entirely inside the brain.)
+    let hooks: Vec<(HookPhase, String)> = engine
+        .brain()
+        .state()
+        .log()
+        .iter()
+        .filter_map(|entry| match &entry.record {
+            Record::Hook { phase, name, .. } => Some((phase.clone(), name.clone())),
+            _ => None,
+        })
+        .collect();
+    let pre_tool = hooks
+        .iter()
+        .filter(|(phase, name)| *phase == HookPhase::PreTool && name == "builtin_pre_tool")
+        .count();
+    let post_tool = hooks
+        .iter()
+        .filter(|(phase, name)| *phase == HookPhase::PostTool && name == "builtin_post_tool")
+        .count();
+    assert_eq!(pre_tool, 2, "each sub-agent spawn fires a PreTool hook");
+    assert_eq!(
+        post_tool, 2,
+        "each sub-agent completion fires a PostTool hook"
+    );
+
     // The parent turn ended once, after both children joined.
     let dones = capture.done.lock().unwrap();
     assert_eq!(dones.len(), 1);
@@ -1656,6 +1684,166 @@ async fn parent_fans_out_to_sub_agents_and_replays() {
         .filter(|c| matches!(c, Command::StartAgent { .. }))
         .count();
     assert_eq!(start_agents, 2, "the parent spawned two sub-agents");
+}
+
+/// Regression: an **explicit** `.default_model(named("medium"))` must survive
+/// later registrations — with tiers registered `[small, medium, big]` (as the
+/// CLI does), the first-registered fallback must not steal an explicit default
+/// that happens to equal the built-in one, silently routing every normal turn
+/// to the small tier.
+#[tokio::test]
+async fn explicit_default_model_is_not_stolen_by_first_registration() {
+    let small = MockModel::new([]);
+    let medium = MockModel::new([ModelOutput::text("routed to medium")]);
+    let big = MockModel::new([]);
+    let capture = Capture::default();
+
+    let mut engine = Engine::builder()
+        .default_model(ModelSelector::named("medium"))
+        .model(ModelSelector::named("small"), small.clone())
+        .model(ModelSelector::named("medium"), medium.clone())
+        .model(ModelSelector::named("big"), big.clone())
+        .frontend(Box::new(capture.clone()))
+        .clock(deterministic_clock())
+        .build();
+
+    engine.user_turn("hello there".into()).await;
+
+    assert_eq!(
+        medium.requests.lock().unwrap().len(),
+        1,
+        "the explicit default tier handles the normal turn"
+    );
+    assert!(
+        small.requests.lock().unwrap().is_empty(),
+        "the first-registered tier must not steal the explicit default"
+    );
+    assert!(big.requests.lock().unwrap().is_empty());
+    assert!(capture.text.lock().unwrap().contains("routed to medium"));
+}
+
+/// Regression: a resumed engine must start **quiescent**. Reconciling the
+/// pre-crash in-flight op (folding `OpCancelled`) queues commands inside the
+/// brain — a `Done { Cancelled }`, potentially a stale `StartModelCall` — and
+/// those must be discarded at build time, not fired at the start of the first
+/// live turn (a spurious stop hook, or a pre-crash model call racing the new
+/// turn's).
+#[tokio::test]
+async fn resume_after_crash_starts_quiescent() {
+    let dir = std::env::temp_dir().join(format!("hugr-host-quiescent-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("session.trace.json");
+
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+    let pending = Arc::new(PendingModel {
+        started: started_tx,
+    });
+
+    // Crash mid-model-call: the checkpoint captures a trace whose fold leaves
+    // the model op in flight.
+    let path_for_task = path.clone();
+    let handle = tokio::spawn(async move {
+        let mut engine = Engine::builder()
+            .model(ModelSelector::named("big"), pending)
+            .frontend(Box::new(Capture::default()))
+            .clock(deterministic_clock())
+            .checkpoint(path_for_task, CheckpointCadence::EveryEvent)
+            .build();
+        engine.user_turn("start then crash".into()).await;
+    });
+    started_rx.recv().await.expect("pending model should start");
+    let saved = wait_for_checkpoint_with_delta(&path).await;
+    handle.abort();
+
+    let capture = Capture::default();
+    let continued_model = MockModel::new([ModelOutput::text("continued after crash")]);
+    let mut resumed = Engine::builder()
+        .model(ModelSelector::named("big"), continued_model.clone())
+        .frontend(Box::new(capture.clone()))
+        .clock(deterministic_clock())
+        .resume(saved)
+        .build();
+
+    resumed.user_turn("continue".into()).await;
+
+    // Exactly the live turn's Done fired — no spurious Done{Cancelled} left
+    // over from the reconciled pre-crash turn.
+    let dones = capture.done.lock().unwrap();
+    assert_eq!(
+        dones.len(),
+        1,
+        "only the live turn's Done fires, got {dones:?}"
+    );
+    assert!(matches!(dones[0], DoneReason::EndTurn));
+
+    // No stale pre-crash StartModelCall raced the new turn: the model ran
+    // exactly once, for the new user input.
+    assert_eq!(continued_model.requests.lock().unwrap().len(), 1);
+
+    // And no spurious stop hook was recorded for the reconciled turn.
+    let stop_hooks = resumed
+        .brain()
+        .state()
+        .log()
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.record,
+                Record::Hook { phase, .. } if *phase == HookPhase::Stop
+            )
+        })
+        .count();
+    assert_eq!(stop_hooks, 1, "exactly one stop hook: the live turn's");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// D-phase checkpoint scheduling: events that arrive while a checkpoint write
+/// is still in flight mark the engine dirty (single-flight, latest wins)
+/// instead of stacking concurrent writers — and the session still ends with a
+/// complete, loadable, replayable trace thanks to the final synchronous flush.
+#[tokio::test]
+async fn checkpoint_overlapping_writes_still_yield_complete_trace() {
+    let dir = std::env::temp_dir().join(format!(
+        "hugr-host-checkpoint-overlap-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("session.trace.json");
+
+    let model = MockModel::new([ModelOutput::text("checkpointed answer")]);
+    let mut engine = Engine::builder()
+        .model(ModelSelector::named("big"), model)
+        .frontend(Box::new(Capture::default()))
+        .clock(deterministic_clock())
+        .checkpoint(path.clone(), CheckpointCadence::EveryEvent)
+        .build();
+
+    // Burst events at the engine faster than checkpoint writes complete: each
+    // submission schedules a checkpoint, so most arrive while a write is still
+    // in flight and take the dirty-mark path rather than spawning a writer.
+    for i in 0..50 {
+        engine.accept_plan(format!("plan revision {i}"));
+    }
+    engine.user_turn("summarize the plan".into()).await;
+    engine.session_end(); // final synchronous flush: the latest state lands
+
+    let trace = hugr_host::Trace::load(&path).expect("checkpoint is loadable");
+    assert_eq!(
+        trace.log,
+        engine.brain().state().log(),
+        "the checkpoint captured the complete session, latest state wins"
+    );
+    assert!(
+        trace.log.iter().any(|entry| matches!(
+            &entry.record,
+            Record::UserMessage { text, .. } if text == "summarize the plan"
+        )),
+        "the final turn is in the checkpointed log"
+    );
+    hugr_host::hugr_replay::verify(&trace).expect("checkpointed trace replays bit-for-bit");
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A non-recording engine has no trace, and `save_trace` errors cleanly.

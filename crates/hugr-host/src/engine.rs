@@ -7,7 +7,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hugr_core::{
@@ -50,6 +51,55 @@ impl CheckpointCadence {
             CheckpointCadence::EveryNEvents(n) => events_since_checkpoint >= n.max(1),
         }
     }
+}
+
+/// State shared between the driver loop and its background checkpoint writers
+/// (see [`Engine::checkpoint`]). Writes are **single-flight**: `writing` gates
+/// scheduling (a checkpoint that comes due mid-write marks the engine dirty
+/// instead of stacking a second writer), and `written` — the highest snapshot
+/// generation persisted — guards the file itself, so a stale writer can never
+/// clobber a newer snapshot. Latest state always wins.
+struct CheckpointShared {
+    /// Highest snapshot generation persisted so far. Holding this mutex also
+    /// serializes the actual file writes: two writers never run concurrently
+    /// against the same path.
+    written: Mutex<u64>,
+    /// True while a background write is in flight (the single-flight gate).
+    writing: AtomicBool,
+    /// Errors from background writes, drained to the front-end on the loop
+    /// (the driver methods are intentionally infallible).
+    errors: Mutex<Vec<String>>,
+}
+
+impl CheckpointShared {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            written: Mutex::new(0),
+            writing: AtomicBool::new(false),
+            errors: Mutex::new(Vec::new()),
+        })
+    }
+}
+
+/// Write one checkpoint snapshot under the shared file lock. A writer whose
+/// snapshot generation is older than what is already on disk skips the write
+/// entirely (a newer snapshot supersedes it — latest state wins).
+fn write_checkpoint(
+    shared: &CheckpointShared,
+    generation: u64,
+    trace: &Trace,
+    compaction: TraceCompaction,
+    path: &std::path::Path,
+) -> Result<(), TraceError> {
+    let mut written = shared.written.lock().unwrap();
+    if generation <= *written {
+        return Ok(());
+    }
+    match compaction {
+        TraceCompaction::PreserveFull => trace.save_atomic(path)?,
+    }
+    *written = generation;
+    Ok(())
 }
 
 /// How a resumed host reconciles ops that were in flight when the previous
@@ -164,6 +214,18 @@ pub struct Engine {
     checkpoint_path: Option<PathBuf>,
     checkpoint_cadence: CheckpointCadence,
     events_since_checkpoint: usize,
+    /// Set when a checkpoint came due while a background write was still in
+    /// flight: the next opportunity (or the final flush) writes the latest
+    /// state instead of queueing a second concurrent writer.
+    checkpoint_dirty: bool,
+    /// Monotone snapshot generation for checkpoint writes (latest wins).
+    checkpoint_gen: u64,
+    checkpoint_shared: Arc<CheckpointShared>,
+    /// Wakes the driver loop when a background checkpoint write finishes, so a
+    /// dirty engine re-checkpoints promptly even if no further event arrives
+    /// (e.g. mid-model-call, exactly when crash durability matters).
+    ckpt_done_tx: UnboundedSender<()>,
+    ckpt_done_rx: UnboundedReceiver<()>,
     compaction: TraceCompaction,
     /// The brain's policy config, serialized once at build time, so a recorded
     /// trace can carry it (the brain branches on the policy's pure decisions —
@@ -256,9 +318,12 @@ impl Engine {
 
     /// Signal the front-end that the session is finishing, so it can render any
     /// accumulated totals (e.g. the metrics footer). Call this once after the
-    /// last turn of a one-shot run, or when an interactive session exits.
+    /// last turn of a one-shot run, or when an interactive session exits. Also
+    /// flushes a final synchronous checkpoint so shutdown never loses data to a
+    /// still-in-flight background write.
     pub fn session_end(&mut self) {
         self.flush_render();
+        self.flush_checkpoint_sync();
         self.frontend.on_session_end();
     }
 
@@ -338,26 +403,146 @@ impl Engine {
         }
     }
 
-    /// Save the current recorded trace atomically to the configured checkpoint
-    /// target, if any. Errors are reported to the front-end as notices because
-    /// the driver loop methods are intentionally infallible.
+    /// Schedule a checkpoint of the current recorded trace to the configured
+    /// target, if any. The serialization + atomic write-then-rename runs on a
+    /// blocking task **off the driver loop**; writes are single-flight — if one
+    /// is still in progress the engine marks itself dirty and writes the latest
+    /// state at the next opportunity (or at the final flush) instead of stacking
+    /// a second concurrent writer for the same path. A checkpoint with nothing
+    /// new since the last snapshot is skipped entirely. Errors are reported to
+    /// the front-end as notices because the driver methods are infallible.
     fn checkpoint(&mut self) {
-        let Some(path) = self.checkpoint_path.clone() else {
+        if self.checkpoint_path.is_none() {
+            return;
+        }
+        self.drain_checkpoint_errors();
+        // Nothing changed since the last scheduled snapshot: skip entirely.
+        if self.events_since_checkpoint == 0 && !self.checkpoint_dirty {
+            return;
+        }
+        // Single-flight: a write is still in progress. Mark dirty; the latest
+        // state is written when the next checkpoint opportunity (or the final
+        // flush) finds the writer free.
+        if self.checkpoint_shared.writing.load(Ordering::Acquire) {
+            self.checkpoint_dirty = true;
+            return;
+        }
+        let Some((trace, path, generation)) = self.checkpoint_snapshot() else {
             return;
         };
-        let result = match self.trace() {
-            Some(trace) => match self.compaction {
-                TraceCompaction::PreserveFull => trace.save_atomic(&path),
-            },
-            None => Err(TraceError::Io(std::io::Error::other(
-                "engine is not recording; checkpoint requires .record()",
-            ))),
+        let compaction = self.compaction;
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let shared = self.checkpoint_shared.clone();
+                let done = self.ckpt_done_tx.clone();
+                shared.writing.store(true, Ordering::Release);
+                handle.spawn_blocking(move || {
+                    if let Err(err) =
+                        write_checkpoint(&shared, generation, &trace, compaction, &path)
+                    {
+                        shared
+                            .errors
+                            .lock()
+                            .unwrap()
+                            .push(format!("checkpoint failed ({}): {err}", path.display()));
+                    }
+                    shared.writing.store(false, Ordering::Release);
+                    // Wake the driver loop: if it went dirty while this write
+                    // was in flight, it re-checkpoints with the latest state.
+                    let _ = done.send(());
+                });
+            }
+            // No runtime on this thread (e.g. events submitted before the loop
+            // starts): fall back to the old synchronous write.
+            Err(_) => {
+                if let Err(err) = write_checkpoint(
+                    &self.checkpoint_shared,
+                    generation,
+                    &trace,
+                    compaction,
+                    &path,
+                ) {
+                    self.frontend
+                        .on_notice(&format!("checkpoint failed ({}): {err}", path.display()));
+                }
+            }
+        }
+    }
+
+    /// Snapshot the current trace and claim the next write generation, resetting
+    /// the "something changed" tracking. Returns `None` (with a notice) if the
+    /// engine is not recording.
+    fn checkpoint_snapshot(&mut self) -> Option<(Trace, PathBuf, u64)> {
+        let path = self.checkpoint_path.clone()?;
+        let Some(trace) = self.trace() else {
+            self.frontend.on_notice(&format!(
+                "checkpoint failed ({}): engine is not recording; checkpoint requires .record()",
+                path.display()
+            ));
+            return None;
         };
-        match result {
-            Ok(()) => self.events_since_checkpoint = 0,
-            Err(err) => self
-                .frontend
-                .on_notice(&format!("checkpoint failed ({}): {err}", path.display())),
+        self.checkpoint_gen += 1;
+        self.events_since_checkpoint = 0;
+        self.checkpoint_dirty = false;
+        Some((trace, path, self.checkpoint_gen))
+    }
+
+    /// At a turn boundary, catch up a checkpoint that went dirty while a write
+    /// was in flight: wait for the writer to finish (the wakeup channel), then
+    /// schedule one more write with the latest state. Keeps the on-disk trace
+    /// current while the engine idles between turns.
+    async fn settle_checkpoint(&mut self) {
+        while self.checkpoint_dirty {
+            if self.checkpoint_shared.writing.load(Ordering::Acquire)
+                && self.ckpt_done_rx.recv().await.is_none()
+            {
+                return; // unreachable: the engine holds a sender
+            }
+            self.checkpoint();
+        }
+        self.drain_checkpoint_errors();
+    }
+
+    /// Report any errors from background checkpoint writes to the front-end.
+    fn drain_checkpoint_errors(&mut self) {
+        let errors: Vec<String> =
+            std::mem::take(&mut *self.checkpoint_shared.errors.lock().unwrap());
+        for err in errors {
+            self.frontend.on_notice(&err);
+        }
+    }
+
+    /// Synchronously flush a final checkpoint at shutdown/drop, so the tail of
+    /// the session is never lost to an unfinished background write. Waits for
+    /// any in-flight writer via the shared file lock; a still-pending stale
+    /// writer that runs later skips itself (its generation is superseded).
+    fn flush_checkpoint_sync(&mut self) {
+        if self.checkpoint_path.is_none() {
+            return;
+        }
+        self.drain_checkpoint_errors();
+        // Skip only when nothing changed AND no write is in flight — an
+        // in-flight write may still be queued behind us at runtime shutdown, so
+        // rewriting the latest state here is the safe way to guarantee it lands.
+        if self.events_since_checkpoint == 0
+            && !self.checkpoint_dirty
+            && !self.checkpoint_shared.writing.load(Ordering::Acquire)
+        {
+            return;
+        }
+        let Some((trace, path, generation)) = self.checkpoint_snapshot() else {
+            return;
+        };
+        let compaction = self.compaction;
+        if let Err(err) = write_checkpoint(
+            &self.checkpoint_shared,
+            generation,
+            &trace,
+            compaction,
+            &path,
+        ) {
+            self.frontend
+                .on_notice(&format!("checkpoint failed ({}): {err}", path.display()));
         }
     }
 
@@ -378,33 +563,53 @@ impl Engine {
             }
 
             // No ops in flight → the turn is done. Flush any text the coalescer
-            // is still holding so it lands before control returns to the caller.
+            // is still holding so it lands before control returns to the caller,
+            // and settle any checkpoint that went dirty during the turn so the
+            // on-disk trace isn't stale while the engine sits idle.
             if self.brain.state().inflight_len() == 0 {
                 self.flush_render();
+                self.settle_checkpoint().await;
                 break;
             }
 
-            // Otherwise block until any task produces the next event.
-            match self.rx.recv().await {
-                Some(event) => {
-                    let post_tool_hook = match &event {
-                        Event::CapabilityDone { op, result, .. } => Some((
-                            "builtin_post_tool",
-                            json!({ "op": op.0, "ok": true, "result": result }),
-                        )),
-                        Event::CapabilityError { op, error, .. } => Some((
-                            "builtin_post_tool",
-                            json!({ "op": op.0, "ok": false, "error": error }),
-                        )),
-                        _ => None,
-                    };
-                    self.observe(&event);
-                    self.submit(event);
-                    if let Some((name, result)) = post_tool_hook {
-                        self.fire_hook(HookPhase::PostTool, name, result);
+            // Otherwise block until any task produces the next event — or a
+            // finished background checkpoint write asks for a dirty rewrite.
+            tokio::select! {
+                maybe_event = self.rx.recv() => match maybe_event {
+                    Some(event) => {
+                        // Every tool-shaped completion (capability *or*
+                        // sub-agent — the brain folds both tool-result-shaped)
+                        // fires the PostTool hook, off the same classification
+                        // `observe` uses so the two can never diverge.
+                        let post_tool_hook =
+                            tool_shaped_completion(&event).map(|(op, payload, is_error)| {
+                                if is_error {
+                                    json!({ "op": op.0, "ok": false, "error": payload })
+                                } else {
+                                    json!({ "op": op.0, "ok": true, "result": payload })
+                                }
+                            });
+                        self.observe(&event);
+                        self.submit(event);
+                        if let Some(result) = post_tool_hook {
+                            self.fire_hook(HookPhase::PostTool, "builtin_post_tool", result);
+                        }
+                    }
+                    None => break,
+                },
+                _ = self.ckpt_done_rx.recv() => {
+                    // A background checkpoint write finished. If events arrived
+                    // while it was in flight (dirty), write again now with the
+                    // latest state — single-flight means "write again when it
+                    // finishes", never a second concurrent writer. This keeps
+                    // the on-disk trace fresh even when the turn is blocked on
+                    // a long model/tool op (the crash-durability case).
+                    if self.checkpoint_dirty {
+                        self.checkpoint();
+                    } else {
+                        self.drain_checkpoint_errors();
                     }
                 }
-                None => break,
             }
         }
     }
@@ -424,24 +629,15 @@ impl Engine {
     fn observe(&mut self, event: &Event) {
         // A model/tool *completion* line must appear after the text it follows:
         // flush any buffered streamed text before rendering the lifecycle hook.
-        // Classify the event once so the flush condition and the dispatch can
-        // never diverge. A sub-agent completing reads like a tool completing
-        // to the front-end.
-        let tool_end = match event {
-            Event::ModelDone { op, usage, .. } => {
-                self.flush_render();
-                self.frontend.on_model_end(*op, usage);
-                return;
-            }
-            Event::CapabilityDone { op, result, .. } | Event::AgentDone { op, result, .. } => {
-                Some((*op, result, false))
-            }
-            Event::CapabilityError { op, error, .. } | Event::AgentError { op, error, .. } => {
-                Some((*op, error, true))
-            }
-            _ => None,
-        };
-        if let Some((op, payload, is_error)) = tool_end {
+        // Tool-shaped completions come from the shared classification (see
+        // [`tool_shaped_completion`]) so this render and the PostTool hook in
+        // `drive_to_idle` can never diverge.
+        if let Event::ModelDone { op, usage, .. } = event {
+            self.flush_render();
+            self.frontend.on_model_end(*op, usage);
+            return;
+        }
+        if let Some((op, payload, is_error)) = tool_shaped_completion(event) {
             self.flush_render();
             let name = self.op_labels.remove(&op).unwrap_or_default();
             self.frontend.on_tool_end(op, &name, payload, is_error);
@@ -545,7 +741,17 @@ impl Engine {
             // its digest returns as `AgentDone`. Tracked in `tasks` so a `Cancel`
             // aborts the whole subtree.
             Command::StartAgent { op, config, seed } => {
+                // A sub-agent spawn is tool-shaped: fire the same PreTool hook
+                // a capability start does (its completion fires PostTool via
+                // `tool_shaped_completion`). Skill activations, by contrast,
+                // happen entirely inside the brain with no host event, so no
+                // Pre/PostTool hook can fire for them — a known limitation.
                 let label = agent_label(&config);
+                self.fire_hook(
+                    HookPhase::PreTool,
+                    "builtin_pre_tool",
+                    json!({ "op": op.0, "capability": label.clone(), "args": config.clone() }),
+                );
                 self.frontend.on_tool_start(op, &label, &config);
                 self.op_labels.insert(op, label);
                 let handle = tokio::spawn(crate::agent::run_agent(
@@ -625,6 +831,16 @@ impl Engine {
                 .frontend
                 .on_notice(&format!("(unhandled command: {other:?})")),
         }
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // A dropped engine still flushes its final checkpoint synchronously, so
+        // no submitted event is lost even if the caller never reached
+        // `session_end` (e.g. an early return). A no-op when nothing changed
+        // since the last completed write, or when checkpointing is off.
+        self.flush_checkpoint_sync();
     }
 }
 
@@ -709,7 +925,14 @@ pub struct EngineBuilder {
     policy: Option<Arc<dyn Policy>>,
     frontend: Option<Box<dyn Frontend>>,
     clock: Option<Clock>,
-    selector: ModelSelector,
+    /// The selector explicitly chosen via [`default_model`](Self::default_model),
+    /// if any. Tracked separately from `first_model` so an explicit choice that
+    /// happens to equal the built-in fallback (e.g. `named("medium")`) is still
+    /// honored and can never be stolen by a later registration.
+    default_model: Option<ModelSelector>,
+    /// The first selector registered via [`model`](Self::model) — the documented
+    /// convenience fallback when no explicit default was set.
+    first_model: Option<ModelSelector>,
     system_prompt: Option<String>,
     sampling: SamplingParams,
     /// Capabilities that spawn sub-agents (ARCHITECTURE §13): each advertises a
@@ -735,7 +958,8 @@ impl Default for EngineBuilder {
             policy: None,
             frontend: None,
             clock: None,
-            selector: ModelSelector::named("medium"),
+            default_model: None,
+            first_model: None,
             system_prompt: None,
             sampling: SamplingParams::default(),
             agents: Vec::new(),
@@ -759,20 +983,18 @@ impl EngineBuilder {
     /// selector also becomes the one the turn policy calls (unless overridden
     /// with [`default_model`](Self::default_model)).
     pub fn model(mut self, selector: ModelSelector, adapter: Arc<dyn crate::ModelAdapter>) -> Self {
-        if self.models.get(&selector).is_none() && self.selector_is_default() {
-            self.selector = selector.clone();
+        if self.first_model.is_none() {
+            self.first_model = Some(selector.clone());
         }
         self.models.register(selector, adapter);
         self
     }
 
-    fn selector_is_default(&self) -> bool {
-        self.selector == ModelSelector::named("medium")
-    }
-
-    /// Override which logical selector the turn policy calls each turn.
+    /// Override which logical selector the turn policy calls each turn. An
+    /// explicit choice always wins over the first-registered fallback, even
+    /// when it equals the built-in default (`named("medium")`).
     pub fn default_model(mut self, selector: ModelSelector) -> Self {
-        self.selector = selector;
+        self.default_model = Some(selector);
         self
     }
 
@@ -882,6 +1104,14 @@ impl EngineBuilder {
 
     pub fn build(self) -> Engine {
         let clock = self.clock.unwrap_or_else(|| Arc::new(system_clock));
+        // Resolve the default model: an explicit `default_model` wins, then the
+        // first registered model (the documented convenience), then the
+        // built-in `named("medium")`. Explicitness is tracked, never inferred
+        // by comparing values, so an explicit `named("medium")` is honored.
+        let default_model = self
+            .default_model
+            .or(self.first_model)
+            .unwrap_or_else(|| ModelSelector::named("medium"));
         // The brain's policy and recorder depend on whether we are resuming a
         // trace. Resume restores the *recorded* policy (so the continued session
         // branches identically and re-verifies) and rebuilds the brain from the
@@ -911,7 +1141,7 @@ impl EngineBuilder {
                 let mut tools = self.caps.schemas();
                 tools.extend(self.agents.iter().map(|(schema, _)| schema.clone()));
                 let mut base_policy = StaticPolicy::default()
-                    .with_model(self.selector.clone())
+                    .with_model(default_model.clone())
                     .with_tools(tools)
                     .with_permissioned(self.caps.permissioned_names())
                     .with_background(self.caps.background_names())
@@ -936,6 +1166,7 @@ impl EngineBuilder {
         };
 
         let (tx, rx) = mpsc::unbounded_channel();
+        let (ckpt_done_tx, ckpt_done_rx) = mpsc::unbounded_channel();
         Engine {
             brain,
             models: self.models,
@@ -954,9 +1185,14 @@ impl EngineBuilder {
             checkpoint_path: self.checkpoint_path,
             checkpoint_cadence: self.checkpoint_cadence,
             events_since_checkpoint: 0,
+            checkpoint_dirty: false,
+            checkpoint_gen: 0,
+            checkpoint_shared: CheckpointShared::new(),
+            ckpt_done_tx,
+            ckpt_done_rx,
             compaction: self.compaction,
             policy_config,
-            default_model: self.selector,
+            default_model,
             session_started: false,
         }
     }
@@ -982,7 +1218,35 @@ fn reconcile_crashed_ops(
                 recorder.record(&cancelled);
                 brain.submit(cancelled);
             }
+            // Folding the stale cancellations queues commands — typically a
+            // `Done { reason: Cancelled }` for the pre-crash turn, or even a
+            // `StartModelCall` if an interrupt was pending when the process
+            // died. The pre-crash turn is over: a resumed engine must start
+            // quiescent, so drain and discard those commands here. Otherwise
+            // they would fire at the start of the next live turn — a spurious
+            // stop hook, or a stale pre-crash model call racing the new one.
+            let _ = brain.poll();
         }
+    }
+}
+
+/// Classify an event as a **tool-shaped completion**: `(op, payload, is_error)`
+/// for every event the brain folds tool-result-shaped — a capability finishing
+/// *or* a sub-agent returning its digest (ARCHITECTURE §13). This is the single
+/// place that lists them, shared by `Engine::observe` (the front-end tool-end
+/// render) and the PostTool hook in `drive_to_idle`, so the two can never
+/// diverge. Skill activations are *not* here: they happen entirely inside the
+/// brain (no host event crosses this boundary), so no Pre/PostTool hook fires
+/// for them — a known limitation.
+fn tool_shaped_completion(event: &Event) -> Option<(OpId, &Value, bool)> {
+    match event {
+        Event::CapabilityDone { op, result, .. } | Event::AgentDone { op, result, .. } => {
+            Some((*op, result, false))
+        }
+        Event::CapabilityError { op, error, .. } | Event::AgentError { op, error, .. } => {
+            Some((*op, error, true))
+        }
+        _ => None,
     }
 }
 

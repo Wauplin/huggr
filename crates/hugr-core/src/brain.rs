@@ -90,7 +90,7 @@ impl Brain {
                 mode,
                 est_tokens,
             } => self.on_user_input(content, mode, est_tokens),
-            Event::UserAbort => self.cancel_all_inflight(),
+            Event::UserAbort => self.on_user_abort(),
             Event::CompactContext => self.on_compact_context(),
             Event::ModelOverride { selector } => self.state.set_model_override(selector),
             Event::PlanAccepted { text, est_tokens } => {
@@ -198,6 +198,20 @@ impl Brain {
         }
     }
 
+    /// A pure control-signal abort (ARCHITECTURE §4.6). While ops are in flight
+    /// this latches `abort_requested`: the `Cancel` commands race each op's own
+    /// terminal event, and whichever arrives first must still end the turn
+    /// `Cancelled` without starting new work (ARCHITECTURE §4.3). An abort also
+    /// supersedes a pending interrupt-resume — a steer followed by an abort
+    /// must not become a surprise model turn. An idle abort stays a no-op.
+    fn on_user_abort(&mut self) {
+        self.state.set_pending_resume(false);
+        if self.state.is_busy() {
+            self.state.set_abort_requested(true);
+            self.cancel_all_inflight();
+        }
+    }
+
     fn on_model_delta(&mut self, op: OpId, delta: ModelDelta) {
         // Deltas are transport only: accumulate cheaply for live UI and forward
         // a cosmetic event. Never written to the log (ARCHITECTURE §4.5).
@@ -248,6 +262,21 @@ impl Brain {
         });
         self.end_op(op, OpOutcome::Ok, Some(usage));
 
+        if self.state.abort_requested() {
+            // A `UserAbort` raced this terminal event (ARCHITECTURE §4.3): the
+            // op's `Cancel` is stale, but the abort must still win. Fold the
+            // durable record but start no new work. Any requested tool calls
+            // are never started; log a cancelled result for each so every
+            // `tool_use` in the next projection still has a paired
+            // `tool_result` (ARCHITECTURE §4.5).
+            for call in output.tool_calls {
+                self.cancel_unstarted_tool_call(call);
+            }
+            self.checkpoint();
+            self.resolve_abort_if_drained();
+            return;
+        }
+
         if output.tool_calls.is_empty() {
             // A final answer with no tool calls ends the turn — unless a
             // background op is still running. In that case the turn isn't over:
@@ -255,17 +284,16 @@ impl Brain {
             // fresh turn picks it up (ARCHITECTURE §6.3). We checkpoint either
             // way (the model output is durable) but defer `Done` until idle.
             self.checkpoint();
-            let background_running = self.state.inflight().values().any(|o| {
-                matches!(
-                    o.kind,
-                    OpKind::Capability {
-                        background: true,
-                        ..
-                    }
-                )
-            });
-            if !background_running {
-                self.done(DoneReason::EndTurn);
+            if !self.background_running() {
+                if self.state.pending_resume() {
+                    // An interrupt's `Cancel` lost the race to this normal
+                    // completion (ARCHITECTURE §4.6): the interrupting input is
+                    // already logged, so consume the latch and start the fresh
+                    // turn it asked for instead of ending.
+                    self.start_model_turn();
+                } else {
+                    self.done(DoneReason::EndTurn);
+                }
             }
         } else {
             // The model wants tools: turn each call into an op. The brain routes;
@@ -285,6 +313,26 @@ impl Brain {
         // A transport error the host already gave up on. Record it and end the
         // turn; a richer policy could decide to retry/route differently.
         self.end_op(op, OpOutcome::Error(error.clone()), None);
+        if self.resolve_abort_if_drained() {
+            return;
+        }
+        // Mirror `on_model_done`: while a background op is still running the
+        // turn is not over (ARCHITECTURE §4.2), so defer the terminal
+        // `Done(Error)` until the last op drains rather than emitting commands
+        // after a terminal `Done`. A pending interrupt-resume supersedes the
+        // error: the interrupting input starts a fresh turn once ops drain.
+        if self.background_running() {
+            if !self.state.pending_resume() {
+                self.state.set_deferred_error(Some(stringify(&error)));
+            }
+            return;
+        }
+        if self.state.pending_resume() {
+            // An interrupt's `Cancel` lost the race to this error: consume the
+            // latch and start the fresh turn it asked for (ARCHITECTURE §4.6).
+            self.start_model_turn();
+            return;
+        }
         self.done(DoneReason::Error(stringify(&error)));
     }
 
@@ -314,6 +362,12 @@ impl Brain {
             est_tokens,
         });
         self.end_op(op, outcome, None);
+        if self.resolve_abort_if_drained() {
+            return;
+        }
+        if self.resolve_deferred_error_if_drained() {
+            return;
+        }
         self.maybe_resume_model_turn();
     }
 
@@ -364,8 +418,25 @@ impl Brain {
     }
 
     fn on_permission_decision(&mut self, op: OpId, decision: Decision, est_tokens: u32) {
+        // Only an op actually awaiting permission may consume a decision. Peek
+        // before removing: a stray/duplicate decision (e.g. a second `Allow`
+        // after the capability already started, or a decision for an op that
+        // already resolved) must be a no-op — never drop a live op from the
+        // in-flight table (ARCHITECTURE §4.1).
+        if !matches!(
+            self.state.get_op(op).map(|entry| &entry.kind),
+            Some(OpKind::AwaitingPermission { .. })
+        ) {
+            return;
+        }
         match decision {
             Decision::Allow => {
+                // A latched abort already sent this op a `Cancel`; do not start
+                // the capability (no new work while aborting, ARCHITECTURE
+                // §4.3) — the pending `OpCancelled` resolves the op instead.
+                if self.state.abort_requested() {
+                    return;
+                }
                 // Resume the stashed tool call, reusing the same op id.
                 if let Some(op_state) = self.state.remove_op(op) {
                     if let OpKind::AwaitingPermission {
@@ -412,18 +483,52 @@ impl Brain {
         // Log the partial work (e.g. "N tokens then cancelled") before removing
         // the op, so the trace never has an implicit gap (ARCHITECTURE §6.4).
         let partial = self.partial_of(op);
+        // A cancelled *tool-shaped* op (capability / sub-agent / awaiting
+        // permission) still owes the log a consolidated `ToolResult`: its
+        // originating `tool_use` is projected from the `ModelOutput` record,
+        // and chat formats require every tool_use to carry a paired
+        // tool_result (ARCHITECTURE §4.5). Append the cancellation result
+        // BEFORE the `OpEnded` so projection and replay stay well-formed —
+        // without this, the next model request has a dangling tool_use and the
+        // provider rejects it.
+        if self
+            .state
+            .get_op(op)
+            .is_some_and(|entry| entry.kind.call_id().is_some())
+        {
+            let (name, call_id) = self.tool_ids(op);
+            let result = if partial.is_null() {
+                json!({ "cancelled": true })
+            } else {
+                json!({ "cancelled": true, "partial": partial.clone() })
+            };
+            self.append(Record::ToolResult {
+                op,
+                name,
+                call_id,
+                result,
+                version: None,
+                est_tokens: 0,
+            });
+        }
         self.end_op(op, OpOutcome::Cancelled { partial }, None);
+
+        if self.resolve_abort_if_drained() {
+            return;
+        }
+        if self.resolve_deferred_error_if_drained() {
+            return;
+        }
 
         if self.state.pending_resume() && !self.state.is_busy() {
             // An interrupt (steer) is waiting for the in-flight ops to drain:
             // start the fresh turn now that they have (the partial work is
             // already logged, so the new turn's projection sees it).
-            self.state.set_pending_resume(false);
             self.start_model_turn();
         } else if !self.state.is_busy() {
-            // A plain abort (e.g. ESC / `UserAbort`) with nothing to resume:
-            // the turn is over, cancelled. Emit the terminal `Done` once the
-            // last in-flight op has drained so the host/front-end sees it.
+            // A host-initiated cancel with nothing to resume and no abort
+            // latched: the turn is over, cancelled. Emit the terminal `Done`
+            // once the last in-flight op has drained so the front-end sees it.
             self.done(DoneReason::Cancelled);
         }
     }
@@ -451,6 +556,10 @@ impl Brain {
     /// Begin a model turn: ask the policy which model to call and how to project
     /// context, then emit the call.
     fn start_model_turn(&mut self) {
+        // Starting a turn consumes any pending interrupt-resume: the projection
+        // computed below already sees the interrupting input (ARCHITECTURE
+        // §4.6), so the latch never outlives the resume it asked for.
+        self.state.set_pending_resume(false);
         let budget = self.policy.context_budget(&self.state);
         let plan = self.policy.project_context(self.state.log(), budget);
         if self.should_compact(&plan, budget) && self.start_selected_compaction(&plan, true) {
@@ -578,6 +687,11 @@ impl Brain {
         });
         self.end_op(op, OpOutcome::Ok, Some(usage));
         self.checkpoint();
+        // A latched abort raced this compaction's completion: fold the summary
+        // but do not resume — end the turn `Cancelled` once drained (§4.3).
+        if self.resolve_abort_if_drained() {
+            return;
+        }
         if resume_turn {
             self.start_model_turn();
         }
@@ -656,6 +770,11 @@ impl Brain {
     /// or strand the in-flight one); we only resume when the whole brain is
     /// otherwise idle, folding the background result in at the next boundary.
     fn maybe_resume_model_turn(&mut self) {
+        // A latched abort or a deferred model error means the turn is ending,
+        // not resuming (ARCHITECTURE §4.3): never start new work here.
+        if self.state.abort_requested() || self.state.deferred_error().is_some() {
+            return;
+        }
         let blocked = self.state.inflight().values().any(|o| o.kind.blocks_turn());
         let model_running = self
             .state
@@ -814,6 +933,78 @@ impl Brain {
         for op in self.state.inflight_op_ids() {
             self.state.push_command(Command::Cancel { op });
         }
+    }
+
+    /// Whether any background capability op is still running (ARCHITECTURE
+    /// §4.2): while one is, the turn is not over and terminal `Done` is
+    /// deferred until it resolves.
+    fn background_running(&self) -> bool {
+        self.state.inflight().values().any(|o| {
+            matches!(
+                o.kind,
+                OpKind::Capability {
+                    background: true,
+                    ..
+                }
+            )
+        })
+    }
+
+    /// Resolve a latched `UserAbort` (ARCHITECTURE §4.3/§4.6) after a terminal
+    /// event folded: once the last in-flight op drains, emit the single
+    /// terminal `Done(Cancelled)` and clear the latch. Returns `true` while
+    /// the abort is latched — the caller must not resume the turn or start any
+    /// new work.
+    fn resolve_abort_if_drained(&mut self) -> bool {
+        if !self.state.abort_requested() {
+            return false;
+        }
+        if !self.state.is_busy() {
+            self.state.set_abort_requested(false);
+            self.done(DoneReason::Cancelled);
+        }
+        true
+    }
+
+    /// Resolve a deferred model-error `Done` (ARCHITECTURE §4.2): a model
+    /// transport error with background ops still running defers its terminal
+    /// `Done(Error)`; once the last op drains, emit it with the original
+    /// reason. Returns `true` while a deferral is pending — the caller must
+    /// not resume the turn.
+    fn resolve_deferred_error_if_drained(&mut self) -> bool {
+        if self.state.deferred_error().is_none() {
+            return false;
+        }
+        if !self.state.is_busy() {
+            if let Some(reason) = self.state.take_deferred_error() {
+                self.done(DoneReason::Error(reason));
+            }
+        }
+        true
+    }
+
+    /// A tool call the model requested but that will never start (its turn was
+    /// aborted before fan-out, ARCHITECTURE §4.3). Log the same paired records
+    /// a cancelled running tool gets — a cancelled `ToolResult` then the
+    /// `OpEnded` bookkeeping — so the originating `tool_use` never dangles in
+    /// the next projection (ARCHITECTURE §4.5).
+    fn cancel_unstarted_tool_call(&mut self, call: ToolCall) {
+        let op = self.state.alloc_op();
+        self.append(Record::ToolResult {
+            op,
+            name: call.name,
+            call_id: call.id,
+            result: json!({ "cancelled": true }),
+            version: None,
+            est_tokens: 0,
+        });
+        self.end_op(
+            op,
+            OpOutcome::Cancelled {
+                partial: Value::Null,
+            },
+            None,
+        );
     }
 
     // ========================================================================

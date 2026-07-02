@@ -125,11 +125,14 @@ fn cancellation_replay_is_deterministic() {
     );
 }
 
-/// A stale terminal event racing the abort: the host aborts the task, but the
-/// task had already queued its real `ModelDone` a hair earlier. The brain folds
-/// the `ModelDone` first (op resolves `Ok`), then the now-stale `OpCancelled`
+/// A stale terminal event racing a **host-initiated** cancel (no `UserAbort`
+/// in this script): the host aborts the task, but the task had already queued
+/// its real `ModelDone` a hair earlier. The brain folds the `ModelDone` first
+/// (op resolves `Ok`, turn ends `EndTurn`), then the now-stale `OpCancelled`
 /// arrives — it must be a no-op (idempotent), not append a spurious `Cancelled`
-/// `OpEnded` that would corrupt the log / break replay.
+/// `OpEnded` that would corrupt the log / break replay. The *user-abort*
+/// flavour of this race is different — the abort latch makes the terminal
+/// event end the turn `Cancelled` — and is pinned separately below.
 #[test]
 fn stale_op_cancelled_after_done_is_ignored() {
     let mut brain = Brain::with_default_policy();
@@ -240,4 +243,550 @@ fn cancelling_a_background_op_mid_stream_does_not_end_the_turn() {
         cancelled_partial(brain.state().log(), OpId(1)),
         Some(Value::Null)
     );
+}
+
+// ============================================================================
+// Cancelled tool calls leave a *paired* tool_result in the log
+// ============================================================================
+
+/// A cancelled tool-shaped op must append a consolidated `ToolResult` (with a
+/// cancellation payload) BEFORE its `OpEnded` (ARCHITECTURE §4.5): the model's
+/// originating `tool_use` is projected from the `ModelOutput` record, and chat
+/// formats reject a `tool_use` with no paired `tool_result`. Without the pair,
+/// every interrupt-during-tool bricks the session with a provider 400.
+#[test]
+fn interrupted_tool_call_logs_a_paired_cancelled_tool_result() {
+    let mut brain = Brain::with_default_policy();
+
+    let commands = run_script(
+        &mut brain,
+        vec![
+            user("run the build"),
+            // The model asks for a foreground shell tool (op 1).
+            Event::ModelDone {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            // The user interrupts mid-tool (ARCHITECTURE §4.6): cancel op 1,
+            // then resume into a fresh turn once it drains.
+            user_interrupt("stop, run the tests instead"),
+            // The host confirms the tool task was aborted.
+            Event::OpCancelled { op: OpId(1) },
+        ],
+    );
+
+    let effectful = effectful(&commands);
+    assert!(
+        matches!(
+            effectful.as_slice(),
+            [
+                Command::StartModelCall { op: OpId(0), .. },
+                Command::StartCapability { op: OpId(1), .. },
+                Command::Cancel { op: OpId(1) },
+                // The drained interrupt resumes into a fresh model turn.
+                Command::StartModelCall { op: OpId(2), .. },
+            ]
+        ),
+        "unexpected command sequence: {effectful:#?}"
+    );
+
+    // The log pairs the cancelled call: one consolidated ToolResult for
+    // call-1, appended BEFORE the Cancelled OpEnded.
+    let log = brain.state().log();
+    let result_idx = log
+        .iter()
+        .position(|e| {
+            matches!(
+                &e.record,
+                Record::ToolResult { op: OpId(1), name, call_id, result, .. }
+                    if name == "shell"
+                        && call_id == "call-1"
+                        && result == &json!({ "cancelled": true })
+            )
+        })
+        .expect("the aborted tool call must log a cancelled ToolResult");
+    let ended_idx = log
+        .iter()
+        .position(|e| {
+            matches!(
+                &e.record,
+                Record::OpEnded {
+                    op: OpId(1),
+                    outcome: OpOutcome::Cancelled { .. },
+                    ..
+                }
+            )
+        })
+        .expect("the aborted tool call must log a Cancelled OpEnded");
+    assert!(
+        result_idx < ended_idx,
+        "the ToolResult must precede the OpEnded"
+    );
+
+    // The fresh turn's projected request has NO dangling tool_use: every
+    // ToolUse id in the context carries a matching ToolResult block.
+    let request = commands
+        .iter()
+        .find_map(|c| match c {
+            Command::StartModelCall {
+                op: OpId(2),
+                request,
+                ..
+            } => Some(request.clone()),
+            _ => None,
+        })
+        .expect("the interrupt resumes into a fresh model call");
+    let mut tool_uses = Vec::new();
+    let mut tool_results = Vec::new();
+    for block in &request.blocks {
+        for part in &block.content {
+            match part {
+                hugr_core::ContentPart::ToolUse { id, .. } => tool_uses.push(id.clone()),
+                hugr_core::ContentPart::ToolResult { id, .. } => tool_results.push(id.clone()),
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(tool_uses, vec!["call-1".to_string()]);
+    assert_eq!(
+        tool_uses, tool_results,
+        "every projected tool_use must have a paired tool_result"
+    );
+}
+
+/// The plain-abort flavour: `UserAbort` during a foreground tool. The paired
+/// cancelled `ToolResult` is logged and the turn ends `Cancelled` (no resume).
+#[test]
+fn user_abort_during_tool_call_logs_a_paired_cancelled_tool_result() {
+    let mut brain = Brain::with_default_policy();
+
+    let commands = run_script(
+        &mut brain,
+        vec![
+            user("run the build"),
+            Event::ModelDone {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            Event::UserAbort,
+            Event::OpCancelled { op: OpId(1) },
+        ],
+    );
+
+    let effectful = effectful(&commands);
+    assert!(
+        matches!(
+            effectful.as_slice(),
+            [
+                Command::StartModelCall { op: OpId(0), .. },
+                Command::StartCapability { op: OpId(1), .. },
+                Command::Cancel { op: OpId(1) },
+                Command::Done {
+                    reason: DoneReason::Cancelled
+                },
+            ]
+        ),
+        "unexpected command sequence: {effectful:#?}"
+    );
+
+    // The cancelled tool call is paired in the log.
+    assert!(
+        brain.state().log().iter().any(|e| matches!(
+            &e.record,
+            Record::ToolResult { op: OpId(1), call_id, result, .. }
+                if call_id == "call-1" && result == &json!({ "cancelled": true })
+        )),
+        "the aborted tool call must log a cancelled ToolResult"
+    );
+}
+
+/// Replay: the interrupt-during-tool script re-fed to a fresh brain yields
+/// identical commands and an identical log (paired ToolResult included).
+#[test]
+fn cancelled_tool_result_replay_is_deterministic() {
+    let script = || {
+        vec![
+            user("run the build"),
+            Event::ModelDone {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            user_interrupt("stop, run the tests instead"),
+            Event::OpCancelled { op: OpId(1) },
+        ]
+    };
+    assert_deterministic_replay(Brain::with_default_policy, script);
+
+    let script = || {
+        vec![
+            user("run the build"),
+            Event::ModelDone {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            Event::UserAbort,
+            Event::OpCancelled { op: OpId(1) },
+        ]
+    };
+    assert_deterministic_replay(Brain::with_default_policy, script);
+}
+
+// ============================================================================
+// The abort latch: UserAbort must win the race against terminal events
+// ============================================================================
+
+/// `Command::Cancel` races the op's own terminal event: here the `ModelDone`
+/// lands first. Without the abort latch the brain would end the turn
+/// `EndTurn` (the abort cancels nothing); with it, the record is folded but
+/// no new work starts and the turn ends `Cancelled` exactly once.
+#[test]
+fn user_abort_racing_a_model_done_still_ends_cancelled() {
+    let mut brain = Brain::with_default_policy();
+
+    let commands = run_script(
+        &mut brain,
+        vec![
+            user("hi"),
+            // User hits ESC while the model streams...
+            Event::UserAbort,
+            // ...but the model's real terminal event beat the Cancel.
+            Event::ModelDone {
+                op: OpId(0),
+                output: text_output("done"),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            // The stale cancel confirmation is still a no-op.
+            Event::OpCancelled { op: OpId(0) },
+        ],
+    );
+
+    let effectful = effectful(&commands);
+    assert!(
+        matches!(
+            effectful.as_slice(),
+            [
+                Command::StartModelCall { op: OpId(0), .. },
+                Command::Cancel { op: OpId(0) },
+                // The consolidated output is durable (checkpointed), but the
+                // abort wins: Cancelled, not EndTurn — and exactly once.
+                Command::Checkpoint,
+                Command::Done {
+                    reason: DoneReason::Cancelled
+                },
+            ]
+        ),
+        "unexpected command sequence: {effectful:#?}"
+    );
+
+    // The model output was still folded into the durable log.
+    assert!(
+        brain
+            .state()
+            .log()
+            .iter()
+            .any(|e| matches!(&e.record, Record::ModelOutput { op: OpId(0), .. }))
+    );
+}
+
+/// The same race, but the raced `ModelDone` requests tool calls: the latched
+/// abort must suppress the fan-out (no `StartCapability`), while still pairing
+/// each never-started `tool_use` with a synthesized cancelled `ToolResult` so
+/// the next projection stays well-formed (ARCHITECTURE §4.5).
+#[test]
+fn user_abort_racing_a_tool_fanout_starts_no_tools() {
+    let mut brain = Brain::with_default_policy();
+
+    let commands = run_script(
+        &mut brain,
+        vec![
+            user("run the build"),
+            Event::UserAbort,
+            Event::ModelDone {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            Event::OpCancelled { op: OpId(0) },
+        ],
+    );
+
+    let effectful = effectful(&commands);
+    assert!(
+        matches!(
+            effectful.as_slice(),
+            [
+                Command::StartModelCall { op: OpId(0), .. },
+                Command::Cancel { op: OpId(0) },
+                // NO StartCapability: the abort suppressed the fan-out.
+                Command::Checkpoint,
+                Command::Done {
+                    reason: DoneReason::Cancelled
+                },
+            ]
+        ),
+        "unexpected command sequence: {effectful:#?}"
+    );
+
+    // The never-started call still got a paired cancelled ToolResult.
+    assert!(
+        brain.state().log().iter().any(|e| matches!(
+            &e.record,
+            Record::ToolResult { call_id, result, .. }
+                if call_id == "call-1" && result == &json!({ "cancelled": true })
+        )),
+        "the suppressed tool call must log a cancelled ToolResult"
+    );
+}
+
+/// The race on the tool side: the abort's `Cancel` targets a foreground
+/// capability, but its real `CapabilityDone` lands first. The result is folded
+/// (a durable ToolResult), yet the latched abort must prevent the resume — the
+/// turn ends `Cancelled` once the last op drains, and the stale `OpCancelled`
+/// stays a no-op.
+#[test]
+fn user_abort_racing_a_capability_done_does_not_resume() {
+    let mut brain = Brain::with_default_policy();
+
+    let commands = run_script(
+        &mut brain,
+        vec![
+            user("run the build"),
+            Event::ModelDone {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            Event::UserAbort,
+            // The tool's real terminal event beat the Cancel.
+            Event::CapabilityDone {
+                op: OpId(1),
+                result: json!({ "exit_code": 0 }),
+                version: None,
+                est_tokens: 1,
+            },
+            Event::OpCancelled { op: OpId(1) },
+        ],
+    );
+
+    let effectful = effectful(&commands);
+    assert!(
+        matches!(
+            effectful.as_slice(),
+            [
+                Command::StartModelCall { op: OpId(0), .. },
+                Command::StartCapability { op: OpId(1), .. },
+                Command::Cancel { op: OpId(1) },
+                // NO resume (StartModelCall) — the abort wins, exactly once.
+                Command::Done {
+                    reason: DoneReason::Cancelled
+                },
+            ]
+        ),
+        "unexpected command sequence: {effectful:#?}"
+    );
+
+    // The real tool result was still folded into the durable log.
+    assert!(brain.state().log().iter().any(|e| matches!(
+        &e.record,
+        Record::ToolResult { op: OpId(1), result, .. } if result == &json!({ "exit_code": 0 })
+    )));
+}
+
+/// Replay: the abort-vs-terminal-event races re-fed to fresh brains yield
+/// identical commands and identical logs (ARCHITECTURE §6.2).
+#[test]
+fn abort_race_replay_is_deterministic() {
+    let model_done_race = || {
+        vec![
+            user("hi"),
+            Event::UserAbort,
+            Event::ModelDone {
+                op: OpId(0),
+                output: text_output("done"),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            Event::OpCancelled { op: OpId(0) },
+        ]
+    };
+    assert_deterministic_replay(Brain::with_default_policy, model_done_race);
+
+    let fanout_race = || {
+        vec![
+            user("run the build"),
+            Event::UserAbort,
+            Event::ModelDone {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            Event::OpCancelled { op: OpId(0) },
+        ]
+    };
+    assert_deterministic_replay(Brain::with_default_policy, fanout_race);
+
+    let capability_done_race = || {
+        vec![
+            user("run the build"),
+            Event::ModelDone {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            Event::UserAbort,
+            Event::CapabilityDone {
+                op: OpId(1),
+                result: json!({ "exit_code": 0 }),
+                version: None,
+                est_tokens: 1,
+            },
+            Event::OpCancelled { op: OpId(1) },
+        ]
+    };
+    assert_deterministic_replay(Brain::with_default_policy, capability_done_race);
+}
+
+// ============================================================================
+// The pending_resume latch: interrupts must neither drop input nor go stale
+// ============================================================================
+
+/// An Interrupt steer's `Cancel` loses the race to the model's normal
+/// completion. The interrupting user input must NOT be dropped: the turn
+/// resumes into a fresh model call (whose projection sees the input) instead
+/// of ending `EndTurn` with a stale latch.
+#[test]
+fn interrupt_racing_a_model_done_still_starts_the_fresh_turn() {
+    let mut brain = Brain::with_default_policy();
+
+    let commands = run_script(
+        &mut brain,
+        vec![
+            user("write a poem"),
+            // The user interrupts mid-stream...
+            user_interrupt("actually make it a haiku"),
+            // ...but the model completes normally before the Cancel lands.
+            Event::ModelDone {
+                op: OpId(0),
+                output: text_output("A long poem..."),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            // Stale cancel confirmation: no-op.
+            Event::OpCancelled { op: OpId(0) },
+            // The fresh turn (op 1) answers the interrupting input.
+            Event::ModelDone {
+                op: OpId(1),
+                output: text_output("Haiku:\nfive seven five..."),
+                usage: usage(),
+                est_tokens: 1,
+            },
+        ],
+    );
+
+    let effectful = effectful(&commands);
+    assert!(
+        matches!(
+            effectful.as_slice(),
+            [
+                Command::StartModelCall { op: OpId(0), .. },
+                Command::Cancel { op: OpId(0) },
+                Command::Checkpoint,
+                // The interrupt is consumed: a fresh turn starts instead of
+                // Done(EndTurn), so the interrupting input is answered.
+                Command::StartModelCall { op: OpId(1), .. },
+                Command::Checkpoint,
+                Command::Done {
+                    reason: DoneReason::EndTurn
+                },
+            ]
+        ),
+        "unexpected command sequence: {effectful:#?}"
+    );
+}
+
+/// An abort after an interrupt: `UserAbort` must clear the pending
+/// interrupt-resume, so draining the cancelled op ends the turn `Cancelled`
+/// instead of springing a surprise model turn.
+#[test]
+fn abort_after_interrupt_does_not_start_a_surprise_turn() {
+    let mut brain = Brain::with_default_policy();
+
+    let commands = run_script(
+        &mut brain,
+        vec![
+            user("write a poem"),
+            user_interrupt("actually wait"),
+            // The user then hits ESC: a pure abort supersedes the interrupt.
+            Event::UserAbort,
+            Event::OpCancelled { op: OpId(0) },
+        ],
+    );
+
+    let effectful = effectful(&commands);
+    assert!(
+        matches!(
+            effectful.as_slice(),
+            [
+                Command::StartModelCall { op: OpId(0), .. },
+                // The interrupt and the abort each issue a Cancel for the same
+                // in-flight op — cancellation is idempotent (ARCHITECTURE §4.3).
+                Command::Cancel { op: OpId(0) },
+                Command::Cancel { op: OpId(0) },
+                // NO StartModelCall: the abort cleared the pending resume.
+                Command::Done {
+                    reason: DoneReason::Cancelled
+                },
+            ]
+        ),
+        "unexpected command sequence: {effectful:#?}"
+    );
+}
+
+/// Replay: the interrupt-race scripts re-fed to fresh brains yield identical
+/// commands and identical logs (ARCHITECTURE §6.2).
+#[test]
+fn interrupt_race_replay_is_deterministic() {
+    let model_done_race = || {
+        vec![
+            user("write a poem"),
+            user_interrupt("actually make it a haiku"),
+            Event::ModelDone {
+                op: OpId(0),
+                output: text_output("A long poem..."),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            Event::OpCancelled { op: OpId(0) },
+            Event::ModelDone {
+                op: OpId(1),
+                output: text_output("Haiku."),
+                usage: usage(),
+                est_tokens: 1,
+            },
+        ]
+    };
+    assert_deterministic_replay(Brain::with_default_policy, model_done_race);
+
+    let abort_after_interrupt = || {
+        vec![
+            user("write a poem"),
+            user_interrupt("actually wait"),
+            Event::UserAbort,
+            Event::OpCancelled { op: OpId(0) },
+        ]
+    };
+    assert_deterministic_replay(Brain::with_default_policy, abort_after_interrupt);
 }

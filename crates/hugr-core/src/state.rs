@@ -36,6 +36,18 @@ pub struct BrainState {
     /// Set when an interrupt cancelled in-flight ops and a fresh turn must start
     /// once they drain.
     pending_resume: bool,
+    /// Set when a `UserAbort` arrived while ops were in flight (ARCHITECTURE
+    /// §4.3/§4.6). The abort's `Cancel` commands race each op's own terminal
+    /// event; while latched, terminal events fold their records but start no
+    /// new work, and the single terminal `Done(Cancelled)` is emitted once the
+    /// last in-flight op drains.
+    #[serde(default)]
+    abort_requested: bool,
+    /// A model transport error whose terminal `Done(Error)` is deferred while
+    /// background ops are still running (mirrors the `Done(EndTurn)` deferral,
+    /// ARCHITECTURE §4.2): emitted once the last op drains.
+    #[serde(default)]
+    deferred_error: Option<String>,
     /// One-shot model selector override, injected as an event and consumed by
     /// the next normal model turn.
     next_model_override: Option<ModelSelector>,
@@ -191,6 +203,26 @@ impl BrainState {
 
     pub(crate) fn set_pending_resume(&mut self, v: bool) {
         self.pending_resume = v;
+    }
+
+    pub(crate) fn abort_requested(&self) -> bool {
+        self.abort_requested
+    }
+
+    pub(crate) fn set_abort_requested(&mut self, v: bool) {
+        self.abort_requested = v;
+    }
+
+    pub(crate) fn deferred_error(&self) -> Option<&String> {
+        self.deferred_error.as_ref()
+    }
+
+    pub(crate) fn set_deferred_error(&mut self, reason: Option<String>) {
+        self.deferred_error = reason;
+    }
+
+    pub(crate) fn take_deferred_error(&mut self) -> Option<String> {
+        self.deferred_error.take()
     }
 
     pub(crate) fn set_model_override(&mut self, selector: Option<ModelSelector>) {

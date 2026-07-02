@@ -1190,3 +1190,274 @@ fn last_model_selector(commands: &[Command]) -> Option<&ModelSelector> {
         _ => None,
     })
 }
+
+/// A **duplicate** permission `Allow` for an op that already started must be a
+/// no-op — it must never drop the live op from the in-flight table
+/// (ARCHITECTURE §4.1). The reducer peeks for `AwaitingPermission` before
+/// removing; a stray decision for a non-awaiting op leaves state untouched.
+#[test]
+fn duplicate_permission_allow_does_not_drop_the_live_op() {
+    let policy = StaticPolicy::default().with_permissioned(["shell".to_string()]);
+    let mut brain = Brain::new(Box::new(policy));
+
+    let commands = run_script(
+        &mut brain,
+        vec![
+            user("delete everything"),
+            Event::ModelDone {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "rm -rf ." })),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            // Grant permission: op 1 starts the capability.
+            Event::PermissionDecision {
+                op: OpId(1),
+                decision: hugr_core::Decision::Allow,
+                est_tokens: 1,
+            },
+            // A stray DUPLICATE Allow for the now-running op 1: must be ignored,
+            // NOT remove the live capability op.
+            Event::PermissionDecision {
+                op: OpId(1),
+                decision: hugr_core::Decision::Allow,
+                est_tokens: 1,
+            },
+            // The capability still resolves normally.
+            Event::CapabilityDone {
+                op: OpId(1),
+                result: json!({ "ok": true }),
+                version: None,
+                est_tokens: 1,
+            },
+            Event::ModelDone {
+                op: OpId(2),
+                output: text_output("Done."),
+                usage: usage(),
+                est_tokens: 1,
+            },
+        ],
+    );
+
+    let effectful = effectful(&commands);
+    assert!(
+        matches!(
+            effectful.as_slice(),
+            [
+                Command::StartModelCall { op: OpId(0), .. },
+                Command::RequestPermission { op: OpId(1), .. },
+                // The capability starts exactly once (the first Allow); the
+                // duplicate produced NO second StartCapability.
+                Command::StartCapability { op: OpId(1), .. },
+                Command::StartModelCall { op: OpId(2), .. },
+                Command::Checkpoint,
+                Command::Done {
+                    reason: DoneReason::EndTurn
+                },
+            ]
+        ),
+        "unexpected command sequence: {effectful:#?}"
+    );
+
+    // Exactly one ToolResult for call-1 (the real capability result), and it
+    // is the success payload — the duplicate Allow neither dropped the op nor
+    // synthesized a spurious result.
+    let tool_results: Vec<_> = brain
+        .state()
+        .log()
+        .iter()
+        .filter(|e| matches!(&e.record, Record::ToolResult { call_id, .. } if call_id == "call-1"))
+        .collect();
+    assert_eq!(tool_results.len(), 1);
+}
+
+/// Replay: the duplicate-Allow script re-fed to a fresh brain yields identical
+/// commands and an identical log (ARCHITECTURE §6.2).
+#[test]
+fn duplicate_permission_allow_replay_is_deterministic() {
+    let make_brain = || {
+        Brain::new(Box::new(
+            StaticPolicy::default().with_permissioned(["shell".to_string()]),
+        ))
+    };
+    let script = || {
+        vec![
+            user("delete everything"),
+            Event::ModelDone {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "rm -rf ." })),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            Event::PermissionDecision {
+                op: OpId(1),
+                decision: hugr_core::Decision::Allow,
+                est_tokens: 1,
+            },
+            Event::PermissionDecision {
+                op: OpId(1),
+                decision: hugr_core::Decision::Allow,
+                est_tokens: 1,
+            },
+            Event::CapabilityDone {
+                op: OpId(1),
+                result: json!({ "ok": true }),
+                version: None,
+                est_tokens: 1,
+            },
+            Event::ModelDone {
+                op: OpId(2),
+                output: text_output("Done."),
+                usage: usage(),
+                est_tokens: 1,
+            },
+        ]
+    };
+    assert_deterministic_replay(make_brain, script);
+}
+
+/// A plain model transport error ends the turn `Done(Error)` with the error
+/// stringified as the reason (ARCHITECTURE §5.4). `Event::ModelError` had zero
+/// coverage before; this pins its command sequence.
+#[test]
+fn model_error_ends_the_turn_with_error() {
+    let mut brain = Brain::with_default_policy();
+
+    let commands = run_script(
+        &mut brain,
+        vec![
+            user("hi"),
+            Event::ModelError {
+                op: OpId(0),
+                error: json!("upstream 503"),
+            },
+        ],
+    );
+
+    let effectful = effectful(&commands);
+    assert!(
+        matches!(
+            effectful.as_slice(),
+            [
+                Command::StartModelCall { op: OpId(0), .. },
+                Command::Done {
+                    reason: DoneReason::Error(reason)
+                },
+            ] if reason == "upstream 503"
+        ),
+        "unexpected command sequence: {effectful:#?}"
+    );
+
+    // The error is folded into the durable log as the op's Error outcome.
+    assert!(brain.state().log().iter().any(|e| matches!(
+        &e.record,
+        Record::OpEnded {
+            op: OpId(0),
+            outcome: hugr_core::OpOutcome::Error(_),
+            ..
+        }
+    )));
+}
+
+/// A model error while a **background** op is still running must defer the
+/// terminal `Done(Error)` (mirroring `on_model_done`'s deferral, ARCHITECTURE
+/// §4.2): the turn is not over while work is in flight. Once the background op
+/// drains, `Done(Error)` fires with the original reason — never a
+/// `StartModelCall` after a terminal `Done`.
+#[test]
+fn model_error_with_a_background_op_defers_done() {
+    let policy = StaticPolicy::default().with_background(["shell".to_string()]);
+    let mut brain = Brain::new(Box::new(policy));
+
+    let commands = run_script(
+        &mut brain,
+        vec![
+            user("build and chat"),
+            // The model kicks off a background shell (op 1); the turn resumes
+            // into a second model call (op 2) concurrently.
+            Event::ModelDone {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            // The resumed model call (op 2) errors while the shell still runs.
+            // Done is DEFERRED — the background op is still in flight.
+            Event::ModelError {
+                op: OpId(2),
+                error: json!("stream reset"),
+            },
+            // The background shell finishes: now the deferred error resolves.
+            Event::CapabilityDone {
+                op: OpId(1),
+                result: json!({ "exit_code": 0 }),
+                version: None,
+                est_tokens: 1,
+            },
+        ],
+    );
+
+    let effectful = effectful(&commands);
+    assert!(
+        matches!(
+            effectful.as_slice(),
+            [
+                Command::StartModelCall { op: OpId(0), .. },
+                Command::StartCapability { op: OpId(1), .. },
+                Command::StartModelCall { op: OpId(2), .. },
+                // No Done right after the error — it is deferred.
+                // The background op draining resolves it (NOT a resume).
+                Command::Done {
+                    reason: DoneReason::Error(reason)
+                },
+            ] if reason == "stream reset"
+        ),
+        "unexpected command sequence: {effectful:#?}"
+    );
+}
+
+/// Replay: the ModelError scripts re-fed to fresh brains yield identical
+/// commands and identical logs (ARCHITECTURE §6.2).
+#[test]
+fn model_error_replay_is_deterministic() {
+    let plain = || {
+        vec![
+            user("hi"),
+            Event::ModelError {
+                op: OpId(0),
+                error: json!("upstream 503"),
+            },
+        ]
+    };
+    assert_deterministic_replay(Brain::with_default_policy, plain);
+
+    let deferred = || {
+        vec![
+            user("build and chat"),
+            Event::ModelDone {
+                op: OpId(0),
+                output: tool_output("call-1", "shell", json!({ "cmd": "cargo build" })),
+                usage: usage(),
+                est_tokens: 1,
+            },
+            Event::ModelError {
+                op: OpId(2),
+                error: json!("stream reset"),
+            },
+            Event::CapabilityDone {
+                op: OpId(1),
+                result: json!({ "exit_code": 0 }),
+                version: None,
+                est_tokens: 1,
+            },
+        ]
+    };
+    assert_deterministic_replay(
+        || {
+            Brain::new(Box::new(
+                StaticPolicy::default().with_background(["shell".to_string()]),
+            ))
+        },
+        deferred,
+    );
+}

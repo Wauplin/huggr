@@ -53,3 +53,37 @@ pub fn user(text: &str) -> Event {
         est_tokens: 1,
     }
 }
+
+/// Convenience for a mid-turn steering interrupt (ARCHITECTURE §4.6): cancel
+/// in-flight ops, append the input, resume into a fresh turn once they drain.
+pub fn user_interrupt(text: &str) -> Event {
+    Event::UserInput {
+        content: json!(text),
+        mode: hugr_core::SteerMode::Interrupt,
+        est_tokens: 1,
+    }
+}
+
+/// Fold the same script into two fresh brains and assert identical commands
+/// AND an identical durable log (CLAUDE.md: determinism is testable; every new
+/// control-flow path gets replay coverage, ARCHITECTURE §6.2).
+pub fn assert_deterministic_replay(
+    make_brain: impl Fn() -> Brain,
+    script: impl Fn() -> Vec<Event>,
+) {
+    let mut a = make_brain();
+    let commands_a = run_script(&mut a, script());
+
+    let mut b = make_brain();
+    let commands_b = run_script(&mut b, script());
+
+    assert_eq!(
+        commands_a, commands_b,
+        "re-feeding the identical event stream must yield identical commands"
+    );
+    assert_eq!(
+        a.state().log(),
+        b.state().log(),
+        "re-feeding the identical event stream must yield an identical log"
+    );
+}

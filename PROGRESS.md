@@ -10,6 +10,7 @@ The project pivoted from "general agent harness with showcase apps" to **"build 
 - `docs/ARCHITECTURE.md`: §§1–17 (the built core) kept; §10 crate layout updated (new `hugr-agent` + `hugr-toolkit`, parked `hugr-cli`/`hugr-wasm`); new §18 (Ask/Answer contract), §19 (trace store, fork semantics, scratchpad), §20 (declarative agent definitions + tool library), §21 (build-time surfaces: CLI/crate/Python/MCP).
 - `docs/ROADMAP.md` replaced (and `docs/ROADMAP_2.md` deleted): phases T0 (`hugr-agent` common API) → T1 (declarative toolkit) → T2 (surfaces) → T3 (orchestration hardening) → T4 (the expense-audit demo: four differently-privileged subagents + an orchestrator) → T5 (publish/harden), with per-task exit criteria.
 - `README.md` and `AGENTS.md` updated to the new framing; `hugr-cli` and `hugr-wasm` are parked as core regression hosts (kept compiling, no product work).
+- Follow-up additions: illustrative definition-folder examples `crates/hugr-docs-2` (pure data) and `crates/hugr-sqlite-2` (with a custom compile-in Rust tool), and a lower-priority phase T6 (ROADMAP + ARCHITECTURE §22 + DESIGN §7/§12): the machine-level agent registry (`AgentCard` cache + `hugr agents list`), the gateway MCP server, and `hugr-builder` — the self-extension subagent that builds pure-data subagents on demand under no-privilege-escalation guardrails.
 
 Sections below this line predate the pivot and describe the foundation the toolkit builds on; historical `ROADMAP_2` task ids in them (and in code comments) refer to the deleted roadmap, retrievable from git history.
 

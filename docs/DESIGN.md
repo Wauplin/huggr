@@ -99,6 +99,8 @@ my-agent/
 
 The toolkit is a separate crate (`hugr-toolkit`) with its own CLI (`hugr new`, `hugr run`, `hugr build`, `hugr traces`, `hugr replay`). `hugr-core` stays a pure library underneath and never learns about manifests or bundling.
 
+Two capstones follow from "definitions are data", designed now and deliberately built last (ROADMAP T6, `ARCHITECTURE.md` §22): a **machine-level agent registry** (installed agents publish their `AgentCard` to a well-known directory; `hugr agents list` and a gateway MCP server give an orchestrator the whole local fleet from one entry point — the registry is a cache over `describe()`, never an authority or a daemon), and **`hugr-builder`** — the Pi-style self-extension move: an ordinary subagent whose tools are the toolkit's own operations (scaffold/edit/validate/test-run/register), able to build new subagents on demand. Its v1 safety constraint: it emits pure-data definitions only (no native tools), may never grant a tool class it doesn't itself hold, and every generated agent carries `built_by` provenance — so generation never weakens the audit story.
+
 ## 8. Standards & prior art (what we align with, what we fill)
 
 Researched July 2026 (web survey with sources); see `ROADMAP.md` for adapter sequencing.
@@ -141,6 +143,7 @@ The demo moment is: **define four specialized agents in four config folders, `hu
 - **Concurrent asks on one agent.** The brain is single-session; the artifact may receive parallel `ask`s. Default: each ask is an independent session/process (traces make this safe); a serving mode with a session pool is future work.
 - **How much of `TurnPolicy` to expose in the manifest.** Tier routing and compaction knobs as TOML vs "sane defaults only" — start with defaults, expose knobs on demand.
 - **WASM surface.** The core still compiles to WASM; whether a *subagent artifact* targets WASM (e.g. an in-browser expert) is deferred until a real use case appears.
+- **Self-extension limits.** How far to let `hugr-builder` go beyond pure-data definitions (generated MCP configs? generated Rust tool crates gated on human review?), and whether builder-made agents need a distinct trust tier in the registry beyond `built_by` provenance. Deliberately unanswered until T6.
 
 ## 13. Glossary
 

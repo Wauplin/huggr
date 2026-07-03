@@ -904,3 +904,43 @@ A maturin/PyO3 package per agent: `answer(question, trace_id=None, blobs=None, *
 ### 21.5 Concurrency model of a packaged agent
 
 The brain is single-session; the artifact may be asked in parallel. Default: **each ask is an independent session** (own brain, own trace) — safe because traces are immutable and fork-friendly (§19.2). A long-lived serving mode with a session pool is future work; nothing in the contract precludes it.
+
+## 22. Discovery & self-extension (design sketch — ROADMAP T6, lower priority)
+
+Two capstones designed now so nothing in §§18–21 blocks them, built last so they consume stable contracts instead of ossifying draft ones.
+
+### 22.1 The machine-level agent registry
+
+Orchestrators need to answer "what agents are available here?" without knowing artifact paths. The registry is deliberately dumb:
+
+```
+~/.local/share/hugr/registry/
+  policy-docs.json      # one entry per installed agent
+  hugr-sqlite.json
+```
+
+Each entry is the agent's **`AgentCard`** (the exact `describe()` output — name, version, description, tools + privilege classes + scopes, tiers, pricing, limits) plus where it lives (`artifact` path and/or `definition` folder) and provenance (`installed_by`, `built_by`, timestamps). `hugr build`/`hugr install` write entries; `hugr agents list|show|remove` manage them; any process can just read the JSON.
+
+Two rules keep it honest: **the registry is a cache, never an authority** — the artifact's own `--describe` is always ground truth, and tooling flags entries whose artifact is missing or whose live card disagrees; and **registration is optional** — an unregistered agent is still a fully functional artifact, so the registry adds discovery without becoming a runtime dependency (no daemon, no lock-in, consistent with "no hosted runtime").
+
+`AgentCard` was already shaped for this (§18.2): the same document later generates an A2A Agent Card if a networked discovery surface is ever wanted.
+
+### 22.2 The gateway MCP server
+
+`hugr serve --mcp` reads the registry and exposes **one tool per registered agent** from a single stdio server, proxying asks to the artifacts (each ask still runs in the target agent's own process with its own jail — the gateway routes, it does not host). One config line gives an orchestrator the machine's whole agent fleet; `trace_id`s remain per-agent and round-trip through the gateway unchanged.
+
+### 22.3 `hugr-builder`: the subagent that builds subagents
+
+The Pi-style endgame: because an agent definition is *data* (§20), "create an agent" is a data-manipulation task — exactly what an agent is good at. `hugr-builder` is an ordinary Hugr subagent whose granted tools are the toolkit's own operations:
+
+| Tool             | What it does                                                            | Privilege                             |
+| ---------------- | ----------------------------------------------------------------------- | ------------------------------------- |
+| `agent_scaffold` | `hugr new` from a template into the workspace                           | fs write, jailed to one workspace dir |
+| `agent_edit`     | edit `hugr.toml`/`SYSTEM.md`; manifest schema-validated on every write   | fs write, same jail                   |
+| `agent_validate` | parse + lint a candidate definition                                     | read-only                             |
+| `agent_test_run` | `hugr run` the candidate on a probe question; returns the standard `Answer` (cost included, budget-capped) | spawn, sandboxed, jailed to the candidate |
+| `agent_register` | add the finished definition to the registry (§22.1)                     | registry write                        |
+
+The loop is scaffold → edit → validate → test-run → iterate on the answer quality → register. The build conversation is itself a trace, so *how an agent came to be* is replayable and auditable end-to-end.
+
+**The constraint that makes it safe (v1): the builder emits pure-data definitions only** — library-tool and MCP grants, no `[tools.rust.*]`. Three consequences: its output is human-readable config (the audit story survives generation); candidates run under the interpreter with no compiler in the loop; and the builder's own privilege set stays small (one jailed workspace, the five tools above, no shell). Two guardrails on top (ROADMAP T6.4): **no privilege escalation by generation** — a builder may grant at most the tool classes its own manifest allows it to grant (a builder without network cannot mint agents with `http_fetch`), and registry entries carry `built_by` provenance so generated agents are distinguishable from hand-written ones. Native-tool agents remain a human step through `hugr dev`/`hugr build`.

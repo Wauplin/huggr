@@ -122,6 +122,17 @@ Two tasks with disjoint tag sets can proceed in parallel.
 
 ---
 
+## Phase T6 — Discovery & self-extension (deliberately lower priority)
+
+**Goal.** Two capstones that only make sense once the toolkit is real and stable: a machine-level registry so orchestrators can *find* agents, and the Pi-style endgame — a subagent that builds subagents. Design sketches in `ARCHITECTURE.md` §22; sequenced last on purpose: both consume the T0–T2 contracts and would ossify them if built earlier.
+
+- **T6.1** `[Toolkit][Agent]` — **Machine-level agent registry.** A well-known registry (`~/.local/share/hugr/registry/`) of installed agents: one entry per agent = its `AgentCard` (from `describe()`) + artifact location + definition provenance. `hugr build`/`hugr install` register; `hugr agents list|show|remove` manage; entries are verified live (a stale card for a deleted binary is flagged, and `--describe` on the artifact is always the ground truth — the registry is a cache, never an authority). **Exit:** an orchestrator lists all agents on the machine with their tools/privileges/pricing via one call, and a stale entry is detected.
+- **T6.2** `[Toolkit]` — **Gateway MCP server.** `hugr serve --mcp` exposes *every* registered agent as one tool each from a single stdio server (cards → tool descriptions, asks proxied to the artifacts). This is how an orchestrator like Claude Code gets the whole local agent fleet from one config line. **Exit:** two registered agents are both callable through one gateway registration; `trace_id` round-trips per agent.
+- **T6.3** `[Demo][Toolkit]` — **`hugr-builder`: the subagent that builds subagents.** An agent whose tools are the toolkit itself: `agent_scaffold` (from templates), `agent_edit` (manifest/prompt, schema-validated on write), `agent_validate`, `agent_test_run` (a sandboxed `hugr run` of the candidate against a probe question, returning the standard `Answer`), `agent_register`. **v1 constraint: it emits pure-data definitions only** (library tools + MCP grants — no `[tools.rust.*]`), so its output is auditable config, interpretable by `hugr run` with no compiler, and its own privilege set stays small (fs write jailed to one agents workspace + the toolkit tools; no shell). Building native-tool agents stays a human step (`hugr dev`/`hugr build`). **Exit:** asked "build me an agent that answers questions about this folder of CSVs", `hugr-builder` scaffolds a definition, iterates until a probe question passes, registers it, and the new agent immediately appears in `hugr agents list` and answers through the gateway — with the whole build conversation itself a replayable trace.
+- **T6.4** `[Docs]` — **Self-extension guardrails.** Written policy for builder-produced agents: registry entries carry `built_by` provenance; a builder-made agent can be granted at most the tool classes the builder itself was allowed to grant (no privilege escalation by generation); human review points documented. **Exit:** the guardrails doc exists and the T6.3 demo abides by it.
+
+---
+
 ## Cross-cutting tracks
 
 - **X1 — Golden traces.** Every phase adds recorded traces as regression fixtures: fork trees (T0), definition-run sessions (T1), per-surface conformance runs (T2), the full demo (T4).
@@ -134,7 +145,8 @@ Two tasks with disjoint tag sets can proceed in parallel.
 - **T0 is the serialization point** — the contract everything wraps. Within T0: T0.1→T0.3 are sequential; T0.4/T0.5/T0.6/T0.7 parallel after T0.1; T0.8 last.
 - **T1** needs T0. T1.2 (tool library) and T1.1 (manifest) are parallel; T1.3 joins them.
 - **T2** needs T1.3; the four surfaces are parallel after T2.1 settles the embedding approach.
-- **T3** is parallel to late T2. **T4** needs T2.1 + T2.3 (binary + Python) and T1.2's tools plus `pdf_read`. **T5** last.
+- **T3** is parallel to late T2. **T4** needs T2.1 + T2.3 (binary + Python) and T1.2's tools plus `pdf_read`. **T5** closes the main arc.
+- **T6** is explicitly after everything: the registry (T6.1) consumes stable AgentCards; the gateway (T6.2) consumes the registry; the builder (T6.3) consumes the whole toolkit as its tool set.
 
 ## Immediate next slice
 

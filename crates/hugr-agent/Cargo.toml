@@ -10,3 +10,12 @@ rust-version.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The trace store (ROADMAP T0.2) persists immutable traces via hugr-replay —
+# the host-side persistence crate. hugr-agent is a host-layer crate, so
+# std::fs is fine here; hugr-core stays sans-IO (it is reached only as pure
+# data through hugr-replay's serde types).
+hugr-replay = { workspace = true }
+thiserror = { workspace = true }
+# trace_id generation: content hash of the serialized trace — deterministic,
+# no RNG and no clock (see store.rs).
+sha2 = { workspace = true }

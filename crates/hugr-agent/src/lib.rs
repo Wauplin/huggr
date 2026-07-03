@@ -17,7 +17,9 @@
 //!   contract can grow without breaking hosts or surfaces.
 
 mod contract;
+mod store;
 
 pub use contract::{
     Answer, AnswerMeta, AnswerStatus, Ask, BlobHandle, BlobPerms, BlobRef, TierSpend, TraceId,
 };
+pub use store::{StoreError, TraceHead, TraceHeader, TraceStore};

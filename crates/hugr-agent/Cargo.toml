@@ -15,7 +15,20 @@ serde_json = { workspace = true }
 # std::fs is fine here; hugr-core stays sans-IO (it is reached only as pure
 # data through hugr-replay's serde types).
 hugr-replay = { workspace = true }
+# The ask path (ROADMAP T0.3) assembles a fresh engine per ask on the native
+# host. hugr-agent stacks strictly on hugr-host + hugr-replay and uses
+# hugr-core as pure data only — it never reaches into core internals.
+hugr-core = { workspace = true }
+hugr-host = { workspace = true }
 thiserror = { workspace = true }
 # trace_id generation: content hash of the serialized trace — deterministic,
 # no RNG and no clock (see store.rs).
 sha2 = { workspace = true }
+
+[dev-dependencies]
+# The resume/fork tests (T0.3) drive the real tokio engine with a scripted
+# mock model adapter (no network) and verify persisted traces replay
+# bit-for-bit.
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }

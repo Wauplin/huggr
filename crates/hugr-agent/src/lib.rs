@@ -16,9 +16,11 @@
 //! - Every public type is `#[non_exhaustive]` with constructors, so the
 //!   contract can grow without breaking hosts or surfaces.
 
+mod agent;
 mod contract;
 mod store;
 
+pub use agent::{Agent, AgentBuilder, AskError};
 pub use contract::{
     Answer, AnswerMeta, AnswerStatus, Ask, BlobHandle, BlobPerms, BlobRef, TierSpend, TraceId,
 };

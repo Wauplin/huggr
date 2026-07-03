@@ -1,34 +1,43 @@
 # Design Document
 
-> **Name:** `Hugr` (published as `hugr-rs`; see `BRANDING.md`). A lightweight, embeddable, runtime-free agent harness written in Rust.
+> **Name:** `Hugr` (published as `hugr-rs`; see `BRANDING.md`). **Build your subagent, ship it anywhere.** A toolkit for building tiny, self-contained, domain-specific agents on a runtime-free, sans-IO Rust core.
 
 ## 1. Vision
 
-Build the agent "brain" that can run **anywhere** — a Chrome extension, a mobile app, a Python or JS script via bindings, a serverless function, a long-lived server — from a *single, portable core* with a small memory footprint and fast startup.
+Hugr is a toolkit for building **domain-specific subagents**: small, specialized agents that do one thing well — answer questions about a docs folder, read PDFs, query a SQLite database, edit images — and that an orchestrator (a human, a script, or a bigger agent) can call through **one uniform contract**: a question in, an answer out, with cost, duration, and a resumable trace id attached.
 
-The differentiator is not a feature list. It is an **architecture** that makes "the same agent loop running in your browser tab with no backend, as a small WASM module" a true, demonstrable statement. No existing harness can say that, because they all baked irreversible assumptions into their day-one design.
+The pitch in one sentence: **a subagent is a system prompt plus a set of tools with privileges; Hugr turns that definition into a self-contained artifact you can ship anywhere** — a single binary, a Rust crate, a Python module, or an MCP server — with traces, forking, sandboxing, and cost accounting built in and identical across all of them.
 
-We keep the simplicity and extensibility that makes Pi pleasant, but remove the runtime weight and the structural traps that the current generation of harnesses (Claude Code, Codex/`codex-rs`, Pi-style tools, the various clones, Hermes-style agents) cannot escape without a full redesign.
+This is a deliberate pivot from "general agent harness with showcase apps" (a coding-agent CLI, a Chrome extension) to "the best way to build and ship *specialized* subagents". The `hugr-docs` crate proved the shape: a single binary, no shell access, seven read-only tools, one JSON answer with cost metadata, callable from a CLI or Python. Hugr generalizes that shape into a toolkit so the *next* subagent — a PDF expert, a SQLite reader, an image editor — costs a config file, not a Rust project.
+
+### Why domain-specific subagents
+
+- **Token efficiency.** A subagent with 5 tools and a 200-line system prompt is dramatically cheaper and more reliable than a generalist with 50 tools. The orchestrator pays one tool-call's worth of context to invoke it, not the whole domain's.
+- **Security by construction.** A subagent that never registers `shell` *cannot* run shell commands. Privileges are declared in the agent definition and enforced by what the host registers — not by a runtime policy trying to say "no" fast enough.
+- **Composability.** Because every subagent exposes the same ask/answer contract, orchestrators compose them without per-agent glue: same invocation, same metadata, same trace semantics.
+- **No vendor lock-in.** Platform agent frameworks solve packaging by owning the runtime (their cloud). Hugr subagents are self-contained artifacts *you* run — locally, in CI, in a container, behind an API — because the runtime is a small library, not a service.
 
 ## 2. Goals
 
-- **Run anywhere.** Browser/extension (WASM), mobile, native CLI, server, embedded in Python/JS via bindings. One core, many hosts.
-- **Tiny footprint, fast start.** No async runtime in the core. Cold start measured in single-digit milliseconds; binary/WASM module measured in low MBs.
-- **Easy to bind.** Binding the core to a new language/environment should be a small "poll / submit event" loop, not a fight against an embedded runtime.
-- **Easy to extend, Pi-style.** Third parties add tools and behavior without recompiling the core, without reaching into its internals.
-- **Deterministic and replayable.** Any session can be recorded and replayed bit-for-bit for testing, debugging, and resume-after-crash.
-- **First-class concurrency & streaming.** The core handles multiple in-flight operations and bidirectional streaming (LLM deltas *and* shell logs *and* user input, in parallel) as its default mode — not as a bolted-on special case.
+- **Trivial to define.** A new subagent is a human-readable, auditable config folder: a manifest, a system prompt, tool selections from a predefined library, model tiers + pricing. No Rust required for the common case.
+- **Self-contained to ship.** One `hugr build` produces the chosen surfaces — standalone CLI binary, Rust crate, Python module, MCP server — all wrapping the same agent. Surface selection is a build-time choice, not part of the agent's definition.
+- **One invocation contract.** Every subagent accepts a question (string) + optional metadata and returns an answer (string) + mandatory metadata (status, cost, duration, tokens, trace id). Orchestrators never learn per-agent APIs.
+- **Resumable and forkable by default.** Every run persists a trace with a `trace_id` and an optional `depends_on` parent. Passing a `trace_id` back resumes that context; passing an older one forks a sibling branch. Replay is instant and bit-for-bit deterministic because of the sans-IO core.
+- **Sandboxed by default.** A subagent gets a private scratchpad filesystem and exactly the tools it declares. Blob exchange with the caller is explicit and permissioned.
+- **Deterministic and replayable.** Unchanged from the original design: any session can be recorded and replayed bit-for-bit for testing, debugging, and resume-after-crash.
+- **Runtime-free core.** The brain stays sans-IO, tiny, and embeddable — this is what makes "ship it anywhere" (including WASM later) true rather than aspirational.
 
 ## 3. Non-Goals (for now)
 
-- Being a batteries-included product on day one. The first deliverable is a **thin CLI host** that *showcases* the core, not a polished end-user app.
-- A universal lowest-common-denominator model abstraction that hides provider-specific features. We support provider specifics as first-class optional fields, not by erasing them.
-- Distributed/multi-machine orchestration. We design so it's *possible* later, but it is not a v1 concern.
-- A plugin marketplace, GUI, or hosted service.
+- **A general-purpose coding agent or browser agent.** The `hugr-cli` coding agent and the `hugr-wasm` Chrome extension are **parked** — kept compiling as regression hosts for the core, but receiving no product investment. They may return later as "just another packaged agent".
+- **A hosted runtime or marketplace.** Hugr ships artifacts; where they run is your business.
+- **A universal agent-to-agent network protocol.** We expose adapters to existing standards (MCP today; ACP/A2A-shaped surfaces when they stabilize — see §8) rather than inventing a wire protocol.
+- **Multimodal-first.** Text-in/text-out with blob attachments is the v1 contract; images/audio ride as blobs a specific agent's tools may interpret.
+- **Distributed orchestration.** Hugr defines the *callee* side (the subagent). Orchestrators are out of scope beyond a reference example in the demo.
 
 ## 4. The core thesis: separate state, context, IO, and policy
 
-Most harness pain traces back to **conflating four things that should be separate**. The whole design is organized around keeping them apart.
+Unchanged, and it is exactly why the pivot is cheap. Most harness pain traces back to conflating four things that should be separate:
 
 | Concern           | The trap (what harnesses do)                      | What we do                                                 |
 | ----------------- | ------------------------------------------------- | ---------------------------------------------------------- |
@@ -37,182 +46,112 @@ Most harness pain traces back to **conflating four things that should be separat
 | **IO**            | The loop owns tokio, sockets, fs, shell           | **Sans-IO** core emits commands; the **host** does IO      |
 | **Permissions**   | `if dangerous { prompt() }` scattered in the loop | Policy is **externalized data**, decided outside the core  |
 
-These four separations are the entire architecture. Everything else (resume, replay, multi-front-end, multi-provider, sub-agents, parallel streaming) falls out of them rather than being engineered separately.
+Every headline feature of the subagent pivot is a direct payoff of these separations:
 
-## 5. Pain points in current harnesses (and our response)
+- **Trace = the log made durable.** A subagent's session is already an ordered event stream; `trace_id` is just a name for the saved file.
+- **Resume = re-fold a trace.** Passing `trace_id` back means loading the log and folding it into a fresh brain — zero IO, no model re-calls, instant.
+- **Fork = copy a log prefix.** `depends_on` is exactly the fork primitive (`AgentSeed::ForkAt`) already built in Phase 6. Sibling explorations share a prefix and diverge.
+- **Sandbox = what the host registers.** No privileged built-ins means "this agent has no shell" is a fact about registration, not a policy hope.
+- **Cost = fold over `OpMeta`.** Per-op usage/latency already lives on the log; an answer's cost metadata is arithmetic over the trace.
 
-These are the **one-way doors** — decisions cheap to make on day one and ruinously expensive to reverse once users and plugins depend on them.
+Nothing in the pivot requires bending the core. That is the strongest possible validation of the original architecture.
 
-### 5.1 "The conversation is the state"
+## 5. What a subagent is
 
-**Pain.** The session is an append-only list of `messages` that is simultaneously the durable record, the thing sent to the model, and the thing the UI renders. Consequences:
+Trimmed to its essence, a subagent is **(1) a system prompt and (2) a list of tools with associated privileges**. That pair is what makes it domain-specific. Everything else is shared infrastructure every subagent gets for free:
 
-- Compaction/summarization is destructive surgery on the only source of truth — irreversible, silently lossy.
-- Branching, rewind, edit-and-resume, sub-agent context sharing are near impossible to add later.
-- Large tool outputs live in context forever because there's nowhere else to put them.
+1. **A scratchpad** — a private, self-contained filesystem subtree the agent can freely read/write (notes, intermediate artifacts) without permission round-trips and without escaping its root.
+2. **Traces** — every run is stored as a replayable trace with a `trace_id`; follow-up questions resume it; older ids fork it (§6).
+3. **The brain** — the same `hugr-core` reducer: turn loop, projection, compaction, deterministic replay.
+4. **A common API** — introspection (`describe`: role, tools, model tiers, config; `config`/`env`: effective settings; `traces`: list stored traces) and invocation (`ask`), identical across every subagent and every surface.
+5. **Blob exchange** — a caller can hand the agent files (bytes or paths) and receive files back, each with an explicit permission set (read/write/execute); large payloads ride the existing content-addressed blob store.
+6. **Accounting** — every answer carries cost (from per-tier pricing config) and duration, aggregated from the trace's `OpMeta`.
 
-**Response.** Event-sourced state. The durable thing is an append-only log of events ("user said X", "tool op 8 returned Y", "model op 7 produced Z"). What we send to the model is a *projection* rendered from that log through a policy that decides what is included, summarized, evicted, or replaced with a reference. Compaction-without-loss, rewind, branching, and replay then come for free.
+The definition is data; the infrastructure is the toolkit. See `ARCHITECTURE.md` §18–§21 for the concrete contracts.
 
-### 5.2 IO baked into the loop
+## 6. Traces, resume, and forking (the orchestration contract)
 
-**Pain.** A tokio-driven loop assuming a local filesystem and shell cannot ship to a browser or bind cleanly into another runtime (asyncio vs tokio is a two-event-loop fight).
+The interaction model between an orchestrator and a subagent:
 
-**Response.** **Sans-IO** core (the `rustls`/`quinn`/`h2` pattern). The core is a pure state machine: events in, commands out, no sockets, no tokio, no fs. The host performs all IO. The *same* core compiles to WASM, links into a Python/JS binding, or runs on a server — only the host differs.
+- **New question, no `trace_id`** → the agent starts a fresh session, answers, persists the trace, and returns its new `trace_id` in the answer metadata.
+- **Follow-up, with `trace_id`** → the agent loads that trace, re-folds it (instant, deterministic, no model calls), appends the new question as a new turn, answers, and persists the result as a **new trace** whose header records `depends_on: <parent trace_id>`. The parent is never mutated.
+- **Fork** → because every follow-up produces a new immutable trace, the orchestrator can branch freely: ask from `trace_1` twice and get sibling traces `trace_2a`, `trace_2b`. The orchestrator explores many directions **without ever growing a single shared context** — each branch pays only for its own divergence, and storage shares the common prefix.
 
-### 5.3 Privileged built-in tools
+From the subagent's point of view this is trivially cheap: traces are stored independently with a `depends_on` field in their metadata, and "load context" is the existing replay fold. There is no session server, no lock, no shared mutable conversation. Immutability is what makes fan-out safe.
 
-**Pain.** `Bash`/`Read`/`Write` are hardwired into the loop while "extensions" (MCP, plugins) go through a separate, lesser path. Now you can't run where there is no shell, can't sandbox uniformly, and built-ins/plugins diverge forever.
+This model also gives orchestrators time-travel debugging for free: any intermediate trace is a first-class artifact that can be inspected, replayed, or used as a fork point later.
 
-**Response.** **There are no privileged tools.** The core only knows "invoke capability X with these args." The host supplies *all* implementations, including filesystem and shell, through one uniform capability interface. A browser host simply doesn't register `shell`.
+## 7. The toolkit: from config to artifact
 
-### 5.4 Permissions as control flow
+The part that must become *easy* is defining and shipping a new subagent. Today it means writing a Rust host, glue, and build scripts (what `hugr-docs` did by hand). The toolkit collapses that to:
 
-**Pain.** Approval logic is imperative `if` statements scattered through the loop, hardcoding human-in-the-loop and making headless/CI/autonomous/mobile modes a special-cased mess.
+```
+my-agent/
+  hugr.toml          # manifest: name, description, model tiers + pricing, tool grants, limits
+  SYSTEM.md          # the system prompt (plain markdown)
+  tools/             # optional: extra tools beyond the built-in library
+```
 
-**Response.** The core *emits* a permission request as an event; an external, pluggable **policy** (data) decides allow/deny/ask. The same core runs interactively, in CI (allowlist), or autonomously (capability set) with no loop changes.
+- **Predefined tool library.** The toolkit ships vetted, parameterized tools (scoped fs read/search/outline — generalized from `hugr-docs`; scratchpad; http fetch; sqlite query; more over time). Granting one is a manifest line with its scope/privileges (`[tools.fs_read] root = "./docs"`), not code.
+- **Custom tools without recompiling the toolkit.** Escape hatches in order of weight: an MCP server (config line), a subprocess plugin (the existing `hugr-plugin-abi`), or a Rust `Capability` impl for compile-in tools.
+- **Auditable by reading.** The whole definition is human-readable text. Reviewing a subagent's blast radius = reading `hugr.toml`. If a tool isn't granted, the binary literally does not contain a path to it.
+- **Build-time surface selection.** `hugr build --surface cli,python,mcp` bundles the agent definition with the runtime into the chosen artifacts. The agent definition never mentions surfaces — one definition, N packagings — because the common Rust API (§5.4) is the single thing every surface wraps.
 
-### 5.5 Resume and replay as afterthoughts
+The toolkit is a separate crate (`hugr-toolkit`) with its own CLI (`hugr new`, `hugr run`, `hugr build`, `hugr traces`, `hugr replay`). `hugr-core` stays a pure library underneath and never learns about manifests or bundling.
 
-**Pain.** When the process dies (or a phone backgrounds the app, or a server request times out), can you resume mid-turn? Codex and Claude Code both added resume *after the fact*, painfully, because the loop side-effects everywhere. And because the loop isn't pure, sessions can't be replayed deterministically — hence thin, flaky test suites.
+## 8. Standards & prior art (what we align with, what we fill)
 
-**Response.** Both come free from the design. Persist the event log → rehydrate the state machine to resume. Inject *all* nondeterminism (model calls, clock, randomness, IO) at the edge → record the event stream → replay bit-for-bit.
+Researched July 2026 (web survey with sources); see `ROADMAP.md` for adapter sequencing.
 
-### 5.6 Provider wire-format leakage
+- **MCP (Model Context Protocol)** is the pragmatic standard for exposing a subagent *as a tool* to orchestrators (Claude Code and most frameworks speak it). "Agent-as-an-MCP-tool" is an established pattern (e.g. Microsoft Agent Framework's `as_mcp_server()`). A Hugr subagent's MCP surface advertises one `ask` tool whose structured result carries the answer + metadata. Two spec facts to design against: the 2026-07-28 release candidate makes the protocol core **stateless** and adds a **Tasks** primitive for long-running work (map long asks onto it), and **sampling is deprecated** — a Hugr agent always calls its own provider, which we do anyway. MCP standardizes neither sessions/forking nor cost metadata; we carry both in the tool result payload.
+- **ACP is two different things — and one of them is dead.** The IBM/BeeAI *Agent Communication Protocol* (Linux Foundation) **merged into A2A in August 2025** and is winding down; do not target it. The surviving ACP is Zed's *Agent Client Protocol* — JSON-RPC over stdio between an agent subprocess and an **editor/UI client** ("LSP for agents"; Rust-native reference implementation). Its `session/load`/`session/resume` overlaps with our resume but it has no fork primitive, no cost metadata, and no blob channel; it is an attractive *editor surface* adapter someday, not the orchestrator↔subagent contract.
+- **A2A (Agent2Agent, Linux Foundation)** is the surviving agent↔agent standard: Agent Cards for discovery, a typed task lifecycle over JSON-RPC/SSE, first-class Artifacts (text/file/data parts — a clean match for our blob exchange). Its `contextId` is continuation, not forking, and **cost metadata is an open issue** (a2aproject/A2A#1155) pointed at the extensions mechanism — meaning Hugr can ship a usage extension rather than wait. A2A is the natural future surface for *remote* orchestration.
+- **Claude Code subagents** (markdown files with YAML frontmatter: name, description, tools, model; body = system prompt) are the de facto *authoring* convention for "an agent is a prompt + tools as data" — no wire protocol, single-vendor, widely imitated. Our `hugr.toml` + `SYSTEM.md` adopts the same shape with typed scopes/pricing that frontmatter can't express; a frontmatter import path is a cheap compatibility win. In the Rust ecosystem (Rig, Swiftide, etc.) everything is code-first and tokio-bound; the closest declarative attempt (ai-agents.rs YAML) is early. Nobody is sans-IO.
+- **The gap we fill** — verified unowned: (a) a **cross-process forkable session contract** (`trace_id`/`depends_on` with deterministic, bit-for-bit replay — LangGraph's checkpoint forking is in-process/framework-internal; OpenAI's `previous_response_id` forking is vendor-hosted with 30-day retention); (b) **mandatory cost/duration metadata on every answer** (MCP: absent; A2A: open issue; Zed-ACP: absent); (c) **single-binary agent packaging** (llamafile proved single-file distribution for *models*; nobody ships prompt+tools+harness subagents as standalone binaries). That combination *is* the product. Our own contract is the Rust API; protocols are adapters at the edge, per the narrow-waist rule.
 
-**Pain.** Either the core speaks one provider's wire format natively (adding others = surgery), or it over-abstracts into a lowest-common-denominator message type that can't express prompt-cache breakpoints, reasoning/thinking blocks, or streaming tool calls — losing exactly the features that matter for cost/quality.
+## 9. Pain points the architecture already solved
 
-**Response.** A canonical internal representation rich enough to carry cache markers, reasoning content, and structured tool calls as **first-class optional fields**, with thin adapters at the edge. Cache breakpoints and token budgets are structured metadata on context blocks, never string concatenation.
+(Condensed from the original design; the mechanisms are built and tested — see `ARCHITECTURE.md` for details.)
 
-### 5.7 The synchronous, LLM-centric loop (the "sleep 120" anti-pattern)
+- **"The conversation is the state"** → event-sourced log + projection; lossless compaction; branching/forking. (§4)
+- **IO baked into the loop** → sans-IO core; the same brain runs native, in WASM, or behind bindings.
+- **Privileged built-in tools** → uniform capabilities; the sandbox story of §5 depends on this.
+- **Permissions as control flow** → externalized policy; a docs agent with only read-only tools needs no judge at all.
+- **Resume/replay as afterthoughts** → traces, deterministic replay, crash resume, all shipped (Phases 3/7).
+- **Provider lock-in** → canonical model types with first-class cache/reasoning/tool-call fields; OpenAI-compatible streaming adapter shipped.
+- **The synchronous LLM-centric loop** → op table, background ops, first-class cancellation (Phase 2).
+- **Cost attribution** → `OpMeta` per op (usage, latency, routing) queryable from the trace alone — now surfaced as the answer's mandatory metadata.
 
-**Pain.** The LLM call is the privileged blocking center of the universe; everything else waits behind it or is *polled* (`sleep 120; check; sleep`). Polling is the smell: the harness has no way to be *told* something happened, so it periodically asks. Background tasks, cancellation, and reacting to a process finishing the instant it finishes are all clumsy or impossible.
+## 10. Over-engineering guardrails
 
-**Response.** **The LLM is not special.** It is one event source among many (shell stdout, user input, sub-agent results, timers, file watchers). All produce timestamped events into a single inbox. See §6.
+- **The common case is a config folder.** If defining a read-only docs agent requires writing Rust, the toolkit has failed. Measure: the demo agents (§ROADMAP Phase T4) must be definable in < 50 lines of manifest + a prompt.
+- **Don't invent a protocol.** The contract is a Rust API + a JSON answer schema. Wire protocols (MCP, ACP, A2A) are adapters, added when demanded, never load-bearing.
+- **Keep the answer schema small.** Status, message, trace_id, cost, duration, tokens, related refs, opaque extras. Resist per-agent structured-output schemas in v1 — that's what `extra` is for.
+- **Don't abstract surfaces prematurely.** Ship CLI + Rust crate first (T2), Python next, MCP after; each surface is thin because it wraps the same `hugr-agent` API.
 
-### 5.8 UI coupled to the loop
+## 11. What earns attention
 
-**Pain.** Rendering interleaved with the loop → exactly one front-end forever.
+The demo moment is: **define four specialized agents in four config folders, `hugr build` them, and watch an orchestrator answer a cross-domain question by delegating — with per-agent cost lines and a fork tree you can replay**. Nobody else can show "here is my PDF expert as a 5 MB binary with no shell access, here is the same expert as `pip install`, and here is yesterday's conversation forked three ways for free."
 
-**Response.** The core emits an event/command stream; any front-end (TUI, browser, mobile, headless) subscribes. Rendering is never inside the core.
+## 12. Open questions
 
-### 5.9 Over-wide plugin contracts
+- **Trace schema migration.** Long-lived traces need a migration story as `Record`/`Event` evolve (`format_version` exists; migrations do not). Sharpened by the pivot: orchestrators will hold `trace_id`s across subagent upgrades. Tracked in ROADMAP T5.
+- **Trace garbage collection.** Fork trees accumulate; `depends_on` forms a DAG whose shared blobs are content-addressed, but pruning policy (LRU? pinned roots?) is undecided.
+- **Blob permission enforcement.** Read/write/execute grants on exchanged blobs are declared in the contract; enforcement depth (copy-on-share vs bind-mount vs advisory) is host-dependent and needs a per-surface decision (T3).
+- **Concurrent asks on one agent.** The brain is single-session; the artifact may receive parallel `ask`s. Default: each ask is an independent session/process (traces make this safe); a serving mode with a session pool is future work.
+- **How much of `TurnPolicy` to expose in the manifest.** Tier routing and compaction knobs as TOML vs "sane defaults only" — start with defaults, expose knobs on demand.
+- **WASM surface.** The core still compiles to WASM; whether a *subagent artifact* targets WASM (e.g. an in-browser expert) is deferred until a real use case appears.
 
-**Pain.** If plugins can mutate arbitrary internal state, the core can never evolve without breaking the ecosystem (versioning hell).
+## 13. Glossary
 
-**Response.** A **narrow** plugin contract: plugins are pure-ish reactions over the event stream plus capability requests — never deep mutation. Narrow now, widen later; never the reverse.
-
-### 5.10 Cost/usage accounting and silent truncation
-
-**Pain.** Per-turn / per-tool / per-sub-agent attribution is nearly impossible to retrofit. Eviction that drops data without a reference reads as "we covered everything" when we didn't.
-
-**Response.** Usage is an event. Evicted content is *referenced, not deleted* — rehydratable on demand from the log. Any bounded coverage is logged, never silent.
-
-## 6. Concurrency & streaming model
-
-This is the most differentiating part. Current harnesses are structurally incapable of clean parallel streaming because the LLM call is a blocking center.
-
-### 6.1 The reframe: the LLM is just another stream
-
-Shell stdout, user keystrokes, a sub-agent finishing, a timer, a file-watcher, and LLM token deltas all produce the **same kind of thing**: timestamped events dropped into the brain's inbox. The LLM gets no special status.
-
-### 6.2 Concurrency lives in the host; the brain stays single-threaded
-
-- The **host** runs N things concurrently (LLM stream, shell process, user input) with real async/OS parallelism. As each produces a chunk, the host pushes it as an event into the brain's **inbox** (one ordered queue), stamped with a sequence number.
-- The **brain** processes the inbox **one event at a time, atomically**. It is a reducer: `(state, event) -> (state', commands)`. No locks, no interleaving — "atomic events" satisfied for free by single-threaded processing.
-
-Result: true parallel I/O *and* a deterministic, replayable, easily-bindable brain. Replay works because we recorded the *actual* interleaving (sequence numbers); the merge itself need not be deterministic, only recorded.
-
-> **Hard rule: the brain is never multithreaded.** The moment it is, we lose sans-IO, replay, and easy bindings. All concurrency belongs to the host.
-
-### 6.3 Multiple in-flight operations, correlated by ID
-
-The one real upgrade over a naive request/response loop: the brain supports **many concurrent operations**, correlated by operation ID.
-
-- Commands carry an op ID: `StartModelCall(op=7, …)`, `StartProcess(op=8, …)`.
-- Events reference it: `ModelDelta(op=7, …)`, `ProcessStdout(op=8, …)`, `ProcessExited(op=8, code=0)`.
-- The brain holds a table of in-flight ops in its state and reacts to deltas from any of them, in any arrival order.
-
-This enables what polling-based harnesses cannot:
-
-- Run a long `cargo build` (op 8) **and** stream a model response (op 7) concurrently, interleaving both.
-- React to `ProcessExited(op=8)` the instant it happens — no `sleep`, because the host *told* the brain via an event.
-- **First-class cancellation:** the brain emits `Cancel(op=7)`; the host aborts that HTTP request / kills that process. This is the thing polling harnesses can't do cleanly, and here it's free.
-
-### 6.4 Honest caveats
-
-1. **Provider APIs are mostly half-duplex with the model.** You can stream tokens *out* of a normal completion, but cannot inject input *into* a generation already in flight (except realtime/voice-style APIs). So "bidirectional with the LLM mid-generation" is limited; design around **cancel + re-issue**, not whispering into a running generation. "Bidirectional at the *harness* level" (concurrent ops, background streams feeding state, cancel-and-restart) is fully feasible today and is where the value is.
-2. **Backpressure / coalescing.** Token deltas and chatty shell output can flood the inbox. Event handlers must be cheap (append to a buffer, not real work). Decide whether the brain sees every token delta or the host **coalesces** (e.g. batch every ~16ms). Coalescing is usually right — but the host must record what it actually fed, so replay matches.
-3. **Partial/aborted operations in the log.** When an LLM stream is cancelled at token 50, the log needs a clean representation ("op 7 produced 50 tokens then cancelled"), or compaction/replay gets confused. Easy by design, annoying to retrofit.
-
-## 6.5 Traces, sub-agents, forks, and scheduling — one mechanism
-
-A deliberate payoff of "the conversation is *not* the state": four capabilities that other harnesses build as separate, hard-to-retrofit subsystems collapse into operations on the append-only event log. See `ARCHITECTURE.md` §§12–16 for the concrete mechanics.
-
-- **Saving a trace** = the event log made durable. We persist the ordered event stream (not derived state), with large payloads referenced as content-addressed blobs. Traces are portable (record on a server, replay in a browser), and are the same substrate used for replay, debugging, test fixtures, and resume. Saving is a *host capability* (disk, IndexedDB, HTTP, a Hub repo) — the core never decides where a trace goes.
-- **Sub-agents ("agent subprocess")** = *another `hugr-core` instance*. Spawning one is a `StartAgent` op that behaves like any other in-flight op (stream, observe, cancel, attribute cost). The host chooses isolation — in-process, worktree, or subprocess/remote — over the *same* brain↔host contract, so sub-agents reuse the entire run-anywhere story.
-- **Forks** = copying a log prefix (copy-on-write). This single primitive powers sub-agent context sharing, branching/"what-if", rewind/edit-resume, and speculative execution. Results flow back as *values*, not log merges — forks diverge, results return one-directionally (no CRDT pain).
-- **Cron / scheduling** = a *host-side* scheduler (the core has no clock; time is injected) that fires a trigger by injecting an event into a session — either resuming an existing trace, targeting a named persistent session, or starting fresh per fire. No special core support beyond resume + event injection, both of which already exist.
-
-The unifying idea: **trace = durable log; resume = re-fold a trace; fork = copy a log prefix; sub-agent = a forked log in its own brain; cron = a scheduler that injects an event.** Every advanced runtime feature is the event log viewed from a different angle.
-
-## 7. Extensibility: the hardest real tension
-
-"Lightweight, no-runtime Rust binary" pulls against "dynamically extensible like Pi." How we resolve it is itself a one-way door. Three plugin mechanisms, each with a real cost:
-
-| Mechanism                                 | Pros                                                | Cons                                                                |
-| ----------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------- |
-| **Compile-time** (traits, cargo features) | Zero overhead, smallest binary                      | No third-party plugins without recompiling — not Pi-like            |
-| **Subprocess + protocol** (MCP model)     | Fully dynamic, language-agnostic                    | Heavy (process + JSON-RPC each), bad for mobile/browser, slow start |
-| **WASM components**                       | Dynamic *and* portable to browser/mobile, sandboxed | Adds a WASM runtime to the binary, FFI/serialization cost           |
-
-**Decision (provisional): WASM components as the primary extension ABI**, with a **narrow event/hook contract**. It is the only option that keeps *lightweight + run-anywhere + dynamically extensible* simultaneously true, and its sandbox aligns with the capability model. We still support subprocess/MCP as a secondary path for heavy, language-agnostic tools where weight is acceptable (server hosts), and compile-time tools for the batteries-included defaults.
-
-The contract stays narrow: plugins react to events and request capabilities; they never touch core internals.
-
-## 8. Over-engineering guardrails
-
-The sans-IO purist failure mode is real. We explicitly guard against it:
-
-- **Ship a batteries-included default host.** "I just want a CLI on my laptop" must be ~10 lines (native + reqwest + local shell/fs). The bare sans-IO core stays available for exotic targets; most users never see it. Sans-IO at the bottom, ergonomic wrapper on top.
-- **Don't abstract what no host will vary.** Abstract the clock and RNG (needed for replay — cheap, worth it). Do *not* abstract the allocator or invent config knobs nobody uses.
-- **Keep the host trait small.** If the smallest possible host is 500 lines, the "run anywhere" promise is dead. Minimal host = a `poll`/`submit` loop plus a handful of capability impls.
-
-## 9. What earns attention
-
-The architecture alone earns nothing — nobody stars "sans-IO." What earns attention is the **payoff demonstrated concretely**: the same agent brain running in a Chrome extension, a Python script, and a server, as a small WASM module with sub-10ms startup, *with no backend*. Codex going Rust got attention for speed; nobody has shipped a *truly portable* agent core. Lead with the "here it is running in your browser tab" moment.
-
-## 10. Open questions & known blind spots
-
-Smaller open questions (defaults leaning one way, decide during implementation):
-
-- Streaming granularity: per-token vs coalesced chunks as the default the brain sees (leaning coalesced, host-recorded).
-- WASM component model maturity vs a simpler custom ABI for v1 plugins.
-- How rich the canonical model representation needs to be for v1 (which provider-specific fields are first-class from the start).
-- Sub-agent context sharing semantics (fork the log vs reference-shared log).
-- Whether/when to add the `hugr-hub` (Hugging Face integration) crate from `BRANDING.md` to the crate layout and roadmap.
-
-**Resolved** (designed; see the referenced architecture sections):
-
-- **Compaction is itself a model call** → projection stays pure/synchronous (reads existing summaries only); compaction is a **separate `small`-tier model op** whose result is appended as a summary `Record` the next projection consumes. Adds a compaction sub-loop. (ARCHITECTURE §3.4)
-- **Token counting** → **host tokenizes at ingestion** and stores the count on the record; the brain's projection just **sums** stored counts against the budget (arithmetic, not tokenization). Estimate for projection; authoritative accounting from returned `Usage`. (ARCHITECTURE §3.5)
-- **User steering / interruption mid-turn** → conversational `UserInput` can arrive any time; the reducer consults a `SteerMode` (Queue / Interrupt / AppendAndContinue). Two events: `UserInput { content, mode }` and `UserAbort` (pure cancel). **Decided:** default is `Queue` (interrupt is reversible via ESC; an accidental interrupt would throw away in-flight work), with Interrupt always available. (ARCHITECTURE §4.6)
-- **Transport vs semantic errors** → transport (429/network/timeout/cache) is the **host's** (retry/backoff internally, surface only final outcome); semantic (malformed tool JSON, schema-invalid args, stale-edit conflict) is the **brain's** (route back into the turn loop). Rule: if retrying *unchanged* might work → host; if the model must *change* something → brain. (ARCHITECTURE §5.4)
-
-**Still open** — none block starting:
-
-- **Trace / log schema migration.** `#[non_exhaustive]` + a `schema_version` in `TraceMeta` are necessary but not sufficient. Long-lived traces need a migration story as `Record`/`Event` evolve, or the resume/replay promise erodes over time.
-- **Fan-out concurrency cap.** When the model emits N tool calls at once, the brain emits N `StartCapability` commands; the **host** caps how many run concurrently. Confirm the cap lives host-side and the brain imposes no ordering it doesn't mean to.
-- **System prompt / agent configuration.** Where the base system prompt, instructions, and the capability→tool-schema advertisement come from, and how the projection assembles them. Currently implicit in `ContextPolicy`; worth making explicit.
-- **Capability sandboxing beyond permission.** Permission decides *whether*; it doesn't *sandbox* execution (filesystem jail, network egress, resource limits). WASM plugins are sandboxed by construction, but native `shell`/`fs` are not. Out of scope for v1, but a "run anywhere safely" gap to track.
-
-## 11. Glossary
-
-- **Brain / core** — the pure, sans-IO state machine.
-- **Host** — the environment-specific layer that performs IO and drives the brain.
-- **Event** — something that happened, fed into the brain's inbox.
-- **Command** — something the brain wants the host to do.
-- **Operation (op)** — a unit of in-flight work (a model call, a process), identified by an op ID, correlating commands and events.
-- **Event log** — append-only durable source of truth.
-- **Projection** — the model context rendered from the log for a given turn.
-- **Capability** — a host-provided implementation of a tool/effect.
-- **Policy** — externalized data deciding allow/deny/ask for capability requests.
+- **Subagent / agent** — a packaged Hugr artifact: definition (prompt + tools + config) + runtime, exposing the ask/answer contract.
+- **Brain / core** — the pure, sans-IO state machine (`hugr-core`).
+- **Host** — the environment-specific layer that performs IO and drives the brain (`hugr-host` natively).
+- **Agent definition** — the auditable config folder (`hugr.toml`, `SYSTEM.md`, `tools/`).
+- **Surface** — a build-time packaging of an agent: CLI, Rust crate, Python module, MCP server.
+- **Ask / Answer** — the uniform invocation contract: question + metadata in; message + mandatory metadata (status, trace_id, cost, duration) out.
+- **Trace** — the durable, replayable event log of one session; identified by `trace_id`, optionally rooted on a parent via `depends_on`.
+- **Fork** — starting a new session from an existing trace's log prefix; the parent is immutable.
+- **Scratchpad** — the agent's private filesystem subtree, writable without permission gates, jailed to its root.
+- **Capability / tool** — a host-provided implementation of an effect; granted to an agent in its manifest.
+- **Event / Command / Operation / Projection / Policy** — unchanged from the core architecture; see `ARCHITECTURE.md`.

@@ -1,6 +1,6 @@
 # Technical Architecture
 
-> Companion to `DESIGN.md`. This document gets concrete: the core ↔ host contract, state model, streaming/concurrency mechanics, replay, plugins, and crate layout. Rust types below are **illustrative sketches**, not final.
+> Companion to `DESIGN.md`. This document gets concrete: the core ↔ host contract, state model, streaming/concurrency mechanics, replay, plugins, and crate layout (§§1–17 — built and stable), plus the **subagent layer** the project now centers on: the ask/answer contract, the trace store with forking, the toolkit, and the packaged surfaces (§§18–21). Rust types below are **illustrative sketches** unless marked implemented.
 
 ## 1. The shape in one diagram
 
@@ -541,39 +541,44 @@ Implemented (Phase 5): `hugr-plugin-abi` owns the versioned, narrow contract (`d
 
 ## 9. Front-ends
 
-The core emits `OutputEvent`s via `Command::Emit`. Any number of front-ends subscribe:
+The core emits `OutputEvent`s via `Command::Emit`. Any number of front-ends subscribe; rendering is never inside the core. For packaged subagents the default front-end is **headless**: operational logs to stderr, one JSON answer to stdout (the `hugr-docs` shape, now the universal surface contract — §21). The interactive stdout front-end and the browser DOM front-end still exist in the parked hosts (`hugr-cli`, `hugr-wasm`) and keep exercising the same `OutputEvent` stream.
 
-- **TUI/CLI** (the first showcase host).
-- **Browser/extension** renders the same event stream in DOM.
-- **Headless** ignores most events, logs the rest.
-
-Rendering is never inside the core; multiple front-ends can attach to one session simultaneously.
-
-Implemented CLI decision (ROADMAP_2 D9): the native CLI stays on the stdout-streaming front-end for now, rather than adopting a TUI framework. This keeps logs copyable, works in dumb terminals and CI, and avoids taking the TUI dependency/API one-way door before the agent loop stabilizes. The stdout front-end owns readable status lines, compact tool cards, active background-op lists, token/cost/context counters surfaced by `/status`, and calm idle states; a future TUI can still subscribe to the same `OutputEvent`/lifecycle hooks without changing `hugr-core`.
-
-## 10. Crate layout (proposed)
+## 10. Crate layout
 
 ```
+KEPT — the foundation (built):
 hugr-core         # sans-IO brain: state, log, projection, op table, reducer.
-                   # NO tokio, NO reqwest, NO fs. #![no_std]-friendly if feasible.
-hugr-model        # canonical ModelRequest/Delta + provider adapter traits.
-hugr-providers    # Anthropic/OpenAI/... adapters (host-side, behind features).
-hugr-host         # default native host: tokio driver, reqwest, shell/fs/http
-                   # capabilities, disk blob store, interactive policy.
-hugr-cli          # the batteries-included showcase CLI (≈ thin wrapper).
-hugr-docs         # specialized read-only docs retrieval host/CLI.
-hugr-wasm         # wasm-bindgen host glue for browser/extension.
-hugr-py           # PyO3 bindings (poll/submit exposed).
-hugr-js           # napi/wasm bindings for Node/Deno.
-hugr-plugin-abi   # WASM component world definition + host loader.
-hugr-replay       # versioned, portable TRACE format (save/load) + replay/inspect.
-                   # Host-side persistence: depends on hugr-core as pure data,
-                   # may use std::fs — never pulls IO into the core. (Phase 3.)
+                   # NO tokio, NO reqwest, NO fs.
+hugr-providers    # OpenAI-compatible streaming adapter (HF router default),
+                   # per-tier model config.
+hugr-host         # default native host: tokio driver, capability/model
+                   # registries, policies, MCP client, skills, scheduler.
+hugr-replay       # versioned, portable TRACE format + blob store + replay/
+                   # verify/inspect/resume. Host-side persistence: depends on
+                   # hugr-core as pure data, may use std::fs.
+hugr-plugin-abi   # versioned plugin contract + subprocess (stdio) transport.
+hugr-example-plugin # a standalone third-party plugin (no Hugr dependency).
+
+NEW — the subagent layer (this roadmap):
+hugr-agent        # the common subagent runtime API: Ask/Answer contract,
+                   # TraceStore (trace_id/depends_on, fork), scratchpad,
+                   # blob exchange, pricing/cost accounting, introspection. (§18–19)
+hugr-toolkit      # declarative agent definitions (hugr.toml + SYSTEM.md),
+                   # the predefined tool library, and the `hugr` builder CLI:
+                   # new / run / build / traces / replay. (§20–21)
+
+REBUILT ON THE NEW LAYER:
+hugr-docs         # the prototype subagent; becomes a definition folder +
+                   # thin packaging surfaces over hugr-agent (ROADMAP T0.8/T1.6).
+
+PARKED — kept compiling as core regression hosts, no product work:
+hugr-cli          # the general coding-agent CLI.
+hugr-wasm         # browser/JS binding + Chrome extension host.
 ```
 
-Dependency rule: **`hugr-core` depends on nothing environmental.** Everything async/IO/provider-specific lives outside it.
+Dependency rule: **`hugr-core` depends on nothing environmental.** Everything async/IO/provider-specific lives outside it. `hugr-agent` sits on `hugr-host` + `hugr-replay`; `hugr-toolkit` sits on `hugr-agent`; generated surfaces (§21) sit on `hugr-toolkit`/`hugr-agent`. Nothing in the new layers reaches into `hugr-core` internals — they are hosts like any other.
 
-Implemented showcase host: `hugr-docs` demonstrates that host shape is not tied to the batteries-included terminal agent. It reuses `hugr-core`, `hugr-host`, and the OpenAI-compatible streaming adapter, but registers only folder-scoped read-only documentation capabilities (`docs_list`, `docs_search`, `docs_read`, `docs_read_range`, `docs_read_many`, `docs_read_range_many`, `docs_outline`) and emits a single machine-parseable JSON answer. It has no shell, no write/edit capability, no interactive policy surface, and no docs-specific core types; all retrieval arguments/results stay opaque `Value`s under the narrow-waist rule (§2.4).
+The template for the whole layer: `hugr-docs` proved that a specialized host reusing `hugr-core`, `hugr-host`, and the streaming adapter — registering only folder-scoped read-only capabilities, no shell, no write path — emits a single machine-parseable JSON answer with cost metadata, with all retrieval arguments/results staying opaque `Value`s under the narrow-waist rule (§2.4). §§18–21 generalize exactly that shape.
 
 ## 11. Sizing & performance targets (initial)
 
@@ -749,3 +754,153 @@ That is the payoff of "the conversation is *not* the state": every advanced runt
 | WASM component model immaturity                                               | Start with a simpler custom WASM ABI; migrate when stable                                                 |
 | Canonical model type too thin to use providers well                           | First-class cache/reasoning/tool-call fields + opaque `extra` from v1                                     |
 | Plugin ABI ossifies too early                                                 | Keep contract narrow; version it; no internal access                                                      |
+
+## 18. The subagent contract (`hugr-agent`)
+
+The uniform invocation surface every subagent exposes, on every packaging. One Rust API is the source of truth; every wire shape (CLI JSON, Python dict, MCP tool result) is a serialization of it.
+
+### 18.1 Ask / Answer
+
+```rust
+// hugr-agent. All #[non_exhaustive] with constructors; serde-stable; a JSON
+// schema for the wire form is committed and pinned by tests (ROADMAP T0.1).
+pub struct Ask {
+    question: String,               // the one required field
+    trace_id: Option<TraceId>,      // resume/fork anchor (§19)
+    blobs: Vec<BlobHandle>,         // inbound files (§18.3)
+    extra: Value,                   // opaque caller metadata, echoed into the trace
+}
+
+pub struct Answer {
+    status: AnswerStatus,           // Success | OffTopic | Error (non_exhaustive)
+    message: String,                // the answer text (or error text)
+    trace_id: TraceId,              // the NEW trace this run persisted (§19)
+    blobs: Vec<BlobHandle>,         // outbound files, content-addressed
+    metadata: AnswerMeta,           // MANDATORY accounting
+    extra: Value,                   // agent-specific structured extras (schema-declarable, T3.4)
+}
+
+pub struct AnswerMeta {
+    duration_ms: u64,
+    cost_micro_usd: u64,            // folded from OpMeta usage × per-tier pricing (§18.4)
+    tokens_in: u64, tokens_out: u64,
+    model_calls: u32, tool_calls: u32,
+    per_tier: Vec<TierSpend>,       // selector, calls, tokens, cost
+}
+```
+
+Design rules: `AnswerMeta` is never optional — an orchestrator can always account for a call. `extra` is the narrow-waist escape hatch: agent-specific structure (e.g. `hugr-docs`' `related_documents`) rides there, optionally validated against a manifest-declared schema, never load-bearing for the contract. Errors are answers (`status: Error`, exit 0 on the CLI) so callers branch on data, not on exceptions — proven ergonomics from `hugr-docs`.
+
+### 18.2 Introspection
+
+`Agent::describe() -> AgentCard` (name, version, description, tools with privilege classes and scopes, model tiers, pricing, limits), `Agent::config()` (effective configuration with per-key provenance — default/manifest/env/flag — and redacted secrets), `Agent::traces()` (stored trace lineage). Every surface exposes these verbatim (`--describe`/`--config`/`--traces`, Python methods, MCP server info). `AgentCard` is deliberately shaped so an A2A Agent Card can be generated from it later (§21.4).
+
+### 18.3 Blob exchange
+
+`BlobHandle { ref: Bytes | Path | Sha256, media_type, perms: { read, write, execute } }`. Inbound blobs are materialized into the agent's scratchpad with the declared permission bits before the turn starts, so tools see plain files inside the jail; outbound blobs are returned by content-addressed ref into the existing `hugr-replay::BlobStore` (dedup by hash, shippable with or without the trace). Enforcement v1 is materialize-with-mode-bits inside the jail; anything stronger (bind mounts, seccomp) is a host upgrade behind the same handle type. The handles ride in `Ask`/`Answer` as typed slots — not buried in `extra` — because orchestrator↔agent file flow is part of the contract.
+
+### 18.4 Accounting
+
+Per-tier pricing (`input/output USD per M tokens`) lives in the agent definition (§20). `AnswerMeta` is computed by folding the run's trace: every model op already records selector + `Usage` + timestamps in `OpMeta` (§4.1), and sub-agent children aggregate through their recorded digests — so **cost is derivable from the trace alone**, replayable, and auditable after the fact. The scratchpad (§19.3) and the trace store are the only durable side effects of an ask.
+
+## 19. The trace store: `trace_id`, `depends_on`, forking
+
+The orchestration-facing wrapper around the existing trace machinery (§§12–16). Nothing here adds core mechanisms — it names and files what replay/fork already do.
+
+### 19.1 Store & metadata
+
+A `TraceStore` (default: a directory in the agent's data dir; the store is a host concern, so alternative backends stay possible) holds **immutable** traces keyed by generated `TraceId`. `TraceMeta` gains (serde-defaulted, so pre-existing traces load): `trace_id`, `depends_on: Option<TraceId>`, `agent_name`, `agent_version`, `created_at`, `question`, `status`. `head()` reads metadata without folding events, so listing lineage is cheap.
+
+### 19.2 Ask semantics
+
+- **No `trace_id`** → fresh brain, run the turn, persist as a new root trace, return its id.
+- **With `trace_id`** → load the parent, **re-fold** its events into a fresh brain (`EngineBuilder::resume` — zero IO beyond the file read, no model re-calls, §15.1), append the new question as a live turn, persist the result as a **new** trace with `depends_on = parent`. The parent is never mutated.
+- **Fork = ask an old id twice.** Because every follow-up writes a new immutable trace, sibling branches are the default behavior, not a feature: `root → t1 → {t2a, t2b}`. The lineage is a DAG recorded entirely in trace headers; blobs shared across branches dedupe by content hash. Immutability is what makes parallel asks race-free (§ROADMAP T3.2): concurrent forks of the same parent never contend.
+
+This deliberately reuses `AgentSeed::ForkFull` semantics (§14) at the process boundary: an ask-with-trace_id is to an orchestrator what `StartAgent { seed: ForkFull }` is to a parent brain.
+
+### 19.3 Scratchpad
+
+Each agent gets a private scratch directory exposed as ungated `scratch_read`/`scratch_write`/`scratch_list` capabilities — canonicalized and jailed to the scratch root exactly like the `hugr-docs` path discipline. Scratch state follows the trace lineage: a resumed ask sees its ancestor's notes; a fork gets a copy-on-fork view so sibling branches cannot observe each other's writes. (v1 implementation: a scratch subtree per trace, seeded by copying the parent's on fork; cheap because scratchpads are small by construction — big artifacts belong in the blob store.)
+
+### 19.4 Trace lifecycle
+
+`hugr traces` lists the lineage tree; `hugr replay`/`verify` point the existing inspector at a stored id; pruning (T3.3) must keep lineage closed — a surviving trace's `depends_on` chain up to its root always resolves. Schema migration for long-lived stores is tracked in ROADMAP T5.2.
+
+## 20. Agent definitions (`hugr-toolkit`)
+
+A subagent definition is an auditable folder — data, not code:
+
+```
+my-agent/
+  hugr.toml          # the manifest (below)
+  SYSTEM.md          # system prompt (markdown; small template-var set: name, tool list, date)
+  tools/             # optional extension points (§20.3)
+```
+
+### 20.1 The manifest
+
+```toml
+[agent]
+name = "policy-docs"
+version = "0.1.0"
+description = "Answers questions about the company travel policy."
+
+[models]
+base_url = "https://router.huggingface.co/v1"
+api_key_env = "POLICY_DOCS_API_KEY"
+[models.medium]                       # tiers: small/medium/big (§5.3)
+model = "google/gemma-4-31B-it:cerebras"
+input_usd_per_m_tokens = 1.0
+output_usd_per_m_tokens = 1.5
+
+[tools.fs_read]                       # a grant from the predefined library
+root = "./policies"                   # scope; jailed by the capability
+
+[limits]
+max_model_calls = 20
+max_cost_micro_usd = 50000
+timeout_s = 120
+```
+
+Reviewing a subagent's blast radius = reading this file: a tool that is not granted is not registered, and per §7.1 an unregistered capability **cannot** be invoked — sandbox-by-registration, not sandbox-by-policy. Unknown keys warn; every key has provenance surfaced by `--config` (§18.2).
+
+### 20.2 The predefined tool library
+
+Vetted, parameterized capabilities with declared privilege classes (read-only / mutating / network), selectable by manifest grant: `fs_read` (jailed list/search/read/read_range/read_many/outline — generalized from `hugr-docs`), `scratchpad` (§19.3), `http_fetch` (host-allowlisted, GET-only default), `sqlite_query` (read-only default, file-scoped), `pdf_read` (text/table extraction, no network — first post-v1 addition, ROADMAP T4.2). Each ships with a jail test and a written threat-model note (T3.6). The library is the 90% path; growing it is the toolkit's ongoing product work.
+
+### 20.3 Custom tools, in order of weight
+
+1. **MCP server** — `[tools.mcp.<name>] command = "..."`; reuses the existing stdio MCP client; tools appear namespaced.
+2. **Subprocess plugin** — `[tools.plugin.<name>]`; the existing `hugr-plugin-abi` contract, any language, no recompile.
+3. **Rust `Capability`** — compile-in for maximum control; requires building a surface with the crate route (§21.2).
+
+All three land in the same uniform registry — no privileged tools, no privileged extension path.
+
+### 20.4 Interpret vs bundle
+
+`hugr run <agent-dir> "question"` interprets a definition directly (the development loop). `hugr build` bundles the same definition into standalone surfaces (§21). Same `AgentDefinition`, same runtime — bundling embeds, never forks behavior; the surface conformance suite (T2.5) holds the two modes equal.
+
+## 21. Surfaces: one definition, N packagings
+
+Surface selection is a **build-time** choice (`hugr build --surface cli,crate,python,mcp`); the agent definition never mentions surfaces. Every surface is a thin serialization of the `hugr-agent` API — if a surface needs agent-specific logic, the common API has a hole and gets fixed there.
+
+### 21.1 CLI surface (the reference)
+
+Every built agent binary has the same shape: `<agent> "question" [--trace <id>] [--json|--pretty] [--describe] [--traces] [--config] [--blob <path>...]`. One JSON `Answer` on stdout, logs on stderr, always exit 0 (errors are `status: "error"` answers). This is the `hugr-docs` CLI contract promoted to universal.
+
+### 21.2 Rust crate surface
+
+A generated library crate exposing the typed `Agent` directly — Rust orchestrators embed with no serialization. This is also the substrate the other surfaces are generated from.
+
+### 21.3 Python surface
+
+A maturin/PyO3 package per agent: `answer(question, trace_id=None, blobs=None, **config_overrides) -> dict`, plus `describe()`/`traces()`. Never raises for run failures (branch on `result["status"]`); each config key falls back to its env var — the `hugr-docs` binding generalized.
+
+### 21.4 MCP server surface
+
+`<agent> --mcp-serve` runs a stdio MCP server exposing one `ask` tool (question + optional `trace_id` + blob refs) whose structured result is the full `Answer`; server info comes from `describe()`. Designed against the stateless 2026-07 MCP spec: session continuity rides our `trace_id` in the tool arguments (not MCP session state), long asks map onto the Tasks primitive, and we never use MCP sampling (deprecated) — the agent owns its provider. Future adapters (A2A with Artifacts + a usage extension; Zed's Agent Client Protocol for editors) wrap the same API; see DESIGN §8 for the standards positioning.
+
+### 21.5 Concurrency model of a packaged agent
+
+The brain is single-session; the artifact may be asked in parallel. Default: **each ask is an independent session** (own brain, own trace) — safe because traces are immutable and fork-friendly (§19.2). A long-lived serving mode with a session pool is future work; nothing in the contract precludes it.

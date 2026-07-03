@@ -2,6 +2,17 @@
 
 Running log of what's implemented, phase by phase (see `docs/ROADMAP.md`).
 
+## Pivot: the subagent toolkit (docs rewrite) ✅
+
+The project pivoted from "general agent harness with showcase apps" to **"build your subagent, ship it anywhere"** — a toolkit for tiny, self-contained, domain-specific subagents, generalizing the `hugr-docs` shape. No code changed in this step; the docs now define the new direction:
+
+- `docs/DESIGN.md` rewritten: vision, the subagent essence (system prompt + privileged tools + shared infrastructure), the trace_id/depends_on resume-and-fork orchestration contract, a researched standards positioning (MCP first; A2A later; IBM ACP is dead — merged into A2A Aug 2025; MCP sampling deprecated), and the verified gap Hugr fills (forkable deterministic traces + mandatory cost metadata + single-binary agent packaging).
+- `docs/ARCHITECTURE.md`: §§1–17 (the built core) kept; §10 crate layout updated (new `hugr-agent` + `hugr-toolkit`, parked `hugr-cli`/`hugr-wasm`); new §18 (Ask/Answer contract), §19 (trace store, fork semantics, scratchpad), §20 (declarative agent definitions + tool library), §21 (build-time surfaces: CLI/crate/Python/MCP).
+- `docs/ROADMAP.md` replaced (and `docs/ROADMAP_2.md` deleted): phases T0 (`hugr-agent` common API) → T1 (declarative toolkit) → T2 (surfaces) → T3 (orchestration hardening) → T4 (the expense-audit demo: four differently-privileged subagents + an orchestrator) → T5 (publish/harden), with per-task exit criteria.
+- `README.md` and `AGENTS.md` updated to the new framing; `hugr-cli` and `hugr-wasm` are parked as core regression hosts (kept compiling, no product work).
+
+Sections below this line predate the pivot and describe the foundation the toolkit builds on; historical `ROADMAP_2` task ids in them (and in code comments) refer to the deleted roadmap, retrievable from git history.
+
 ## Recorded sub-agent child sessions ✅
 
 Sub-agent child sessions are no longer headless: previously a child brain's events/commands/log were discarded except its final digest, making children invisible to the parent trace, replay, and verification. A recording host now captures each completed child session and nests it into the parent trace (ARCHITECTURE §12.1/§13.3). `hugr-core` is untouched — this is entirely a host + replay concern; the narrow waist knows nothing about child traces.

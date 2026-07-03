@@ -4,7 +4,9 @@ Guidance for working in the Hugr repository.
 
 ## What this is
 
-Hugr is a **runtime-free, sans-IO agent harness** in Rust. Read `docs/DESIGN.md` and `docs/ARCHITECTURE.md` before making non-trivial changes — the architecture is the product, and several decisions are deliberate one-way doors. `docs/ROADMAP.md` tracks the phased plan and per-phase exit criteria; `PROGRESS.md` tracks what is actually built.
+Hugr is a **toolkit for building tiny, self-contained, domain-specific subagents** — "build your subagent, ship it anywhere" — on a runtime-free, sans-IO Rust core. A subagent is a system prompt + a set of tools with declared privileges; Hugr packages that definition (with traces, forking, a scratchpad, blob exchange, and cost accounting built in) as a binary, Rust crate, Python module, or MCP server, all exposing the same ask/answer contract. Read `docs/DESIGN.md` and `docs/ARCHITECTURE.md` before making non-trivial changes — the architecture is the product, and several decisions are deliberate one-way doors. `docs/ROADMAP.md` tracks the phased plan (T0–T5) and per-phase exit criteria; `PROGRESS.md` tracks what is actually built.
+
+Two crates are **parked** (no product work; kept compiling as core regression hosts): `hugr-cli` (the general coding agent) and `hugr-wasm` (the Chrome extension). Don't grow their feature surface; do keep their tests green.
 
 ## The one rule that matters most
 
@@ -60,14 +62,28 @@ crates/hugr-host/       # default native host (tokio, IO) — Phase 1
   src/capabilities/  # shell, fs_read, fs_write, http, blob (content-addressed store)
 
 crates/hugr-providers/  # model adapters — OpenAiAdapter (streaming)
-crates/hugr-cli/        # the `hugr` binary (~10 lines on top of hugr-host)
 
-crates/hugr-replay/     # versioned, portable trace format (save/load) — Phase 3
-  src/lib.rs         # Trace { meta, events, log, blobs }; std::fs save/load
+crates/hugr-replay/     # versioned, portable trace format (save/load)
+  src/lib.rs         # Trace { meta, events, log, commands, blobs, children }
   src/blob.rs        # BlobStore: disk-backed content-addressed (sha256) store
+
+crates/hugr-agent/      # NEW (ROADMAP T0): the common subagent API — Ask/Answer
+                        #   contract, TraceStore (trace_id/depends_on, fork),
+                        #   scratchpad, blob exchange, cost accounting (ARCHITECTURE §18–19)
+crates/hugr-toolkit/    # NEW (ROADMAP T1–T2): declarative agent definitions
+                        #   (hugr.toml + SYSTEM.md), the predefined tool library,
+                        #   the `hugr` builder CLI (ARCHITECTURE §20–21)
+
+crates/hugr-docs/       # the prototype subagent (docs Q&A; CLI + Python);
+                        #   being rebuilt on hugr-agent/hugr-toolkit (T0.8/T1.6)
+crates/hugr-plugin-abi/ # versioned plugin contract + subprocess transport
+crates/hugr-cli/        # PARKED: general coding-agent CLI (regression host)
+crates/hugr-wasm/       # PARKED: browser/WASM host + Chrome extension (regression host)
 ```
 
-`hugr-plugin-abi` (Phase 5, the versioned plugin contract + subprocess transport) and `hugr-wasm` (Phase 4, the browser/JS binding — the same brain compiled to WASM, driving the Chrome extension in `crates/hugr-wasm/extension/`) now exist too; the remaining crates in `ARCHITECTURE.md` §10 (`hugr-py`, `hugr-js`) arrive in later phases. `hugr-replay` is a host-side **persistence** crate — it may use `std::fs`, but it depends on `hugr-core` as *pure data only* and never pulls IO into the core. **Never add environmental dependencies to `hugr-core`** to make a host easier; put them in the host crate. All IO/HTTP/shell/clock work lives in `hugr-host` (or another host), never in the core.
+`hugr-replay` is a host-side **persistence** crate — it may use `std::fs`, but it depends on `hugr-core` as *pure data only* and never pulls IO into the core. The new layers stack strictly: `hugr-agent` on `hugr-host` + `hugr-replay`; `hugr-toolkit` on `hugr-agent`; generated surfaces on top. None of them reach into `hugr-core` internals — they are hosts like any other. **Never add environmental dependencies to `hugr-core`** to make a host easier; put them in the host crate. All IO/HTTP/shell/clock work lives in `hugr-host` (or another host), never in the core.
+
+Subagent-layer conventions (ARCHITECTURE §18–21): the `Ask`/`Answer` contract is the one-way door — `AnswerMeta` (cost/duration/tokens/trace_id) is mandatory, errors are answers (`status: error`, exit 0), and agent-specific structure rides `Answer.extra`, never new contract fields. Traces are immutable; a resumed ask writes a **new** trace with `depends_on` set. Tools are granted in the manifest and jailed to their declared scope — sandbox-by-registration, so never register a capability the manifest doesn't grant.
 
 When extending the host: capabilities are uniform (no privileged built-ins — shell/fs/http are ordinary `Capability`s); a model call is "an effect the host provides" registered like a capability; transport errors (retries, 429s) are the adapter's job, semantic errors route back to the model as tool results.
 

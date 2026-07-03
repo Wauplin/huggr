@@ -404,17 +404,6 @@ fn perform_child(
             });
         }
 
-        Command::AskUser { op, .. } => {
-            // Sub-agents are non-interactive: there is no user at this layer.
-            // Answer with a semantic error so the child's model can react.
-            let answer = json!({ "error": "ask_user_unsupported_in_sub_agent" });
-            let _ = ctx.tx.send(Event::UserAnswer {
-                op,
-                est_tokens: estimate_value_tokens(&answer),
-                answer,
-            });
-        }
-
         Command::Cancel { op } => {
             if let Some(handle) = handles.remove(&op) {
                 handle.abort();

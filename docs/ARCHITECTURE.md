@@ -44,11 +44,6 @@ pub enum Command {
     /// there are NO privileged built-ins.
     StartCapability { op: OpId, name: CapabilityName, args: Value },
 
-    /// Ask the user something (free-form input, choice, confirmation).
-    /// Defined but currently dormant: no reducer path emits it yet; hosts
-    /// handle the command generically when/if it appears.
-    AskUser { op: OpId, prompt: UserPrompt },
-
     /// Request permission for a pending action; host's policy decides.
     RequestPermission { op: OpId, request: PermissionRequest },
 
@@ -89,9 +84,6 @@ pub enum Event {
     CapabilityDone  { op: OpId, result: Value },
     CapabilityError { op: OpId, error: CapabilityError },
 
-    /// User answered an AskUser.
-    UserAnswer { op: OpId, answer: Value },
-
     /// Policy decided a permission request.
     PermissionDecision { op: OpId, decision: Decision },
 
@@ -116,7 +108,6 @@ loop {
         match cmd {
             Command::StartModelCall { op, request } => host.spawn_model(op, request),
             Command::StartCapability { op, name, args } => host.spawn_capability(op, name, args),
-            Command::AskUser { op, prompt } => host.spawn_ask(op, prompt),
             Command::RequestPermission { op, request } => host.spawn_policy(op, request),
             Command::Cancel { op } => host.abort(op),
             Command::Emit(ev) => host.render(ev),
@@ -258,7 +249,6 @@ pub struct BrainState {
 pub enum OpState {
     Model { buffer: PartialModelOutput },   // accumulates ModelDelta
     Capability { kind: CapabilityName, buffer: Vec<Value> },
-    AwaitingUser { prompt: UserPrompt },
     AwaitingPermission { request: PermissionRequest },
 }
 ```
@@ -313,7 +303,7 @@ This also keeps replay (§6) cheap and clean: replay feeds the consolidated `Mod
 
 1. **Conversational input** — a new instruction, possibly rich (text + images + file refs + pasted blobs).
 2. **Control signals** — abort/interrupt, pause/resume. No new content, just "stop."
-3. **Responses to brain asks** — `UserAnswer` (to `AskUser`) and `PermissionDecision`; these only arrive when the brain is waiting for them.
+3. **Responses to brain asks** — `PermissionDecision`; it only arrives when the brain is waiting for it.
 4. **Session operations** — rewind/fork-at-seq, edit-and-resume, switch model/policy/permission-mode. These are *host actions on the log* (built on fork, §14), not ordinary reducer events.
 
 Because conversational input can arrive **while a model/tool op is in flight**, the reducer has an explicit "input while ops in flight" arm. Three steering mechanisms, all supported by the brain; the *choice* is a flag/policy, never hardcoded:

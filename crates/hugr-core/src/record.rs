@@ -65,6 +65,7 @@ pub enum SummaryCoverage {
 /// One ordered, timestamped entry in the append-only log. Prefer constructing
 /// via [`LogEntry::new`] (ARCHITECTURE §2.4).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct LogEntry {
     /// Host-assigned global order (also the replay key).
     pub seq: Seq,

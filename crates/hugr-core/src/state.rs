@@ -312,8 +312,6 @@ pub enum OpKind {
         args: Value,
         call_id: String,
     },
-    /// A pending `AskUser` awaiting the user's answer.
-    AwaitingUser,
     /// A sub-agent op in progress (ARCHITECTURE §13). Like a capability it
     /// blocks the turn and returns a tool-result-shaped value; it carries the
     /// originating model `tool_call` id so its result correlates (§13.1).
@@ -362,14 +360,14 @@ impl OpKind {
     }
 
     /// Whether this op is something a model turn is waiting on (a foreground
-    /// tool, a pending permission, a sub-agent, or a user answer) — as opposed
-    /// to a model op or a **background** capability. Used to decide when to
-    /// resume the turn: a background op runs *alongside* the model stream, so it
-    /// must not hold the turn open.
+    /// tool, a pending permission, or a sub-agent) — as opposed to a model op
+    /// or a **background** capability. Used to decide when to resume the turn:
+    /// a background op runs *alongside* the model stream, so it must not hold
+    /// the turn open.
     pub(crate) fn blocks_turn(&self) -> bool {
         match self {
             OpKind::Capability { background, .. } => !background,
-            OpKind::AwaitingPermission { .. } | OpKind::Agent { .. } | OpKind::AwaitingUser => true,
+            OpKind::AwaitingPermission { .. } | OpKind::Agent { .. } => true,
             OpKind::Model { .. } | OpKind::Compaction { .. } => false,
         }
     }

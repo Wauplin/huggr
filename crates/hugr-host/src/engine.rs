@@ -827,16 +827,6 @@ impl Engine {
                 });
             }
 
-            Command::AskUser { op, prompt } => {
-                let answer = ask_user(&prompt.message).await;
-                let est_tokens = estimate_text_tokens(&answer);
-                let _ = self.tx.send(Event::UserAnswer {
-                    op,
-                    answer: Value::String(answer),
-                    est_tokens,
-                });
-            }
-
             Command::Cancel { op } => {
                 if let Some(handle) = self.tasks.remove(&op) {
                     handle.abort();
@@ -890,21 +880,6 @@ impl Drop for Engine {
         // since the last completed write, or when checkpointing is off.
         self.flush_checkpoint_sync();
     }
-}
-
-/// Prompt the user for a free-form answer (off the async runtime threads).
-async fn ask_user(message: &str) -> String {
-    let message = message.to_string();
-    tokio::task::spawn_blocking(move || {
-        use std::io::Write;
-        print!("{message} ");
-        let _ = std::io::stdout().flush();
-        let mut line = String::new();
-        let _ = std::io::stdin().read_line(&mut line);
-        line.trim().to_string()
-    })
-    .await
-    .unwrap_or_default()
 }
 
 fn system_clock() -> u64 {

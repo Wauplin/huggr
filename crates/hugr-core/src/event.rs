@@ -133,12 +133,6 @@ pub enum Event {
     },
 
     // --- brain asks ----------------------------------------------------------
-    UserAnswer {
-        op: OpId,
-        answer: Value,
-        #[serde(default)]
-        est_tokens: u32,
-    },
     PermissionDecision {
         op: OpId,
         decision: Decision,

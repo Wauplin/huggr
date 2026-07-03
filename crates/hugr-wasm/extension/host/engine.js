@@ -157,8 +157,6 @@ export class Engine {
         return this.startCapability(body);
       case "RequestPermission":
         return this.requestPermission(body);
-      case "AskUser":
-        return this.askUser(body);
       case "Cancel":
         return this.cancel(body);
       case "Emit":
@@ -289,13 +287,6 @@ export class Engine {
     } catch (e) {
       return { Deny: { reason: `auto-approve judge failed: ${e?.message || e}` } };
     }
-  }
-
-  askUser({ op, prompt }) {
-    (async () => {
-      const answer = await this.frontend.ask(prompt.message);
-      this.pushEvent({ UserAnswer: { op, answer, est_tokens: estimateValueTokens(answer) } });
-    })();
   }
 
   cancel({ op }) {

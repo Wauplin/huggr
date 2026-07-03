@@ -48,10 +48,6 @@ pub enum Command {
         seed: Vec<LogEntry>,
     },
 
-    /// Ask the user a free-form question. Answered by
-    /// [`Event::UserAnswer`](crate::Event::UserAnswer).
-    AskUser { op: OpId, prompt: UserPrompt },
-
     /// Request permission for a pending action; the host's policy decides and
     /// replies with [`Event::PermissionDecision`](crate::Event::PermissionDecision).
     RequestPermission {
@@ -73,15 +69,6 @@ pub enum Command {
 
     /// The turn/session reached a terminal state.
     Done { reason: DoneReason },
-}
-
-/// A free-form question for the user. Kept minimal in Phase 0; `detail` is an
-/// opaque blob a richer front-end can interpret.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct UserPrompt {
-    pub message: String,
-    pub detail: Value,
 }
 
 /// A request for the host's policy to decide. Carries a typed outcome channel

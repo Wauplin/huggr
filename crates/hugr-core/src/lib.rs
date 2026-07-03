@@ -51,7 +51,7 @@ mod record;
 mod state;
 
 pub use brain::Brain;
-pub use command::{Command, DoneReason, OutputEvent, PermissionRequest, UserPrompt};
+pub use command::{Command, DoneReason, OutputEvent, PermissionRequest};
 pub use event::{Decision, Event, HookPhase, SteerMode, Version, VersionRef};
 pub use model::{
     ContentPart, ContextBlock, ContextBudgetTotals, ContextCacheHint, ContextDisposition,

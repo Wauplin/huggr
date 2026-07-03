@@ -1577,10 +1577,10 @@ mod tests {
 
     #[test]
     fn missing_final_answer_reports_terminal_error() {
-        let log = vec![LogEntry {
-            seq: Seq(0),
-            at: Timestamp(0),
-            record: serde_json::from_value(json!({
+        let log = vec![LogEntry::new(
+            Seq(0),
+            Timestamp(0),
+            serde_json::from_value(json!({
                 "OpEnded": {
                     "op": 7,
                     "outcome": { "Error": { "message": "provider rejected tools" } },
@@ -1594,7 +1594,7 @@ mod tests {
                 }
             }))
             .unwrap(),
-        }];
+        )];
         let message = missing_final_answer_message(&log);
         assert!(message.contains("model operation 7 failed: provider rejected tools"));
     }
@@ -1612,15 +1612,15 @@ mod tests {
     }
 
     fn model_output_entry(seq: u64, text: &str) -> LogEntry {
-        LogEntry {
-            seq: Seq(seq),
-            at: Timestamp(seq),
-            record: Record::ModelOutput {
+        LogEntry::new(
+            Seq(seq),
+            Timestamp(seq),
+            Record::ModelOutput {
                 op: OpId(seq),
                 output: ModelOutput::text(text.to_string()),
                 est_tokens: 0,
             },
-        }
+        )
     }
 
     #[test]
@@ -1652,10 +1652,10 @@ mod tests {
 
     #[test]
     fn build_answer_error_for_missing_final_answer() {
-        let log = vec![LogEntry {
-            seq: Seq(0),
-            at: Timestamp(0),
-            record: serde_json::from_value(json!({
+        let log = vec![LogEntry::new(
+            Seq(0),
+            Timestamp(0),
+            serde_json::from_value(json!({
                 "OpEnded": {
                     "op": 7,
                     "outcome": { "Error": { "message": "provider rejected tools" } },
@@ -1669,7 +1669,7 @@ mod tests {
                 }
             }))
             .unwrap(),
-        }];
+        )];
         let config = test_config();
         let answer = build_answer(&log, &config, Duration::from_millis(10)).unwrap();
         assert_eq!(answer.status, DocsStatus::Error);
@@ -1892,10 +1892,10 @@ mod tests {
     }
 
     fn tool_result(seq: u64, name: &str, result: Value) -> LogEntry {
-        LogEntry {
-            seq: Seq(seq),
-            at: Timestamp(seq),
-            record: Record::ToolResult {
+        LogEntry::new(
+            Seq(seq),
+            Timestamp(seq),
+            Record::ToolResult {
                 op: OpId(seq),
                 name: name.to_string(),
                 call_id: format!("call-{seq}"),
@@ -1903,6 +1903,6 @@ mod tests {
                 version: None,
                 est_tokens: 0,
             },
-        }
+        )
     }
 }

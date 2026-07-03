@@ -159,11 +159,6 @@ impl Brain {
                 est_tokens,
             } => self.on_agent_error(op, error, est_tokens),
 
-            Event::UserAnswer {
-                op,
-                answer,
-                est_tokens,
-            } => self.on_user_answer(op, answer, est_tokens),
             Event::PermissionDecision {
                 op,
                 decision,
@@ -417,12 +412,6 @@ impl Brain {
 
     fn on_agent_error(&mut self, op: OpId, error: Value, est_tokens: u32) {
         self.finish_tool_result(op, error.clone(), None, OpOutcome::Error(error), est_tokens);
-    }
-
-    fn on_user_answer(&mut self, op: OpId, answer: Value, est_tokens: u32) {
-        // The answer to an `AskUser` becomes a tool-result-shaped value the next
-        // model turn consumes.
-        self.finish_tool_result(op, answer, None, OpOutcome::Ok, est_tokens);
     }
 
     fn on_permission_decision(&mut self, op: OpId, decision: Decision, est_tokens: u32) {
@@ -966,7 +955,7 @@ impl Brain {
     fn append(&mut self, record: Record) {
         let seq = crate::primitives::Seq(self.state.alloc_seq());
         let at = self.state.now();
-        self.state.push_log(LogEntry { seq, at, record });
+        self.state.push_log(LogEntry::new(seq, at, record));
     }
 
     /// End an op: build its [`OpMeta`] from the in-flight entry, remove it, and

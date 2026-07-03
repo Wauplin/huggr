@@ -626,29 +626,6 @@ class Frontend {
     logEl.appendChild(card);
     scrollDown();
   }
-
-  ask(message) {
-    return new Promise((resolve) => {
-      const card = el("div", "prompt");
-      card.appendChild(el("div", "prompt-title", message));
-      const input = el("input", "prompt-input");
-      const row = el("div", "prompt-actions");
-      const btn = el("button", "btn primary", "Send");
-      const submit = () => {
-        btn.disabled = true;
-        input.disabled = true;
-        resolve(input.value);
-      };
-      btn.addEventListener("click", submit);
-      input.addEventListener("keydown", (e) => e.key === "Enter" && submit());
-      row.appendChild(input);
-      row.appendChild(btn);
-      card.appendChild(row);
-      logEl.appendChild(card);
-      input.focus();
-      scrollDown();
-    });
-  }
 }
 
 // ---------------------------------------------------------------------------

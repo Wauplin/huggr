@@ -7,6 +7,7 @@ members = [
     "crates/hugr-cli",
     "crates/hugr-docs",
     "crates/hugr-replay",
+    "crates/hugr-agent",
     "crates/hugr-plugin-abi",
     "crates/hugr-example-plugin",
     "crates/hugr-wasm",
@@ -42,6 +43,7 @@ hugr-core = { path = "crates/hugr-core" }
 hugr-host = { path = "crates/hugr-host" }
 hugr-providers = { path = "crates/hugr-providers" }
 hugr-replay = { path = "crates/hugr-replay" }
+hugr-agent = { path = "crates/hugr-agent" }
 hugr-plugin-abi = { path = "crates/hugr-plugin-abi" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }

@@ -1,0 +1,12 @@
+[package]
+name = "hugr-agent"
+description = "The common subagent runtime API: the Ask/Answer contract, trace store, scratchpad, blob exchange, and cost accounting (ARCHITECTURE §18–19)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

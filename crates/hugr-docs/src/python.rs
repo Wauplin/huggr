@@ -6,6 +6,7 @@ use pyo3::prelude::*;
 use crate::{DocsConfigOptions, answer_with_options};
 
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
 #[pyo3(signature = (
     question,
     docs_path=None,
@@ -29,7 +30,7 @@ fn answer(
         Some(path) => PathBuf::from(path),
         None => std::env::var_os("HUGR_DOCS_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::new()),
+            .unwrap_or_default(),
     };
     let options = DocsConfigOptions {
         api_key: api_key.map(str::to_string),

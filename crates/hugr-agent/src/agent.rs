@@ -22,7 +22,9 @@
 //! (an unknown parent id, a store write error) return [`AskError`]; surfaces
 //! convert those to error answers at their own boundary (T0.8).
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use hugr_core::{LogEntry, ModelSelector, Record, SamplingParams};
@@ -30,7 +32,18 @@ use hugr_host::policy::AllowAll;
 use hugr_host::{Capability, Clock, Engine, Frontend, ModelAdapter, Policy};
 
 use crate::contract::{Answer, AnswerMeta, AnswerStatus, Ask, TraceId};
+use crate::scratch::{ScratchDir, copy_tree};
 use crate::store::{StoreError, TraceHeader, TraceStore};
+
+/// Default name of the scratch subtree directory, placed next to the trace
+/// files inside the store root. Hidden and non-`.json`, so `TraceStore::list`
+/// skips it.
+const DEFAULT_SCRATCH_DIRNAME: &str = ".scratch";
+
+/// Working subtrees (one per in-flight ask) live under this child of the
+/// scratch root until the ask's trace is persisted and the copy is finalized to
+/// its own `<trace_id>` subtree.
+const PENDING_DIRNAME: &str = ".pending";
 
 /// A configured subagent: ask it questions, get [`Answer`]s, resume or fork
 /// any stored trace. Build one with [`Agent::builder`].
@@ -49,6 +62,12 @@ pub struct Agent {
     policy: Arc<dyn Policy>,
     sampling: Option<SamplingParams>,
     clock: Option<Clock>,
+    /// Root of the per-lineage scratchpad subtree (ARCHITECTURE §19.3).
+    scratch_root: PathBuf,
+    /// Monotonic counter naming each ask's pending working directory — the one
+    /// piece of host-side nondeterminism, kept off the trace (scratch content
+    /// never enters the log; results carry only relative paths).
+    next_scratch: Arc<AtomicU64>,
 }
 
 impl Agent {
@@ -70,6 +89,7 @@ impl Agent {
             policy: None,
             sampling: None,
             clock: None,
+            scratch_root: None,
         }
     }
 
@@ -115,6 +135,15 @@ impl Agent {
             let trace = self.store.get(parent_id)?;
             builder = builder.resume(trace);
         }
+
+        // Per-lineage scratchpad (§19.3): a fresh working subtree, seeded by
+        // copying the parent's finalized subtree on resume/fork — so this ask
+        // sees the ancestor's notes but never a sibling's writes.
+        let (scratch, working_dir) = self.prepare_scratch(parent.as_ref())?;
+        for capability in scratch.capabilities() {
+            builder = builder.capability(capability);
+        }
+
         let mut engine = builder.build();
 
         // Accounting baseline: on resume the brain's log already holds the
@@ -144,7 +173,56 @@ impl Agent {
         }
         let trace_id = self.store.put(trace, header)?;
 
+        // Finalize the working subtree under the new trace's id so a later
+        // resume/fork of *this* trace can seed from it (§19.3). Scratch is
+        // never recorded, so this move happens after the trace is persisted.
+        self.finalize_scratch(&working_dir, &trace_id)?;
+
         Ok(Answer::new(status, message, trace_id, metadata))
+    }
+
+    /// Create this ask's working scratch directory (a fresh `.pending/<n>`
+    /// subtree) and, when resuming a parent, seed it with a copy of the
+    /// parent's finalized subtree (copy-on-fork, §19.3). Returns the jailed
+    /// [`ScratchDir`] for the tools plus the working path for finalization.
+    fn prepare_scratch(&self, parent: Option<&TraceId>) -> Result<(ScratchDir, PathBuf), AskError> {
+        let n = self.next_scratch.fetch_add(1, Ordering::SeqCst);
+        let working = self
+            .scratch_root
+            .join(PENDING_DIRNAME)
+            .join(format!("{}-{n}", std::process::id()));
+        // A stale working dir from a crashed prior run must not leak in.
+        if working.exists() {
+            std::fs::remove_dir_all(&working)?;
+        }
+        if let Some(parent_id) = parent {
+            let parent_scratch = self.scratch_root.join(parent_id.as_str());
+            if parent_scratch.exists() {
+                copy_tree(&parent_scratch, &working)?;
+            } else {
+                std::fs::create_dir_all(&working)?;
+            }
+        } else {
+            std::fs::create_dir_all(&working)?;
+        }
+        let scratch = ScratchDir::new(&working)?;
+        Ok((scratch, working))
+    }
+
+    /// Move this ask's working subtree to its final `<trace_id>` home so the
+    /// lineage persists. A same-filesystem rename (both are under the scratch
+    /// root); trace ids are unique, but any pre-existing target is cleared
+    /// first so the move can't fail on a stray directory.
+    fn finalize_scratch(&self, working: &PathBuf, trace_id: &TraceId) -> Result<(), AskError> {
+        let final_dir = self.scratch_root.join(trace_id.as_str());
+        if final_dir.exists() {
+            std::fs::remove_dir_all(&final_dir)?;
+        }
+        if let Some(parent) = final_dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(working, &final_dir)?;
+        Ok(())
     }
 }
 
@@ -162,6 +240,7 @@ pub struct AgentBuilder {
     policy: Option<Arc<dyn Policy>>,
     sampling: Option<SamplingParams>,
     clock: Option<Clock>,
+    scratch_root: Option<PathBuf>,
 }
 
 impl AgentBuilder {
@@ -213,7 +292,18 @@ impl AgentBuilder {
         self
     }
 
+    /// Override the per-lineage scratchpad root (ARCHITECTURE §19.3). Defaults
+    /// to a hidden `.scratch` subtree inside the trace store root, so a store
+    /// dir carries its agents' scratch lineage alongside the traces.
+    pub fn scratch_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.scratch_root = Some(root.into());
+        self
+    }
+
     pub fn build(self) -> Agent {
+        let scratch_root = self
+            .scratch_root
+            .unwrap_or_else(|| self.store.root().join(DEFAULT_SCRATCH_DIRNAME));
         Agent {
             name: self.name,
             version: self.version,
@@ -225,6 +315,8 @@ impl AgentBuilder {
             policy: self.policy.unwrap_or_else(|| Arc::new(AllowAll)),
             sampling: self.sampling,
             clock: self.clock,
+            scratch_root,
+            next_scratch: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -238,6 +330,11 @@ pub enum AskError {
     /// persisted.
     #[error(transparent)]
     Store(#[from] StoreError),
+
+    /// The per-lineage scratchpad subtree (§19.3) could not be prepared,
+    /// seeded, or finalized on disk.
+    #[error("scratchpad IO error: {0}")]
+    Scratch(#[from] std::io::Error),
 }
 
 /// The parent id an [`AskError::Store`] not-found refers to, if any — a small

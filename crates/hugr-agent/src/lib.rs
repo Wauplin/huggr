@@ -18,6 +18,7 @@
 
 mod agent;
 mod contract;
+mod scratch;
 mod store;
 
 pub use agent::{Agent, AgentBuilder, AskError};

@@ -1,0 +1,94 @@
+# Reference `hugr.toml` — the complete, documented Hugr agent manifest.
+#
+# A subagent definition is an auditable folder (ARCHITECTURE §20):
+#
+#   my-agent/
+#     hugr.toml    # this file
+#     SYSTEM.md    # the system prompt (markdown; template vars: name, tool list, date)
+#     tools/       # optional extension points (§20.3)
+#
+# Reviewing a subagent's blast radius = reading this file. A tool that is not
+# granted is not registered, and an unregistered capability cannot be invoked
+# (sandbox-by-registration, §7.1). Unknown keys warn but never fail the parse.
+
+# ---------------------------------------------------------------------------
+# [agent] — identity (required). `name` must be non-empty.
+# ---------------------------------------------------------------------------
+[agent]
+name = "policy-docs"
+version = "0.1.0"
+description = "Answers questions about the company travel policy."
+
+# ---------------------------------------------------------------------------
+# [models] — provider settings + one nested table per logical tier
+# (small / medium / big, §5.3). At least one tier is required. The secret is
+# never in the manifest: `api_key_env` names the environment variable to read.
+# `default` picks the tier the turn policy calls (falls back to `medium`, then
+# the first tier).
+# ---------------------------------------------------------------------------
+[models]
+base_url = "https://router.huggingface.co/v1"
+api_key_env = "POLICY_DOCS_API_KEY"
+default = "medium"
+
+[models.medium]
+model = "google/gemma-4-31B-it:cerebras"
+input_usd_per_m_tokens = 1.0     # optional: feeds AnswerMeta.cost_micro_usd
+output_usd_per_m_tokens = 1.5
+temperature = 0.2                # optional sampling knobs
+top_p = 0.95
+max_tokens = 2048
+
+# ---------------------------------------------------------------------------
+# [tools.<name>] — grants from the predefined tool library (§20.2). The scope
+# keys are tool-specific (and never unknown-key-checked). A tool is jailed to
+# the scope declared here.
+# ---------------------------------------------------------------------------
+[tools.fs_read]
+root = "./policies"              # read/list/search jailed to this folder
+
+# [tools.sqlite_query]
+# file = "./expenses.db"         # read-only, file-scoped
+
+# [tools.http_fetch]
+# allow_hosts = ["api.example.com"]   # GET-only, host-allowlisted
+
+# --- External tools (§20.3), in order of weight -----------------------------
+
+# A stdio MCP server; its tools appear namespaced (reuses the C1 client).
+# [tools.mcp.docs]
+# command = "docs-mcp"
+# args = ["--stdio"]
+
+# A subprocess plugin via hugr-plugin-abi (any language, no recompile).
+# [tools.plugin.linter]
+# command = "./plugins/linter"
+
+# Another Hugr agent granted as a tool (§20.5): delegation attenuates
+# privileges and the child's cost folds into this agent's AnswerMeta.
+# [tools.agent.receipts]
+# ref = "receipts"                 # registry name, definition folder, or artifact
+# grants = ["expenses:read"]       # resource-group grants forwarded, attenuated
+# max_cost_micro_usd = 20000       # child budget
+
+# ---------------------------------------------------------------------------
+# [limits] — declared runtime limits (enforcement: ROADMAP T3.1).
+# ---------------------------------------------------------------------------
+[limits]
+max_model_calls = 20
+max_cost_micro_usd = 50000
+timeout_s = 120
+
+# ---------------------------------------------------------------------------
+# [scratchpad] — per-lineage scratch directory (§19.3). Optional; defaults to a
+# hidden subtree of the trace store.
+# ---------------------------------------------------------------------------
+[scratchpad]
+# root = "./.scratch"
+
+# ---------------------------------------------------------------------------
+# [traces] — immutable trace store location (§19.1). Optional; defaults per
+# surface.
+# ---------------------------------------------------------------------------
+[traces]
+# store = "./.traces"

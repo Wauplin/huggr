@@ -103,7 +103,7 @@ async fn run(args: RunArgs) {
         eprintln!("warning: {}", warning.message);
     }
 
-    let (agent, warnings) = match build_agent(&def) {
+    let (agent, warnings) = match build_agent(&def).await {
         Ok(built) => built,
         Err(err) => return print_error(err.to_string(), started),
     };

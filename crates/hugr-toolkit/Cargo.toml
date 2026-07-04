@@ -10,6 +10,11 @@ rust-version.workspace = true
 [lib]
 name = "hugr_toolkit"
 
+# The `hugr` builder CLI (ROADMAP T1.3+): `hugr run <agent-dir> "question"`.
+[[bin]]
+name = "hugr"
+path = "src/bin/hugr.rs"
+
 [features]
 default = []
 # `sqlite_query` (ROADMAP T1.2) needs rusqlite's bundled SQLite. It is an opt-in
@@ -36,6 +41,12 @@ async-trait = { workspace = true }
 anyhow = { workspace = true }
 # http_fetch (allowlisted, GET-only) reuses the workspace reqwest client.
 reqwest = { workspace = true }
+# `hugr run` (ROADMAP T1.3) assembles a hugr-agent runtime from a definition and
+# executes one ask over the native engine with the OpenAI-compatible adapter.
+hugr-agent = { workspace = true }
+hugr-providers = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
 # sqlite_query (read-only, file-scoped) needs rusqlite. `bundled` compiles
 # SQLite in so agents need no system library; opened read-only, ATTACH is
 # rejected. Kept commented (with the matching `sqlite` feature declaring

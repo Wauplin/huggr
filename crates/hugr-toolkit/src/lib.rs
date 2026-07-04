@@ -13,6 +13,7 @@
 //! [manifest]: crate::manifest
 
 pub mod manifest;
+pub mod runtime;
 pub mod tools;
 
 pub use manifest::{

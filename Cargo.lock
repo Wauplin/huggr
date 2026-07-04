@@ -541,8 +541,11 @@ version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
+ "clap",
+ "hugr-agent",
  "hugr-core",
  "hugr-host",
+ "hugr-providers",
  "reqwest",
  "serde",
  "serde_json",

@@ -305,6 +305,11 @@ pub struct Answer {
     /// never load-bearing for the contract.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub extra: Value,
+    /// Advisory, non-fatal notices about this answer — e.g. `extra` failing its
+    /// manifest-declared schema (ROADMAP T3.4). Never load-bearing; empty by
+    /// default, so the wire form is unchanged for callers that emit no warnings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl Answer {
@@ -322,6 +327,7 @@ impl Answer {
             blobs: Vec::new(),
             metadata,
             extra: Value::Null,
+            warnings: Vec::new(),
         }
     }
 
@@ -334,6 +340,12 @@ impl Answer {
     /// Attach agent-specific structured extras.
     pub fn with_extra(mut self, extra: Value) -> Self {
         self.extra = extra;
+        self
+    }
+
+    /// Attach advisory, non-fatal warnings.
+    pub fn with_warnings(mut self, warnings: Vec<String>) -> Self {
+        self.warnings = warnings;
         self
     }
 }

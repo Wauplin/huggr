@@ -9,7 +9,7 @@
 //!   name, a tier with no model) point at the offending key
 //!   ([`ManifestError::Validate`]).
 //! - **Unknown-key warnings, not failures.** A typo in a fixed-schema section
-//!   (`[agent]`, `[limits]`, `[scratchpad]`, `[traces]`) or an unrecognized
+//!   (`[agent]`, `[limits]`, `[scratchpad]`, `[traces]`, `[answer]`) or an unrecognized
 //!   top-level table is collected into [`AgentDefinition::warnings`] rather than
 //!   rejected — reviewers still get a parse, and the definition still runs.
 //!   Tier names under `[models]` and scope keys under `[tools.<name>]` are
@@ -56,6 +56,8 @@ pub struct AgentDefinition {
     pub scratchpad: ScratchpadConfig,
     /// Trace-store configuration (`[traces]`).
     pub traces: TracesConfig,
+    /// Structured-answer-extra configuration (`[answer]`, ROADMAP T3.4).
+    pub answer: AnswerConfig,
     /// The `SYSTEM.md` system prompt, if present beside the manifest.
     pub system_prompt: Option<String>,
     /// The folder the definition was loaded from ([`AgentDefinition::load`]).
@@ -174,6 +176,19 @@ pub struct TracesConfig {
     /// Directory the immutable trace store lives in; defaults per surface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<String>,
+}
+
+/// The `[answer]` block (ROADMAP T3.4): an optional JSON schema for
+/// `Answer.extra`, validated post-hoc (violations warn, never fail). Give the
+/// schema inline as `extra_schema = { … }` or point at a `.json` file with
+/// `extra_schema_file = "…"` (resolved against the definition folder).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct AnswerConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_schema: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_schema_file: Option<String>,
 }
 
 /// A non-fatal diagnostic (an unknown key). Carries a resolved source location
@@ -305,6 +320,7 @@ impl AgentDefinition {
         let scratchpad: ScratchpadConfig =
             parse_section(&table, "scratchpad", src, path, &mut warnings)?;
         let traces: TracesConfig = parse_section(&table, "traces", src, path, &mut warnings)?;
+        let answer: AnswerConfig = parse_section(&table, "answer", src, path, &mut warnings)?;
 
         warn_unknown_top_level(&table, src, &mut warnings);
 
@@ -315,6 +331,7 @@ impl AgentDefinition {
             limits,
             scratchpad,
             traces,
+            answer,
             system_prompt: None,
             source_dir: None,
             warnings,
@@ -604,6 +621,9 @@ impl KnownKeys for ScratchpadConfig {
 impl KnownKeys for TracesConfig {
     const KNOWN_KEYS: &'static [&'static str] = &["store"];
 }
+impl KnownKeys for AnswerConfig {
+    const KNOWN_KEYS: &'static [&'static str] = &["extra_schema", "extra_schema_file"];
+}
 
 fn warn_unknown_keys(
     table: &toml::Table,
@@ -623,7 +643,15 @@ fn warn_unknown_keys(
 }
 
 fn warn_unknown_top_level(table: &toml::Table, src: &str, warnings: &mut Vec<Warning>) {
-    const KNOWN: &[&str] = &["agent", "models", "tools", "limits", "scratchpad", "traces"];
+    const KNOWN: &[&str] = &[
+        "agent",
+        "models",
+        "tools",
+        "limits",
+        "scratchpad",
+        "traces",
+        "answer",
+    ];
     for key in table.keys() {
         if !KNOWN.contains(&key.as_str()) {
             warnings.push(Warning {
@@ -659,6 +687,27 @@ model = "google/gemma-4-31B-it"
         assert_eq!(def.default_tier(), Some("medium"));
         assert!(def.warnings.is_empty());
         assert!(def.tools.is_empty());
+    }
+
+    #[test]
+    fn answer_extra_schema_parses_inline() {
+        let src = r#"
+[agent]
+name = "docs"
+[models.medium]
+model = "m"
+[answer.extra_schema]
+type = "object"
+required = ["related_documents"]
+[answer.extra_schema.properties.related_documents]
+type = "array"
+"#;
+        let def = AgentDefinition::parse(src, "hugr.toml").unwrap();
+        assert!(def.warnings.is_empty(), "{:?}", def.warnings);
+        let schema = def.answer.extra_schema.expect("inline schema parsed");
+        assert_eq!(schema["type"], serde_json::json!("object"));
+        assert_eq!(schema["required"], serde_json::json!(["related_documents"]));
+        assert_eq!(schema["properties"]["related_documents"]["type"], "array");
     }
 
     #[test]

@@ -53,6 +53,7 @@ fn full_answer() -> Answer {
         "text/markdown",
     )])
     .with_extra(json!({"related_documents": ["travel.md"]}))
+    .with_warnings(vec!["extra.note: advisory only".to_string()])
 }
 
 #[test]
@@ -131,7 +132,8 @@ fn full_wire_snapshots_are_pinned() {
                     {"selector": "small", "model_calls": 1, "tokens_in": 200, "tokens_out": 50, "cost_micro_usd": 1}
                 ]
             },
-            "extra": {"related_documents": ["travel.md"]}
+            "extra": {"related_documents": ["travel.md"]},
+            "warnings": ["extra.note: advisory only"]
         })
     );
 }

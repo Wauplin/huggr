@@ -17,6 +17,7 @@
 //!   contract can grow without breaking hosts or surfaces.
 
 mod agent;
+mod answer_schema;
 mod blobs;
 mod contract;
 mod limits;
@@ -27,6 +28,7 @@ pub use agent::{
     Agent, AgentBuilder, AgentCard, AgentConfig, AgentLimits, AskError, ConfigEntry,
     ConfigProvenance, ModelTierCard, Pricing, TierPrice, ToolCard, ToolPrivilege,
 };
+pub use answer_schema::validate_extra;
 pub use limits::LimitKind;
 pub use blobs::BlobError;
 pub use contract::{

@@ -85,6 +85,10 @@ pub struct Agent {
     /// trace-recorded usage (ARCHITECTURE §18.4). Missing tiers price at zero.
     pricing: Pricing,
     limits: AgentLimits,
+    /// Optional JSON schema for `Answer.extra` (ROADMAP T3.4). When set, the
+    /// agent lifts the final JSON message into `extra` and validates it against
+    /// this schema post-hoc — violations become `Answer.warnings`, never errors.
+    answer_schema: Option<Value>,
     /// Monotonic counter naming each ask's pending working directory — the one
     /// piece of host-side nondeterminism, kept off the trace (scratch content
     /// never enters the log; results carry only relative paths).
@@ -115,6 +119,7 @@ impl Agent {
             blob_store: None,
             pricing: Pricing::default(),
             limits: AgentLimits::default(),
+            answer_schema: None,
         }
     }
 
@@ -379,13 +384,32 @@ impl Agent {
         // with a typed reason on `extra` (ROADMAP T3.1). Otherwise the final
         // model output is the answer (§18.1).
         let trip = limit_state.trip();
-        let (status, message, extra) = match &trip {
+        let (status, message, mut extra) = match &trip {
             Some(trip) => (AnswerStatus::Error, trip.message(), trip.extra()),
             None => {
                 let (status, message) = final_answer(log);
                 (status, message, Value::Null)
             }
         };
+
+        // Structured answer extras (ROADMAP T3.4): when a schema is declared and
+        // the run produced a plain (non-error, no-limit-trip) answer, lift the
+        // final JSON message into `extra` and validate it. Violations are
+        // advisory warnings on the answer, never failures — `extra` is never
+        // load-bearing for the contract.
+        let mut warnings = Vec::new();
+        if let Some(schema) = &self.answer_schema {
+            if trip.is_none() && extra.is_null() {
+                if let Ok(parsed) = serde_json::from_str::<Value>(message.trim()) {
+                    if parsed.is_object() || parsed.is_array() {
+                        extra = parsed;
+                    }
+                }
+            }
+            if !extra.is_null() {
+                warnings = crate::answer_schema::validate_extra(schema, &extra);
+            }
+        }
         // Persist old + new as one NEW immutable trace; the parent file is
         // never mutated — lineage lives in `depends_on` (§19.2).
         let trace = engine
@@ -422,6 +446,9 @@ impl Agent {
         let mut answer = Answer::new(status, message, trace_id, metadata).with_blobs(out_blobs);
         if !extra.is_null() {
             answer = answer.with_extra(extra);
+        }
+        if !warnings.is_empty() {
+            answer = answer.with_warnings(warnings);
         }
         Ok(answer)
     }
@@ -512,6 +539,7 @@ pub struct AgentBuilder {
     blob_store: Option<BlobStore>,
     pricing: Pricing,
     limits: AgentLimits,
+    answer_schema: Option<Value>,
 }
 
 impl AgentBuilder {
@@ -603,6 +631,16 @@ impl AgentBuilder {
         self
     }
 
+    /// Declare a JSON schema for `Answer.extra` (ROADMAP T3.4). When set, a
+    /// successful ask whose final message parses as JSON has that value lifted
+    /// into `extra` and validated against `schema`; violations surface as
+    /// `Answer.warnings` and never fail the ask (the extra is never
+    /// load-bearing). The validator is the minimal subset in `answer_schema`.
+    pub fn answer_schema(mut self, schema: Value) -> Self {
+        self.answer_schema = Some(schema);
+        self
+    }
+
     pub fn build(self) -> Agent {
         let scratch_root = self
             .scratch_root
@@ -626,6 +664,7 @@ impl AgentBuilder {
             blob_store,
             pricing: self.pricing,
             limits: self.limits,
+            answer_schema: self.answer_schema,
             next_scratch: Arc::new(AtomicU64::new(0)),
         }
     }

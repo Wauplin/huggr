@@ -888,11 +888,16 @@ root = "./policies"                   # scope; jailed by the capability
 max_model_calls = 20
 max_cost_micro_usd = 50000
 timeout_s = 120
+
+[answer]                              # optional structured-extra schema (T3.4)
+extra_schema_file = "./answer.schema.json"   # or inline [answer.extra_schema]
 ```
 
 Reviewing a subagent's blast radius = reading this file: a tool that is not granted is not registered, and per §7.1 an unregistered capability **cannot** be invoked — sandbox-by-registration, not sandbox-by-policy. Unknown keys warn; every key has provenance surfaced by `--config` (§18.2).
 
 The `[limits]` are enforced host-side by `hugr-agent` on every ask (ROADMAP T3.1), never in the sans-IO core: the counting/cost bounds (`max_model_calls`, `max_turns`, `max_cost_micro_usd`) wrap each model adapter and refuse an over-budget call — the refusal folds into an ordinary `ModelError`, so the partial trace still replays bit-for-bit; the wall-clock `timeout_s` bounds the turn future. Exceeding any bound is an *answer*, not an error: `status: error`, a typed `Answer.extra.limit_exceeded = { limit, value }` reason, and a persisted `trace_id` for the (still-verifying) partial trace.
+
+The optional `[answer]` block (ROADMAP T3.4) declares a JSON schema for `Answer.extra` — inline (`[answer.extra_schema]`) or via `extra_schema_file`. When set, a successful ask whose final message is JSON has that value lifted into `extra` and validated post-hoc; violations surface as `Answer.warnings` (a new advisory, non-load-bearing slot on the contract) and never fail the ask. The validator is a deliberately minimal JSON-Schema subset (`type`/`required`/`properties`/`items`) — advisory, matching "extra is never load-bearing."
 
 ### 20.2 The predefined tool library
 

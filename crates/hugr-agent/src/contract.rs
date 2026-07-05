@@ -133,6 +133,85 @@ impl BlobHandle {
     }
 }
 
+/// A resource an orchestrator hands to a subagent as part of a
+/// [`ResourceGroup`] (ARCHITECTURE §18.5). A tool whose manifest scope binds
+/// `group:<name>` is registered against these once a matching [`ResourceGrant`]
+/// arrives. `#[non_exhaustive]` — new resource kinds don't break the contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ResourceRef {
+    /// A directory subtree (becomes an `fs_read`/`fs_write` jail root).
+    FsRoot { path: String },
+    /// A content-addressed payload (§18.3).
+    Blob { handle: BlobHandle },
+    /// A SQLite database file.
+    Sqlite { path: String },
+    /// A network origin (an `http_fetch` allowlist host).
+    HttpHost { host: String },
+}
+
+/// A named bundle of resources the orchestrator owns and may hand to a
+/// subagent (ARCHITECTURE §18.5). Rides the [`Ask`]; a manifest tool scope
+/// binds a group by name (`root = "group:policies"`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ResourceGroup {
+    pub name: String,
+    #[serde(default)]
+    pub resources: Vec<ResourceRef>,
+}
+
+impl ResourceGroup {
+    pub fn new(name: impl Into<String>, resources: Vec<ResourceRef>) -> Self {
+        Self {
+            name: name.into(),
+            resources,
+        }
+    }
+}
+
+/// The access level an orchestrator grants on a [`ResourceGroup`]. Absence of a
+/// grant means *no access* — the bound tool is simply never registered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Access {
+    /// Read-class tools only (`fs_read`, read-only `sqlite_query`).
+    Read,
+    /// Read-class tools plus mutating tools bound to the group.
+    ReadWrite,
+}
+
+impl Access {
+    /// Whether this granted access satisfies a tool requiring `required`
+    /// (`ReadWrite` satisfies both; `Read` satisfies only `Read`).
+    pub fn satisfies(self, required: Access) -> bool {
+        matches!(
+            (self, required),
+            (Access::ReadWrite, _) | (Access::Read, Access::Read)
+        )
+    }
+}
+
+/// One grant: the access level the orchestrator confers on a named group
+/// (ARCHITECTURE §18.5). Grants ride the [`Ask`] and are recorded in the trace.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ResourceGrant {
+    pub group: String,
+    pub access: Access,
+}
+
+impl ResourceGrant {
+    pub fn new(group: impl Into<String>, access: Access) -> Self {
+        Self {
+            group: group.into(),
+            access,
+        }
+    }
+}
+
 /// One question to a subagent (ARCHITECTURE §18.1). `question` is the only
 /// required field; everything else defaults.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -147,6 +226,14 @@ pub struct Ask {
     /// Inbound files, materialized into the scratchpad before the turn (§18.3).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blobs: Vec<BlobHandle>,
+    /// Orchestrator-supplied resource groups this ask offers (§18.5). A tool
+    /// bound to `group:<name>` resolves its scope from the matching group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<ResourceGroup>,
+    /// Access grants over the offered groups (§18.5). No grant ⇒ no access ⇒
+    /// the bound tool is never registered for this ask.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grants: Vec<ResourceGrant>,
     /// Opaque caller metadata, echoed into the trace. Never interpreted.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub extra: Value,
@@ -159,6 +246,8 @@ impl Ask {
             question: question.into(),
             trace_id: None,
             blobs: Vec::new(),
+            groups: Vec::new(),
+            grants: Vec::new(),
             extra: Value::Null,
         }
     }
@@ -173,6 +262,18 @@ impl Ask {
     /// Hand files in.
     pub fn with_blobs(mut self, blobs: Vec<BlobHandle>) -> Self {
         self.blobs = blobs;
+        self
+    }
+
+    /// Offer resource groups (§18.5).
+    pub fn with_groups(mut self, groups: Vec<ResourceGroup>) -> Self {
+        self.groups = groups;
+        self
+    }
+
+    /// Grant access over offered groups (§18.5).
+    pub fn with_grants(mut self, grants: Vec<ResourceGrant>) -> Self {
+        self.grants = grants;
         self
     }
 

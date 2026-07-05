@@ -108,6 +108,10 @@ pub struct TraceHeader {
     pub question: String,
     /// The outcome status wire string; opaque to the store.
     pub status: String,
+    /// Orchestrator-supplied resource groups + grants in effect for this ask
+    /// (ARCHITECTURE §18.5, ROADMAP T3.7), opaque to the store — recorded so a
+    /// resume/fork re-derives the identical capability registration.
+    pub grants: Option<serde_json::Value>,
 }
 
 impl TraceHeader {
@@ -124,12 +128,19 @@ impl TraceHeader {
             agent_version: agent_version.into(),
             question: question.into(),
             status: status.into(),
+            grants: None,
         }
     }
 
     /// Mark this trace as a follow-up of `parent` (resume/fork, §19.2).
     pub fn with_depends_on(mut self, parent: TraceId) -> Self {
         self.depends_on = Some(parent);
+        self
+    }
+
+    /// Record the resource groups + grants in effect for this ask (§18.5).
+    pub fn with_grants(mut self, grants: serde_json::Value) -> Self {
+        self.grants = Some(grants);
         self
     }
 }
@@ -183,6 +194,7 @@ impl TraceStore {
         trace.meta.agent_version = Some(header.agent_version);
         trace.meta.question = Some(header.question);
         trace.meta.status = Some(header.status);
+        trace.meta.grants = header.grants;
 
         // Content-derived id: hash the headed trace *before* the id is stamped
         // in (the id cannot depend on itself), then collision-check against

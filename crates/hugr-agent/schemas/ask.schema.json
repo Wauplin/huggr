@@ -20,11 +20,49 @@
       "items": { "$ref": "#/$defs/blob_handle" },
       "default": []
     },
+    "groups": {
+      "type": "array",
+      "description": "Orchestrator-supplied resource groups (§18.5). A tool bound to group:<name> resolves its scope from the matching group.",
+      "items": { "$ref": "#/$defs/resource_group" },
+      "default": []
+    },
+    "grants": {
+      "type": "array",
+      "description": "Access grants over the offered groups (§18.5). No grant means the bound tool is never registered for this ask.",
+      "items": { "$ref": "#/$defs/resource_grant" },
+      "default": []
+    },
     "extra": {
       "description": "Opaque caller metadata, echoed into the trace. Never interpreted by the agent."
     }
   },
   "$defs": {
+    "resource_group": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "resources": { "type": "array", "items": { "$ref": "#/$defs/resource_ref" }, "default": [] }
+      }
+    },
+    "resource_ref": {
+      "type": "object",
+      "required": ["kind"],
+      "oneOf": [
+        { "properties": { "kind": { "const": "fs_root" }, "path": { "type": "string" } }, "required": ["kind", "path"] },
+        { "properties": { "kind": { "const": "blob" }, "handle": { "$ref": "#/$defs/blob_handle" } }, "required": ["kind", "handle"] },
+        { "properties": { "kind": { "const": "sqlite" }, "path": { "type": "string" } }, "required": ["kind", "path"] },
+        { "properties": { "kind": { "const": "http_host" }, "host": { "type": "string" } }, "required": ["kind", "host"] }
+      ]
+    },
+    "resource_grant": {
+      "type": "object",
+      "required": ["group", "access"],
+      "properties": {
+        "group": { "type": "string" },
+        "access": { "type": "string", "enum": ["read", "read_write"] }
+      }
+    },
     "blob_handle": {
       "type": "object",
       "required": ["ref", "media_type"],

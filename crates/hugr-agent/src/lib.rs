@@ -26,13 +26,15 @@ mod store;
 
 pub use agent::{
     Agent, AgentBuilder, AgentCard, AgentConfig, AgentLimits, AskError, ConfigEntry,
-    ConfigProvenance, ModelTierCard, Pricing, TierPrice, ToolCard, ToolPrivilege,
+    ConfigProvenance, GroupBinding, GroupCapabilityFactory, ModelTierCard, Pricing, TierPrice,
+    ToolCard, ToolPrivilege,
 };
 pub use answer_schema::validate_extra;
 pub use limits::LimitKind;
 pub use blobs::BlobError;
 pub use contract::{
-    Answer, AnswerMeta, AnswerStatus, Ask, BlobHandle, BlobPerms, BlobRef, TierSpend, TraceId,
+    Access, Answer, AnswerMeta, AnswerStatus, Ask, BlobHandle, BlobPerms, BlobRef, ResourceGrant,
+    ResourceGroup, ResourceRef, TierSpend, TraceId,
 };
 pub use store::{
     PruneReport, PrunePolicy, StoreError, StoreSize, TraceHead, TraceHeader, TraceStore,

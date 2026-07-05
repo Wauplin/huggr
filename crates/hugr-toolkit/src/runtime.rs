@@ -159,8 +159,17 @@ pub async fn build_agent(def: &AgentDefinition) -> Result<(Agent, Vec<String>), 
     for grant in &def.tools {
         match grant.kind {
             ToolKind::Library => {
-                for capability in tools::build_library_grant(grant, &base_dir)? {
-                    builder = builder.capability(capability);
+                // A scope of `group:<name>` (§18.5, T3.7) defers registration:
+                // the tool is bound to that group and registered only per-ask,
+                // when a matching grant arrives. Otherwise the manifest scope is
+                // concrete and the capability is registered eagerly.
+                if let Some(group) = tools::group_scope(grant) {
+                    builder =
+                        builder.group_binding(tools::library_group_binding(grant, group, &base_dir));
+                } else {
+                    for capability in tools::build_library_grant(grant, &base_dir)? {
+                        builder = builder.capability(capability);
+                    }
                 }
             }
             ToolKind::Mcp => {
@@ -590,6 +599,35 @@ max_model_calls = 7
         for e in &entries {
             assert_ne!(e.value.as_str(), Some("super-secret-value"));
         }
+    }
+
+    #[tokio::test]
+    async fn group_bound_tool_is_not_eagerly_registered() {
+        // A tool bound to a resource group (§18.5, T3.7) is registered only
+        // per-ask when a grant arrives — so it is absent from the agent card,
+        // which reflects the always-on capabilities. Only the scratch tools show.
+        let src = r#"
+[agent]
+name = "x"
+[models.medium]
+model = "m"
+[tools.fs_read]
+root = "group:policies"
+"#;
+        let mut def = AgentDefinition::parse(src, "hugr.toml").unwrap();
+        def.source_dir = Some(std::env::temp_dir());
+        let (agent, warnings) = build_agent(&def).await.unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let tool_names: Vec<_> = agent
+            .describe()
+            .tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        // The group-bound fs_read family is provably absent without a grant.
+        assert!(!tool_names.iter().any(|n| n.starts_with("fs_")), "{tool_names:?}");
+        // The always-present scratch tools are still there.
+        assert!(tool_names.contains(&"scratch_read".to_string()), "{tool_names:?}");
     }
 
     #[tokio::test]

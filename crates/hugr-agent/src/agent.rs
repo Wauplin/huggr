@@ -36,7 +36,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::blobs::{self, BlobError};
-use crate::contract::{Answer, AnswerMeta, AnswerStatus, Ask, TraceId};
+use crate::contract::{
+    Access, Answer, AnswerMeta, AnswerStatus, Ask, ResourceGrant, ResourceGroup, ResourceRef,
+    TraceId,
+};
 use crate::limits::{LimitState, LimitedAdapter};
 use crate::scratch::{ScratchDir, copy_tree, scratch_tool_schemas};
 use crate::store::{
@@ -94,6 +97,10 @@ pub struct Agent {
     /// secrets redacted — ROADMAP T3.5). When `None`, [`Agent::config`] derives a
     /// builder/default-tagged view from its own fields.
     config_entries: Option<Vec<ConfigEntry>>,
+    /// Manifest tools bound to a resource group (`group:<name>`, ARCHITECTURE
+    /// §18.5, ROADMAP T3.7). Each is registered only for asks that carry a
+    /// grant of sufficient access over its group.
+    group_bindings: Vec<GroupBinding>,
     /// Monotonic counter naming each ask's pending working directory — the one
     /// piece of host-side nondeterminism, kept off the trace (scratch content
     /// never enters the log; results carry only relative paths).
@@ -126,6 +133,7 @@ impl Agent {
             limits: AgentLimits::default(),
             answer_schema: None,
             config_entries: None,
+            group_bindings: Vec::new(),
         }
     }
 
@@ -345,11 +353,28 @@ impl Agent {
         if let Some(clock) = &self.clock {
             builder = builder.clock(clock.clone());
         }
-        if let Some(parent_id) = &parent {
-            // Load the parent (one file read) and re-fold its recorded events
-            // into the fresh brain — no model or tool is ever re-run for work
-            // that already happened (§15.1); `resume` only rebuilds state.
-            let trace = self.store.get(parent_id)?;
+        // Load the parent (one file read) up front so we can both re-fold it and
+        // read its recorded grants (§18.5) before it moves into `resume`.
+        let parent_trace = match &parent {
+            Some(parent_id) => Some(self.store.get(parent_id)?),
+            None => None,
+        };
+
+        // Resource groups & grants (ARCHITECTURE §18.5, ROADMAP T3.7): the
+        // effective grants are this ask's if it supplies any, else the parent's
+        // recorded ones — so a resume with no new grants re-derives the identical
+        // registration from the trace alone. Each group-bound tool registers only
+        // when a grant of sufficient access over its group is present.
+        let mut warnings: Vec<String> = Vec::new();
+        let (eff_groups, eff_grants) = effective_grants(&ask, parent_trace.as_ref());
+        for capability in self.resolve_group_bindings(&eff_groups, &eff_grants, &mut warnings) {
+            builder = builder.capability(capability);
+        }
+
+        if let Some(trace) = parent_trace {
+            // Re-fold the parent's recorded events into the fresh brain — no
+            // model or tool is ever re-run for work that already happened
+            // (§15.1); `resume` only rebuilds state.
             builder = builder.resume(trace);
         }
 
@@ -409,8 +434,8 @@ impl Agent {
         // the run produced a plain (non-error, no-limit-trip) answer, lift the
         // final JSON message into `extra` and validate it. Violations are
         // advisory warnings on the answer, never failures — `extra` is never
-        // load-bearing for the contract.
-        let mut warnings = Vec::new();
+        // load-bearing for the contract. (`warnings` already carries any
+        // group-binding notices from registration; schema notices append.)
         if let Some(schema) = &self.answer_schema {
             if trip.is_none() && extra.is_null() {
                 if let Ok(parsed) = serde_json::from_str::<Value>(message.trim()) {
@@ -420,7 +445,7 @@ impl Agent {
                 }
             }
             if !extra.is_null() {
-                warnings = crate::answer_schema::validate_extra(schema, &extra);
+                warnings.extend(crate::answer_schema::validate_extra(schema, &extra));
             }
         }
         // Persist old + new as one NEW immutable trace; the parent file is
@@ -443,6 +468,14 @@ impl Agent {
         if let Some(parent_id) = parent {
             header = header.with_depends_on(parent_id);
         }
+        // Record the effective groups + grants (§18.5) so a resume/fork
+        // re-derives the identical registration from the trace alone.
+        if !eff_groups.is_empty() || !eff_grants.is_empty() {
+            header = header.with_grants(json!({
+                "groups": eff_groups,
+                "grants": eff_grants,
+            }));
+        }
         let trace_id = self.store.put(trace, header)?;
 
         // Sweep produced files (the `out/` scratch subtree) into the
@@ -464,6 +497,49 @@ impl Agent {
             answer = answer.with_warnings(warnings);
         }
         Ok(answer)
+    }
+
+    /// Resolve this agent's group bindings against the effective groups/grants
+    /// (§18.5): for each binding, register its capabilities only when a grant of
+    /// sufficient access over its group is present and the group is offered.
+    /// A grant with insufficient access, or a factory error, is a `warnings`
+    /// notice (advisory) — a simply-absent grant is silent (the normal
+    /// no-access case). Deterministic order: bindings in registration order.
+    fn resolve_group_bindings(
+        &self,
+        groups: &[ResourceGroup],
+        grants: &[ResourceGrant],
+        warnings: &mut Vec<String>,
+    ) -> Vec<Arc<dyn Capability>> {
+        let mut caps = Vec::new();
+        for binding in &self.group_bindings {
+            let Some(grant) = grants.iter().find(|g| g.group == binding.group) else {
+                // No grant for this group → tool is not registered (by design).
+                continue;
+            };
+            if !grant.access.satisfies(binding.required_access) {
+                warnings.push(format!(
+                    "tool `{}` bound to group `{}` requires {:?} access but the grant is {:?}; not registered",
+                    binding.tool, binding.group, binding.required_access, grant.access
+                ));
+                continue;
+            }
+            let Some(group) = groups.iter().find(|g| g.name == binding.group) else {
+                warnings.push(format!(
+                    "group `{}` is granted but not offered on the ask; tool `{}` not registered",
+                    binding.group, binding.tool
+                ));
+                continue;
+            };
+            match (binding.factory)(&group.resources) {
+                Ok(built) => caps.extend(built),
+                Err(err) => warnings.push(format!(
+                    "tool `{}` bound to group `{}` failed to build: {err}; not registered",
+                    binding.tool, binding.group
+                )),
+            }
+        }
+        caps
     }
 
     /// Create this ask's working scratch directory (a fresh `.pending/<n>`
@@ -554,6 +630,7 @@ pub struct AgentBuilder {
     limits: AgentLimits,
     answer_schema: Option<Value>,
     config_entries: Option<Vec<ConfigEntry>>,
+    group_bindings: Vec<GroupBinding>,
 }
 
 impl AgentBuilder {
@@ -666,6 +743,16 @@ impl AgentBuilder {
         self
     }
 
+    /// Bind a tool to a resource group (ARCHITECTURE §18.5, ROADMAP T3.7): the
+    /// `factory` builds the tool's capabilities from a granted group's
+    /// resources, and the tool is registered only for asks carrying a grant of
+    /// at least `required_access` over `group`. Sandbox-by-registration extended
+    /// to caller-supplied scopes — no grant, no capability.
+    pub fn group_binding(mut self, binding: GroupBinding) -> Self {
+        self.group_bindings.push(binding);
+        self
+    }
+
     pub fn build(self) -> Agent {
         let scratch_root = self
             .scratch_root
@@ -691,7 +778,46 @@ impl AgentBuilder {
             limits: self.limits,
             answer_schema: self.answer_schema,
             config_entries: self.config_entries,
+            group_bindings: self.group_bindings,
             next_scratch: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+/// Builds the capabilities a group-bound tool registers from a granted group's
+/// resources (ARCHITECTURE §18.5, ROADMAP T3.7). Returns an error string when
+/// the group's resources are unusable for this tool (e.g. no `FsRoot`); a
+/// binding that errors is skipped with a warning rather than failing the ask.
+pub type GroupCapabilityFactory =
+    Arc<dyn Fn(&[ResourceRef]) -> Result<Vec<Arc<dyn Capability>>, String> + Send + Sync>;
+
+/// A manifest tool bound to a resource group (`group:<name>`). Registered only
+/// when an ask carries a [`ResourceGrant`](crate::ResourceGrant) of at least
+/// `required_access` over `group`.
+#[non_exhaustive]
+pub struct GroupBinding {
+    /// The group name this tool binds to.
+    pub group: String,
+    /// The bound tool's id, for diagnostics (e.g. `"fs_read"`).
+    pub tool: String,
+    /// Minimum granted access for this tool to register.
+    pub required_access: Access,
+    /// Builds the tool's capabilities from the granted group's resources.
+    pub factory: GroupCapabilityFactory,
+}
+
+impl GroupBinding {
+    pub fn new(
+        group: impl Into<String>,
+        tool: impl Into<String>,
+        required_access: Access,
+        factory: GroupCapabilityFactory,
+    ) -> Self {
+        Self {
+            group: group.into(),
+            tool: tool.into(),
+            required_access,
+            factory,
         }
     }
 }
@@ -932,6 +1058,35 @@ impl AskError {
             _ => None,
         }
     }
+}
+
+/// The groups + grants recorded in a trace header (§18.5), for re-derivation on
+/// resume/fork. Serialized into the opaque `TraceMeta.grants` slot.
+#[derive(Default, Serialize, Deserialize)]
+struct RecordedGrants {
+    #[serde(default)]
+    groups: Vec<ResourceGroup>,
+    #[serde(default)]
+    grants: Vec<ResourceGrant>,
+}
+
+/// The effective resource groups + grants for an ask (§18.5): the ask's own if
+/// it supplies any (groups or grants), else the parent trace's recorded set —
+/// so a plain resume re-derives the identical registration from the trace
+/// alone, while a follow-up that changes grants records the new fact.
+fn effective_grants(
+    ask: &Ask,
+    parent_trace: Option<&Trace>,
+) -> (Vec<ResourceGroup>, Vec<ResourceGrant>) {
+    if !ask.groups.is_empty() || !ask.grants.is_empty() {
+        return (ask.groups.clone(), ask.grants.clone());
+    }
+    if let Some(value) = parent_trace.and_then(|t| t.meta.grants.as_ref()) {
+        if let Ok(recorded) = serde_json::from_value::<RecordedGrants>(value.clone()) {
+            return (recorded.groups, recorded.grants);
+        }
+    }
+    (Vec::new(), Vec::new())
 }
 
 /// Extract the final answer from the durable log: the last model output with

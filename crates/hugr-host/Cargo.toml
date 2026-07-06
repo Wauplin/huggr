@@ -12,8 +12,6 @@ hugr-core = { workspace = true }
 # The content-addressed BlobStore (disk-backed) lives in the persistence crate;
 # the host wraps it in an ordinary Capability. hugr-core is untouched.
 hugr-replay = { workspace = true }
-# The plugin ABI: the host wraps a loaded plugin's tools as ordinary Capabilities.
-hugr-plugin-abi = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 async-trait = { workspace = true }

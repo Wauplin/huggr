@@ -27,7 +27,7 @@ Everything below in §2 is the plan to get from this state to the `ARCHITECTURE.
 - **One commit per phase.** After each phase: `cargo fmt --all`, `cargo clippy --all-targets` clean, `cargo test` green, `cargo tree -p hugr-core` free of tokio/reqwest/fs. Delete the tests of deleted features; keep and adapt the tests of surviving behavior. Line numbers below are indicative (from the audit); trust symbol names.
 - `ARCHITECTURE.md` already describes the target. If an instruction here conflicts with obvious reality in the code, prefer the smallest change that reaches the ARCHITECTURE.md behavior, and note the deviation in §3's log.
 
-### Phase 1 — Delete the pre-pivot crates and dead weight
+### Phase 1 — Delete the pre-pivot crates and dead weight ✅ DONE
 
 Goal: remove whole crates with no live consumers. ~2.9k LOC.
 
@@ -106,6 +106,7 @@ Goal: the docs crate is a definition folder + answer shaping + thin CLI/PyO3 pac
 *(Append one short entry per completed phase: date, what was done, deviations from the plan and why.)*
 
 - 2026-07-06 — Plan authored from a full-repo audit; docs rewritten to the target state (this file + `ARCHITECTURE.md`; `DESIGN.md`/`THREAT_MODEL.md`/`BRANDING.md`/`PROGRESS.md` merged or deleted). Implementation not started.
+- 2026-07-06 — **Phase 1 done.** Deleted `hugr-cli`, `hugr-wasm`, `hugr-example-plugin`, `hugr-plugin-abi` (framing.rs moved to `hugr-host/src/framing.rs`), the plugin tool path (`plugins.rs`, `ToolKind::Plugin`, `[tools.plugin.*]`), and the untracked junk dirs. One deviation: the framing wildcard match arm in `mcp.rs` became unreachable once `FramingError` moved in-crate, so the arm and its `#[non_exhaustive]` were dropped now rather than later. 7 crates; 275 tests green.
 
 ## 4. After the trim
 

@@ -73,7 +73,10 @@ impl LimitTrip {
     pub(crate) fn message(&self) -> String {
         match self.kind {
             LimitKind::MaxModelCalls => {
-                format!("limit exceeded: max_model_calls ({} model calls)", self.limit)
+                format!(
+                    "limit exceeded: max_model_calls ({} model calls)",
+                    self.limit
+                )
             }
             LimitKind::MaxTurns => format!("limit exceeded: max_turns ({} turns)", self.limit),
             LimitKind::MaxCostMicroUsd => {

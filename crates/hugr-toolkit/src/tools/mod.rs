@@ -8,7 +8,7 @@
 //!
 //! [`build_library_grant`] turns one `ToolKind::Library` [`ToolGrant`] into the
 //! concrete capabilities it registers, resolving relative scope paths against
-//! the definition folder (`base_dir`). External-tool grants (MCP / plugin /
+//! the definition folder (`base_dir`). External-tool grants (MCP /
 //! agent, §20.3) are handled elsewhere (ROADMAP T1.5 / T3.8).
 
 mod fs_read;
@@ -310,7 +310,10 @@ mod tests {
             Some("policies".to_string())
         );
         // A concrete root is not a group binding.
-        assert_eq!(group_scope(&grant("fs_read", json!({ "root": "./docs" }))), None);
+        assert_eq!(
+            group_scope(&grant("fs_read", json!({ "root": "./docs" }))),
+            None
+        );
         // sqlite_query binds via `file`.
         assert_eq!(
             group_scope(&grant("sqlite_query", json!({ "file": "group:ledger" }))),

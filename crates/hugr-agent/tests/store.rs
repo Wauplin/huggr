@@ -11,11 +11,9 @@ use hugr_replay::test_support::TempDir;
 
 /// Pin a trace file's mtime so LRU/age ordering is deterministic in tests.
 fn set_mtime(store: &TraceStore, id: &TraceId, mtime: SystemTime) {
-    let file = File::options()
-        .write(true)
-        .open(store.path_of(id))
+    let file = File::options().write(true).open(store.path_of(id)).unwrap();
+    file.set_times(FileTimes::new().set_modified(mtime))
         .unwrap();
-    file.set_times(FileTimes::new().set_modified(mtime)).unwrap();
 }
 
 fn empty_trace(created_at: u64) -> Trace {
@@ -234,7 +232,10 @@ fn prune_honors_pins_and_age() {
 
     let root = store.put(empty_trace(1), header("root")).unwrap();
     let child = store
-        .put(empty_trace(2), header("child").with_depends_on(root.clone()))
+        .put(
+            empty_trace(2),
+            header("child").with_depends_on(root.clone()),
+        )
         .unwrap();
     let stale = store.put(empty_trace(3), header("stale")).unwrap();
 

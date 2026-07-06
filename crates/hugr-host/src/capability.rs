@@ -1,7 +1,7 @@
 //! The uniform capability (tool) interface and its registry.
 //!
 //! There are **no privileged built-ins** (DESIGN §5.3): shell, fs and http are
-//! all ordinary [`Capability`]s, exactly like a plugin would be. The brain only
+//! all ordinary [`Capability`]s, exactly like an external MCP tool would be. The brain only
 //! ever emits `StartCapability { name, args }`; the host looks the name up here.
 
 use std::collections::HashMap;
@@ -60,7 +60,7 @@ pub trait Capability: Send + Sync {
 /// brain as `CapabilityChunk` events while it runs.
 ///
 /// `Clone` is cheap (it clones the op id + an `Arc`-backed sender) so a wrapper
-/// (e.g. a plugin capability bridging to a [`hugr_plugin_abi::PluginSink`]) can
+/// (e.g. an MCP capability bridging an external process stream) can
 /// move an emitter into a closure.
 #[derive(Clone)]
 pub struct ChunkSink {

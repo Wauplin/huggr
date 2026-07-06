@@ -1,8 +1,7 @@
 //! Newline-delimited JSON framing shared by stdio transports (ARCHITECTURE §8.2).
 //!
-//! One JSON value per line is the wire format both the subprocess plugin
-//! transport ([`SubprocessPlugin`](crate::SubprocessPlugin)) and stdio
-//! JSON-RPC-style clients (e.g. the host's MCP client) speak. The helpers here
+//! One JSON value per line is the wire format stdio JSON-RPC-style clients
+//! (e.g. the host's MCP client and `--mcp-serve`) speak. The helpers here
 //! are the single implementation of that framing: serialize-then-`\n` on the
 //! way out, skip-blank-lines-then-parse on the way in. Callers keep their own
 //! protocol semantics (what a message *means*) and error taxonomy — a
@@ -16,7 +15,6 @@ use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, Lines};
 /// A framing-level failure: either the underlying stream broke (IO) or a line
 /// was not valid JSON for the expected type.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum FramingError {
     /// Reading from or writing to the underlying stream failed.
     #[error(transparent)]

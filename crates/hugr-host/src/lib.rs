@@ -32,10 +32,10 @@ pub mod capabilities;
 mod capability;
 mod coalesce;
 mod engine;
+pub mod framing;
 mod frontend;
 pub mod mcp;
 mod model;
-pub mod plugins;
 pub mod policy;
 mod scheduler;
 pub mod skills;
@@ -51,15 +51,10 @@ pub use engine::{
 pub use frontend::{Frontend, Metrics, StdoutFrontend};
 pub use mcp::{McpError, McpServerConfig, McpToolCapability};
 pub use model::{ModelAdapter, ModelRegistry, ModelSink};
-pub use plugins::PluginCapability;
 pub use policy::Policy;
 pub use scheduler::{CronExpr, Schedule, ScheduleError, TriggerTarget, fire_once};
 pub use skills::{SkillBundle, SkillError};
 pub use spend::{SpendReport, TierSpend, spend_report};
-
-// Re-export the plugin ABI so a host embedder needs only `hugr-host` to load
-// plugins (the ABI crate lives behind us, like `hugr-replay`).
-pub use hugr_plugin_abi::{self, PluginError, PluginSink, PluginTransport, SubprocessPlugin};
 
 // Re-export the trace + replay surface so a host embedder needs only one crate
 // to record a session and replay it (the persistence crate lives behind us).

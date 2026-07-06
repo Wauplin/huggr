@@ -31,11 +31,7 @@ pub const SYSTEM_PROMPT_FILE: &str = "SYSTEM.md";
 
 /// Reserved keys under `[tools]` that namespace *external* tool grants
 /// (§20.3). Every other key under `[tools]` is a predefined-library grant.
-const TOOL_NAMESPACES: &[(&str, ToolKind)] = &[
-    ("mcp", ToolKind::Mcp),
-    ("plugin", ToolKind::Plugin),
-    ("agent", ToolKind::Agent),
-];
+const TOOL_NAMESPACES: &[(&str, ToolKind)] = &[("mcp", ToolKind::Mcp), ("agent", ToolKind::Agent)];
 
 /// A parsed subagent definition (ARCHITECTURE §20). Produced by
 /// [`AgentDefinition::load`] (a folder) or [`AgentDefinition::parse`] (a manifest
@@ -139,8 +135,6 @@ pub enum ToolKind {
     Library,
     /// A stdio MCP server's namespaced tools (`[tools.mcp.<name>]`).
     Mcp,
-    /// A subprocess plugin via `hugr-plugin-abi` (`[tools.plugin.<name>]`).
-    Plugin,
     /// Another Hugr agent granted as a tool (`[tools.agent.<name>]`, §20.5).
     Agent,
 }

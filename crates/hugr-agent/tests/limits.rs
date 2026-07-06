@@ -166,12 +166,18 @@ async fn max_cost_trips_after_the_running_total_crosses_the_bound() {
     let store = TraceStore::new(dir.path());
     // Each call costs 7*2 + 3*5 = 29 micro-USD. With a 40 bound: call 1 runs
     // (total 29 < 40), call 2 runs (total 58), call 3 is refused (58 >= 40).
-    let agent = looping_agent(store.clone(), AgentLimits::new().with_max_cost_micro_usd(40));
+    let agent = looping_agent(
+        store.clone(),
+        AgentLimits::new().with_max_cost_micro_usd(40),
+    );
 
     let answer = agent.ask(Ask::new("go")).await.unwrap();
 
     assert_eq!(answer.status, AnswerStatus::Error);
-    assert_eq!(limit_reason(&answer), ("max_cost_micro_usd".to_string(), 40));
+    assert_eq!(
+        limit_reason(&answer),
+        ("max_cost_micro_usd".to_string(), 40)
+    );
     assert_eq!(answer.metadata.model_calls, 2);
     assert_eq!(answer.metadata.cost_micro_usd, 58);
     hugr_replay::verify(&store.get(&answer.trace_id).unwrap()).unwrap();

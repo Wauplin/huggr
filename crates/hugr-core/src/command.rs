@@ -22,7 +22,7 @@ pub enum Command {
         request: ModelRequest,
     },
 
-    /// Invoke a host capability (a tool). Covers shell, fs, http, plugins —
+    /// Invoke a host capability (a tool). Covers fs, http, MCP tools —
     /// there are no privileged built-ins. `args` is opaque to the brain.
     StartCapability { op: OpId, name: String, args: Value },
 

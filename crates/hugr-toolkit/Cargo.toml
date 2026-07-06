@@ -51,8 +51,7 @@ clap = { workspace = true }
 # reuse the versioned replay/inspect machinery.
 hugr-replay = { workspace = true }
 # The MCP serve surface (ROADMAP T2.4) reuses the newline-delimited JSON-RPC
-# framing helpers (`write_json_line`/`read_json_line`) from the plugin ABI.
-hugr-plugin-abi = { workspace = true }
+# framing helpers (`write_json_line`/`read_json_line`) come from hugr-host.
 # sqlite_query (read-only, file-scoped) needs rusqlite. `bundled` compiles
 # SQLite in so agents need no system library; opened read-only, ATTACH is
 # rejected. Kept commented (with the matching `sqlite` feature declaring

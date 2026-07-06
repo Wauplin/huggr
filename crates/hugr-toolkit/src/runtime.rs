@@ -9,10 +9,9 @@
 //! the declared limits, and the trace/scratch locations. `hugr run` then does
 //! one [`Agent::ask`].
 //!
-//! `[tools.mcp.<name>]` and `[tools.plugin.<name>]` grants (§20.3) are wired
-//! here (ROADMAP T1.5): each connects its external process and registers the
-//! discovered tools. Agent-as-tool grants (`[tools.agent.<name>]`, §20.5) still
-//! warn and are skipped until ROADMAP T3.8.
+//! `[tools.mcp.<name>]` grants (§20.3) are wired here (ROADMAP T1.5): each
+//! connects its external process and registers the discovered tools.
+//! Agent-as-tool grants (`[tools.agent.<name>]`, §20.5) are wired in T3.8.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,9 +22,7 @@ use hugr_agent::{
     ConfigProvenance, Pricing, TraceStore, depth_exceeded_resolver,
 };
 use hugr_core::{ModelSelector, SamplingParams};
-use hugr_host::PluginError;
 use hugr_host::mcp::{McpError, McpServerConfig, load_stdio};
-use hugr_host::plugins::load_subprocess;
 use hugr_host::policy::AllowAll;
 use hugr_providers::OpenAiAdapter;
 
@@ -71,13 +68,6 @@ pub enum RuntimeError {
         name: String,
         #[source]
         source: McpError,
-    },
-    /// A granted subprocess plugin could not be loaded.
-    #[error("loading plugin `{name}`: {source}")]
-    Plugin {
-        name: String,
-        #[source]
-        source: PluginError,
     },
     /// A granted child agent (`[tools.agent.<name>]`) could not be resolved
     /// (bad `ref`, unloadable child definition).
@@ -199,7 +189,7 @@ async fn build_agent_depth_with_provider_key(
     builder = builder.system_prompt(prompt);
 
     // Granted tools — sandbox-by-registration (§20.1). Library grants build
-    // in-process; MCP/plugin grants (§20.3) connect their external process and
+    // in-process; MCP grants (§20.3) connect their external process and
     // register the discovered tools. Agent-as-tool grants (§20.5) are T3.8.
     for grant in &def.tools {
         match grant.kind {
@@ -209,8 +199,8 @@ async fn build_agent_depth_with_provider_key(
                 // when a matching grant arrives. Otherwise the manifest scope is
                 // concrete and the capability is registered eagerly.
                 if let Some(group) = tools::group_scope(grant) {
-                    builder =
-                        builder.group_binding(tools::library_group_binding(grant, group, &base_dir));
+                    builder = builder
+                        .group_binding(tools::library_group_binding(grant, group, &base_dir));
                 } else {
                     for capability in tools::build_library_grant(grant, &base_dir)? {
                         builder = builder.capability(capability);
@@ -230,24 +220,10 @@ async fn build_agent_depth_with_provider_key(
                     builder = builder.capability(capability);
                 }
             }
-            ToolKind::Plugin => {
-                let (command, args) = command_and_args(grant)?;
-                let caps = load_subprocess(command, args).await.map_err(|source| {
-                    RuntimeError::Plugin {
-                        name: grant.name.clone(),
-                        source,
-                    }
-                })?;
-                for capability in caps {
-                    builder = builder.capability(capability);
-                }
-            }
-            ToolKind::Agent => {
-                match build_agent_tool(grant, &base_dir, agent_depth).await {
-                    Ok(spec) => builder = builder.agent_tool(spec),
-                    Err(err) => return Err(err),
-                }
-            }
+            ToolKind::Agent => match build_agent_tool(grant, &base_dir, agent_depth).await {
+                Ok(spec) => builder = builder.agent_tool(spec),
+                Err(err) => return Err(err),
+            },
         }
     }
 
@@ -323,7 +299,11 @@ pub fn effective_config(def: &AgentDefinition, base_dir: &Path) -> Vec<ConfigEnt
     // Models: base_url, api key (name from manifest, secret from env/redacted),
     // default tier, and one entry per declared tier.
     if let Some(base) = &def.models.base_url {
-        entries.push(ConfigEntry::visible("models.base_url", base.clone(), Manifest));
+        entries.push(ConfigEntry::visible(
+            "models.base_url",
+            base.clone(),
+            Manifest,
+        ));
     }
     if let Some(var) = &def.models.api_key_env {
         // The env var *name* is not a secret — surface it (Manifest).
@@ -396,7 +376,9 @@ pub fn effective_config(def: &AgentDefinition, base_dir: &Path) -> Vec<ConfigEnt
         .map(|r| resolve(base_dir, r).display().to_string());
     entries.push(ConfigEntry::visible(
         "scratchpad.root",
-        scratch.clone().unwrap_or_else(|| "<store>/.scratch".to_string()),
+        scratch
+            .clone()
+            .unwrap_or_else(|| "<store>/.scratch".to_string()),
         manifest_or_default(scratch.is_some()),
     ));
     let store = def
@@ -406,9 +388,11 @@ pub fn effective_config(def: &AgentDefinition, base_dir: &Path) -> Vec<ConfigEnt
         .map(|s| resolve(base_dir, s).display().to_string());
     entries.push(ConfigEntry::visible(
         "traces.store",
-        store
-            .clone()
-            .unwrap_or_else(|| resolve(base_dir, DEFAULT_TRACE_DIRNAME).display().to_string()),
+        store.clone().unwrap_or_else(|| {
+            resolve(base_dir, DEFAULT_TRACE_DIRNAME)
+                .display()
+                .to_string()
+        }),
         manifest_or_default(store.is_some()),
     ));
 
@@ -440,10 +424,18 @@ fn resolve_answer_schema(
     }
     if let Some(file) = &def.answer.extra_schema_file {
         let path = resolve(base_dir, file);
-        let bytes = std::fs::read(&path)
-            .map_err(|e| format!("answer.extra_schema_file `{}`: {e} (ignored)", path.display()))?;
-        let schema: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("answer.extra_schema_file `{}`: {e} (ignored)", path.display()))?;
+        let bytes = std::fs::read(&path).map_err(|e| {
+            format!(
+                "answer.extra_schema_file `{}`: {e} (ignored)",
+                path.display()
+            )
+        })?;
+        let schema: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+            format!(
+                "answer.extra_schema_file `{}`: {e} (ignored)",
+                path.display()
+            )
+        })?;
         return Ok(Some(schema));
     }
     Ok(None)
@@ -716,7 +708,10 @@ max_model_calls = 7
             ConfigProvenance::Manifest
         );
         assert_eq!(by_key("limits").provenance, ConfigProvenance::Manifest);
-        assert_eq!(by_key("tools.fs_read").provenance, ConfigProvenance::Manifest);
+        assert_eq!(
+            by_key("tools.fs_read").provenance,
+            ConfigProvenance::Manifest
+        );
 
         // A value that falls back is Default (no description declared).
         assert_eq!(
@@ -764,16 +759,23 @@ root = "group:policies"
             .map(|t| t.name.clone())
             .collect();
         // The group-bound fs_read family is provably absent without a grant.
-        assert!(!tool_names.iter().any(|n| n.starts_with("fs_")), "{tool_names:?}");
+        assert!(
+            !tool_names.iter().any(|n| n.starts_with("fs_")),
+            "{tool_names:?}"
+        );
         // The always-present scratch tools are still there.
-        assert!(tool_names.contains(&"scratch_read".to_string()), "{tool_names:?}");
+        assert!(
+            tool_names.contains(&"scratch_read".to_string()),
+            "{tool_names:?}"
+        );
     }
 
     /// Write a minimal definition folder and return its path.
     fn write_def(tag: &str, toml: &str) -> PathBuf {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("hugr-agtool-{tag}-{}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("hugr-agtool-{tag}-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("hugr.toml"), toml).unwrap();
         dir
@@ -795,7 +797,12 @@ root = "group:policies"
         def.source_dir = Some(std::env::temp_dir());
         let (agent, warnings) = build_agent(&def).await.unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
-        let names: Vec<_> = agent.describe().tools.iter().map(|t| t.name.clone()).collect();
+        let names: Vec<_> = agent
+            .describe()
+            .tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
         assert!(names.contains(&"agent_helper".to_string()), "{names:?}");
         let _ = std::fs::remove_dir_all(&child_dir);
     }
@@ -844,7 +851,10 @@ ref = "./does-not-exist"
 "#;
         let mut def = AgentDefinition::parse(src, "hugr.toml").unwrap();
         def.source_dir = Some(std::env::temp_dir());
-        let err = build_agent(&def).await.err().expect("bad ref → build error");
+        let err = build_agent(&def)
+            .await
+            .err()
+            .expect("bad ref → build error");
         assert!(matches!(err, RuntimeError::Agent { .. }), "{err}");
     }
 

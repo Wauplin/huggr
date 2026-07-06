@@ -13,9 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use hugr_agent::{
-    Agent, AgentToolResolver, AgentToolSpec, AnswerStatus, Ask, Pricing, TraceStore,
-};
+use hugr_agent::{Agent, AgentToolResolver, AgentToolSpec, AnswerStatus, Ask, Pricing, TraceStore};
 use hugr_core::{ModelOutput, ModelRequest, ModelSelector, ToolCall, Usage};
 use hugr_host::{Clock, ModelAdapter, ModelSink};
 use serde_json::json;
@@ -135,7 +133,10 @@ async fn parent_delegates_to_child_and_folds_cost() {
 
     // Cost folds: parent 58 + child 20 = 78; tokens 14+5 in, 6+2 out; model
     // calls 2 (parent) + 1 (child) = 3; the child was actually invoked once.
-    assert_eq!(answer.metadata.cost_micro_usd, 78, "child cost must fold in");
+    assert_eq!(
+        answer.metadata.cost_micro_usd, 78,
+        "child cost must fold in"
+    );
     assert_eq!(answer.metadata.tokens_in, 19);
     assert_eq!(answer.metadata.tokens_out, 8);
     assert_eq!(answer.metadata.model_calls, 3);
@@ -151,7 +152,10 @@ async fn parent_delegates_to_child_and_folds_cost() {
         .unwrap();
     assert_eq!(follow_up.status, AnswerStatus::Success);
     assert_eq!(follow_up.message, "child follow-up");
-    assert_ne!(follow_up.trace_id, child_id, "resume writes a new child trace");
+    assert_ne!(
+        follow_up.trace_id, child_id,
+        "resume writes a new child trace"
+    );
     assert_eq!(
         child.store().head(&follow_up.trace_id).unwrap().depends_on,
         Some(child_id),
@@ -182,7 +186,8 @@ impl Drop for TempDir {
 fn tempdir() -> TempDir {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-    let path = std::env::temp_dir().join(format!("hugr-agent-agenttool-{}-{n}", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("hugr-agent-agenttool-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&path).unwrap();
     TempDir { path }
 }

@@ -1,12 +1,8 @@
 //! T1.5 — external tools declared in the manifest reach a definition-run agent.
 //!
 //! A `[tools.mcp.<name>]` grant must spawn the stdio server, discover its tools,
-//! and register them as ordinary capabilities on the assembled agent; a
-//! `[tools.plugin.<name>]` grant does the same over the subprocess plugin ABI.
-//! We assert the discovered tool shows up on the agent's `describe()` card —
+//! and register them as ordinary capabilities on the assembled agent. We assert the discovered tool shows up on the agent's `describe()` card —
 //! registration is what makes it callable (sandbox-by-registration, §7.1).
-
-use std::path::PathBuf;
 
 use hugr_toolkit::AgentDefinition;
 use hugr_toolkit::runtime::build_agent;
@@ -19,15 +15,6 @@ fn python3_available() -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
-}
-
-/// The workspace `target/debug` dir, derived from the test binary's own path
-/// (`target/debug/deps/<test>`).
-fn workspace_bin(name: &str) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let debug = exe.parent()?.parent()?; // deps → debug
-    let candidate = debug.join(name);
-    candidate.exists().then_some(candidate)
 }
 
 #[tokio::test]
@@ -79,39 +66,5 @@ for line in sys.stdin:
     assert!(
         names.contains(&"mcp__fake__echo"),
         "manifest-declared MCP tool must be registered; got {names:?}"
-    );
-}
-
-#[tokio::test]
-async fn manifest_declared_plugin_tool_is_registered_on_the_agent() {
-    let Some(plugin) = workspace_bin("hugr_example_plugin") else {
-        eprintln!(
-            "skipping: hugr_example_plugin binary not built (run `cargo build -p hugr-example-plugin`)"
-        );
-        return;
-    };
-    let manifest = format!(
-        r#"
-[agent]
-name = "plugin-agent"
-[models.medium]
-model = "m"
-
-[tools.plugin.example]
-command = "{}"
-"#,
-        plugin.display()
-    );
-    let def = AgentDefinition::parse(&manifest, "hugr.toml").unwrap();
-    let (agent, warnings) = build_agent(&def)
-        .await
-        .expect("subprocess plugin should be loaded from the manifest");
-    assert!(warnings.is_empty(), "{warnings:?}");
-
-    let card = agent.describe();
-    let names: Vec<_> = card.tools.iter().map(|t| t.name.as_str()).collect();
-    assert!(
-        names.contains(&"reverse"),
-        "manifest-declared plugin tool must be registered; got {names:?}"
     );
 }

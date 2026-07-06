@@ -44,7 +44,7 @@ use crate::contract::{
 use crate::limits::{LimitState, LimitedAdapter};
 use crate::scratch::{ScratchDir, copy_tree, scratch_tool_schemas};
 use crate::store::{
-    PruneReport, PrunePolicy, StoreError, StoreSize, TraceHead, TraceHeader, TraceStore,
+    PrunePolicy, PruneReport, StoreError, StoreSize, TraceHead, TraceHeader, TraceStore,
 };
 
 /// Default name of the scratch subtree directory, placed next to the trace
@@ -395,8 +395,7 @@ impl Agent {
         // folds into *this* ask's meta after the turn.
         let child_spend: Arc<Mutex<Vec<AnswerMeta>>> = Arc::new(Mutex::new(Vec::new()));
         for spec in &self.agent_tools {
-            builder =
-                builder.capability(Arc::new(AgentTool::new(spec, child_spend.clone())));
+            builder = builder.capability(Arc::new(AgentTool::new(spec, child_spend.clone())));
         }
 
         if let Some(trace) = parent_trace {

@@ -15,11 +15,11 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use hugr_agent::{
-    Access, Agent, Ask, GroupBinding, ResourceGroup, ResourceGrant, ResourceRef, TraceStore,
+    Access, Agent, Ask, GroupBinding, ResourceGrant, ResourceGroup, ResourceRef, TraceStore,
 };
 use hugr_core::{ModelOutput, ModelRequest, ModelSelector, Usage};
-use hugr_host::{Capability, ChunkSink, Clock, ModelAdapter, ModelSink};
 use hugr_core::{ToolSchema, Value};
+use hugr_host::{Capability, ChunkSink, Clock, ModelAdapter, ModelSink};
 use serde_json::json;
 
 /// Records the advertised tool names from the last model request.
@@ -71,16 +71,23 @@ fn clock() -> Clock {
 /// An agent with a read-class tool (`reader`, needs Read) and a write-class
 /// tool (`writer`, needs ReadWrite), both bound to the `data` group.
 fn agent(store: TraceStore, spy: ToolSpy) -> Agent {
-    let reader: hugr_agent::GroupCapabilityFactory =
-        Arc::new(|_res: &[ResourceRef]| Ok(vec![Arc::new(NoopTool("reader")) as Arc<dyn Capability>]));
-    let writer: hugr_agent::GroupCapabilityFactory =
-        Arc::new(|_res: &[ResourceRef]| Ok(vec![Arc::new(NoopTool("writer")) as Arc<dyn Capability>]));
+    let reader: hugr_agent::GroupCapabilityFactory = Arc::new(|_res: &[ResourceRef]| {
+        Ok(vec![Arc::new(NoopTool("reader")) as Arc<dyn Capability>])
+    });
+    let writer: hugr_agent::GroupCapabilityFactory = Arc::new(|_res: &[ResourceRef]| {
+        Ok(vec![Arc::new(NoopTool("writer")) as Arc<dyn Capability>])
+    });
     Agent::builder("test-agent", "0.1.0", store)
         .model(ModelSelector::named("medium"), Arc::new(MockModel { spy }))
         .system_prompt("answer")
         .clock(clock())
         .group_binding(GroupBinding::new("data", "reader", Access::Read, reader))
-        .group_binding(GroupBinding::new("data", "writer", Access::ReadWrite, writer))
+        .group_binding(GroupBinding::new(
+            "data",
+            "writer",
+            Access::ReadWrite,
+            writer,
+        ))
         .build()
 }
 
@@ -100,7 +107,10 @@ async fn grants_attenuate_the_effective_tool_set() {
     let agent = agent(store.clone(), spy.clone());
 
     // No grant → neither group-bound tool is registered.
-    agent.ask(Ask::new("q").with_groups(vec![data_group()])).await.unwrap();
+    agent
+        .ask(Ask::new("q").with_groups(vec![data_group()]))
+        .await
+        .unwrap();
     let tools = advertised(&spy);
     assert!(!tools.contains(&"reader".to_string()), "{tools:?}");
     assert!(!tools.contains(&"writer".to_string()), "{tools:?}");

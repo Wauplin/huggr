@@ -87,7 +87,7 @@ One folder in, one question in, one JSON answer out — with cost metadata. No s
 
 ```bash
 export HUGR_DOCS_API_KEY=hf_...   # or any OpenAI-compatible endpoint key
-cargo run -p hugr-docs -- ./archive-light-2026-07-01 "Which repositories do I watch by default?" | jq
+cargo run -p hugr-docs -- ./docs "What is the narrow-waist rule?" | jq
 ```
 
 ```json

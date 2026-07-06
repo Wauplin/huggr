@@ -397,7 +397,11 @@ impl AnswerMeta {
         self.model_calls += child.model_calls;
         self.tool_calls += child.tool_calls;
         for tier in &child.per_tier {
-            if let Some(existing) = self.per_tier.iter_mut().find(|t| t.selector == tier.selector) {
+            if let Some(existing) = self
+                .per_tier
+                .iter_mut()
+                .find(|t| t.selector == tier.selector)
+            {
                 existing.model_calls += tier.model_calls;
                 existing.tokens_in += tier.tokens_in;
                 existing.tokens_out += tier.tokens_out;

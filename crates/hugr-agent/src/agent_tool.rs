@@ -30,9 +30,8 @@ use crate::contract::{Answer, AnswerMeta, Ask};
 /// [`Answer`] (or an error string, surfaced to the model as a tool error). The
 /// host supplies this — interpreter (in-process child `Agent`) or subprocess
 /// (a built artifact speaking the CLI JSON contract).
-pub type AgentToolResolver = Arc<
-    dyn Fn(Ask) -> Pin<Box<dyn Future<Output = Result<Answer, String>> + Send>> + Send + Sync,
->;
+pub type AgentToolResolver =
+    Arc<dyn Fn(Ask) -> Pin<Box<dyn Future<Output = Result<Answer, String>> + Send>> + Send + Sync>;
 
 /// Declares one agent-as-tool grant (`[tools.agent.<name>]`): the capability
 /// name (`agent_<name>`), a human description (from the child's `AgentCard`),

@@ -129,7 +129,9 @@ impl Capability for SqliteQuery {
 /// rather than merely containing the substring (e.g. a column `attachment`).
 fn mentions_attach_keyword(sql: &str) -> bool {
     let lower = sql.to_ascii_lowercase();
-    lower.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|token| token == "attach")
+    lower
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|token| token == "attach")
 }
 
 fn run_query(file: &Path, sql: &str, max_rows: usize) -> Result<Value> {
@@ -193,6 +195,8 @@ mod tests {
     fn substring_attach_in_an_identifier_is_not_a_false_positive() {
         // A column/table named `attachment` must not trip the guard.
         assert!(!mentions_attach_keyword("SELECT attachment FROM emails"));
-        assert!(!mentions_attach_keyword("SELECT id, attachments_count FROM t"));
+        assert!(!mentions_attach_keyword(
+            "SELECT id, attachments_count FROM t"
+        ));
     }
 }

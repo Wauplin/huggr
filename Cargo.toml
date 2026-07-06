@@ -4,28 +4,14 @@ members = [
     "crates/hugr-core",
     "crates/hugr-host",
     "crates/hugr-providers",
-    "crates/hugr-cli",
     "crates/hugr-docs",
     "crates/hugr-replay",
     "crates/hugr-agent",
     "crates/hugr-toolkit",
-    "crates/hugr-plugin-abi",
-    "crates/hugr-example-plugin",
-    "crates/hugr-wasm",
 ]
 
-# The full crate layout (see docs/ARCHITECTURE.md §10) still adds hugr-model,
-# hugr-py and hugr-js over later phases. Phase 0 shipped the pure, sans-IO
-# brain (`hugr-core`); Phase 1 adds the native host, an OpenAI provider adapter,
-# and the showcase CLI; Phase 3 adds `hugr-replay` (the versioned, portable
-# trace format); Phase 5 adds `hugr-plugin-abi` (the versioned plugin contract +
-# subprocess transport) and `hugr-example-plugin` (a standalone example plugin);
-# Phase 4 adds `hugr-wasm` (the browser/JS binding — the same brain compiled to
-# WASM, driving a Chrome extension with no backend). `hugr-docs` is a specialized
-# read-only retrieval host that showcases the same core with a different CLI and
-# capability set. Phase 6 (sub-agents & forks)
-# is entirely inside hugr-core + hugr-host. All host crates may touch IO (or,
-# for hugr-wasm, the JS host does); never `hugr-core`.
+# Crate layout (see docs/ARCHITECTURE.md §10): `hugr-core` is the pure, sans-IO
+# brain; every other crate is a host layer and may touch IO — never `hugr-core`.
 
 [workspace.package]
 version = "0.0.2"
@@ -46,7 +32,6 @@ hugr-providers = { path = "crates/hugr-providers" }
 hugr-replay = { path = "crates/hugr-replay" }
 hugr-agent = { path = "crates/hugr-agent" }
 hugr-toolkit = { path = "crates/hugr-toolkit" }
-hugr-plugin-abi = { path = "crates/hugr-plugin-abi" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"

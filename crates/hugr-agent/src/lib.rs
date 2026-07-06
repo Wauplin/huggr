@@ -32,14 +32,14 @@ pub use agent::{
 };
 pub use agent_tool::{AgentToolResolver, AgentToolSpec, depth_exceeded_resolver};
 pub use answer_schema::validate_extra;
-pub use limits::LimitKind;
 pub use blobs::BlobError;
 pub use contract::{
     Access, Answer, AnswerMeta, AnswerStatus, Ask, BlobHandle, BlobPerms, BlobRef, ResourceGrant,
     ResourceGroup, ResourceRef, TierSpend, TraceId,
 };
+pub use limits::LimitKind;
 pub use store::{
-    PruneReport, PrunePolicy, StoreError, StoreSize, TraceHead, TraceHeader, TraceStore,
+    PrunePolicy, PruneReport, StoreError, StoreSize, TraceHead, TraceHeader, TraceStore,
 };
 
 /// The content-addressed blob store outbound blobs land in (ARCHITECTURE

@@ -12,7 +12,7 @@
 //! MCP sampling; the agent owns its provider.
 
 use hugr_agent::{Agent, AgentCard, Ask, BlobHandle, TraceId};
-use hugr_plugin_abi::framing;
+use hugr_host::framing;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncWriteExt, BufReader};

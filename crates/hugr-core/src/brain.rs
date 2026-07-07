@@ -18,11 +18,9 @@ use serde_json::json;
 use crate::command::{Command, DoneReason, OutputEvent, PermissionRequest};
 use crate::event::{Decision, Event, SteerMode, VersionRef};
 use crate::model::{ContextPlan, ModelDelta, ModelOutput, ModelSelector, ToolCall, Usage};
-use crate::policy::{AgentSeed, RoutingInputs, RoutingPhase, StaticPolicy, TurnPolicy};
+use crate::policy::{AgentSeed, StaticPolicy, TurnPolicy};
 use crate::primitives::{OpId, Value};
-use crate::record::{
-    LogEntry, OpMeta, OpOutcome, Record, RoutingDecision, SeqRange, SummaryCoverage,
-};
+use crate::record::{LogEntry, OpMeta, OpOutcome, Record, SeqRange, SummaryCoverage};
 use crate::state::{BrainState, OpKind};
 
 /// The pure, sans-IO agent core. Construct one with a [`TurnPolicy`], feed it
@@ -564,22 +562,15 @@ impl Brain {
         }
 
         let op = self.state.alloc_op();
-        let mut inputs =
-            RoutingInputs::from_state(&self.state, &plan, next_routing_phase(self.state.log()));
-        inputs.override_selector = self.state.take_model_override();
-        let selector = self.policy.choose_model(&self.state, &inputs);
-        let routing = RoutingDecision::new(
-            selector.clone(),
-            self.policy
-                .explain_model_choice(&self.state, &inputs, &selector),
-        )
-        .with_inputs(routing_inputs_snapshot(&inputs));
+        let selector = self
+            .state
+            .take_model_override()
+            .unwrap_or_else(|| self.policy.choose_model(&self.state));
         let request = plan.to_model_request();
         self.state.mark(
             op,
             OpKind::Model {
                 selector: selector.clone(),
-                routing,
                 text_so_far: String::new(),
             },
         );
@@ -620,32 +611,16 @@ impl Brain {
     ) {
         let op = self.state.alloc_op();
         // Route the compaction model through the policy (ARCHITECTURE §2.5): the
-        // reducer must not hardcode a tier. A tiered policy can pick a cheap
-        // model for the `Compaction` phase; a single-model policy falls back to
-        // its default rather than erroring on a missing "small" model. The
-        // per-turn model override is deliberately *not* consumed here — it
-        // belongs to the real turn that resumes after compaction.
-        let inputs = RoutingInputs::from_state(&self.state, plan, RoutingPhase::Compaction);
-        let selector = self.policy.choose_model(&self.state, &inputs);
-        let mut reasons = self
-            .policy
-            .explain_model_choice(&self.state, &inputs, &selector);
-        reasons.push(
-            if resume_turn {
-                "automatic compaction pass"
-            } else {
-                "manual compaction pass"
-            }
-            .to_string(),
-        );
-        let routing = RoutingDecision::new(selector.clone(), reasons)
-            .with_inputs(routing_inputs_snapshot(&inputs));
+        // reducer must not hardcode a selector. The per-turn model override is
+        // deliberately *not* consumed here — it belongs to the real turn that
+        // resumes after compaction.
+        let _ = plan;
+        let selector = self.policy.choose_model(&self.state);
         let request = self.policy.compaction_request(self.state.log(), summary_of);
         self.state.mark(
             op,
             OpKind::Compaction {
                 selector: selector.clone(),
-                routing,
                 summary_of,
                 est_tokens_in,
                 resume_turn,
@@ -962,20 +937,15 @@ impl Brain {
     /// append an `OpEnded` record so latency/cost are queryable from the trace.
     fn end_op(&mut self, op: OpId, outcome: OpOutcome, usage: Option<Usage>) {
         let now = self.state.now();
-        let (started_at, model, routing) = match self.state.get_op(op) {
-            Some(entry) => (
-                entry.started_at,
-                entry.kind.selector(),
-                entry.kind.routing(),
-            ),
-            None => (now, None, None),
+        let (started_at, model) = match self.state.get_op(op) {
+            Some(entry) => (entry.started_at, entry.kind.selector()),
+            None => (now, None),
         };
         self.state.remove_op(op);
         let meta = OpMeta {
             started_at,
             ended_at: now,
             model,
-            routing,
             usage,
             extra: json!(null),
         };
@@ -1037,26 +1007,4 @@ fn summary_text(output: &ModelOutput) -> String {
     } else {
         serde_json::to_string(&output.tool_calls).unwrap_or_default()
     }
-}
-
-fn next_routing_phase(log: &[LogEntry]) -> RoutingPhase {
-    match log
-        .iter()
-        .rev()
-        .find(|entry| !matches!(entry.record, Record::OpEnded { .. }))
-        .map(|entry| &entry.record)
-    {
-        Some(Record::ToolResult { .. }) => RoutingPhase::ToolFollowup,
-        _ => RoutingPhase::Normal,
-    }
-}
-
-fn routing_inputs_snapshot(inputs: &RoutingInputs) -> Value {
-    json!({
-        "phase": format!("{:?}", inputs.phase),
-        "tool_risk": format!("{:?}", inputs.tool_risk),
-        "context_pressure": format!("{:.6}", inputs.context_pressure),
-        "recent_failures": inputs.recent_failures,
-        "override_selector": inputs.override_selector,
-    })
 }

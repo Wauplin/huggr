@@ -21,7 +21,7 @@
 //! the session one event at a time, watching the commands each event produced
 //! and the log entries it appended.
 
-use hugr_core::{Brain, Command, Event, LogEntry, RoutingPolicy, TurnPolicy, decode_policy};
+use hugr_core::{Brain, Command, Event, LogEntry, StaticPolicy, TurnPolicy, decode_policy};
 
 use crate::{ChildTrace, Trace, TraceError};
 
@@ -51,8 +51,8 @@ pub fn replay(trace: &Trace) -> Replay {
 }
 
 /// Reconstruct the [`TurnPolicy`] a trace was recorded under: decode the
-/// captured [`RoutingPolicy`] / [`StaticPolicy`](hugr_core::StaticPolicy)
-/// config if present (via [`decode_policy`]), else the default.
+/// captured [`StaticPolicy`] config if present (via [`decode_policy`]), else
+/// the default.
 ///
 /// This is the policy a faithful replay (or **resume**, P3-4) must run under —
 /// the brain branches on the policy's pure decisions, so continuing a session
@@ -66,7 +66,7 @@ pub fn policy_from_trace(trace: &Trace) -> Box<dyn TurnPolicy> {
         // No captured policy, or one we can't decode (e.g. a custom host
         // policy): fall back to the default rather than fail. The caller can
         // supply the right policy via `replay_with_policy`.
-        .unwrap_or_else(|| Box::new(RoutingPolicy::default()))
+        .unwrap_or_else(|| Box::new(StaticPolicy::default()))
 }
 
 /// Fold an ordered event stream into `brain`, draining and returning every
@@ -237,7 +237,7 @@ pub struct Inspector {
 
 impl Inspector {
     /// An inspector over a trace, using the policy the trace captured (or the
-    /// default [`RoutingPolicy`] if none) — see [`replay`] for why the policy
+    /// default [`StaticPolicy`] if none) — see [`replay`] for why the policy
     /// matters for faithful reconstruction.
     pub fn new(trace: &Trace) -> Self {
         Self::with_policy(trace, policy_from_trace(trace))

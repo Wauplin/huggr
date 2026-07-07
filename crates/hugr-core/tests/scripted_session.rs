@@ -3,14 +3,12 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
-
 use common::*;
 use hugr_core::{
     Brain, Command, ContentPart, ContextBlock, ContextDisposition, ContextPlan, ContextSource,
-    DoneReason, Event, LogEntry, ModelSelector, OpId, Record, Role, RoutingInputs, RoutingPhase,
-    RoutingPolicy, SamplingParams, Seq, SeqRange, SkillDescriptor, StaticPolicy, SummaryCoverage,
-    Timestamp, TokenBudget, ToolRisk, ToolSchema, ToolVersioning, TurnPolicy, VersionRef,
+    DoneReason, Event, LogEntry, ModelSelector, OpId, Record, Role, SamplingParams, Seq, SeqRange,
+    SkillDescriptor, StaticPolicy, SummaryCoverage, Timestamp, TokenBudget, ToolSchema,
+    ToolVersioning, TurnPolicy, VersionRef,
 };
 use serde_json::json;
 
@@ -473,152 +471,6 @@ fn skill_invocation_records_activation_and_projects_instructions() {
 }
 
 #[test]
-fn routing_inputs_are_purely_derived_for_turn_and_followup() {
-    struct CapturingPolicy {
-        base: StaticPolicy,
-        seen: Arc<Mutex<Vec<RoutingInputs>>>,
-    }
-
-    impl TurnPolicy for CapturingPolicy {
-        fn choose_model(
-            &self,
-            state: &hugr_core::BrainState,
-            inputs: &RoutingInputs,
-        ) -> ModelSelector {
-            self.seen.lock().unwrap().push(inputs.clone());
-            self.base.choose_model(state, inputs)
-        }
-
-        fn context_budget(&self, state: &hugr_core::BrainState) -> TokenBudget {
-            self.base.context_budget(state)
-        }
-
-        fn project_context(&self, log: &[LogEntry], budget: TokenBudget) -> ContextPlan {
-            self.base.project_context(log, budget)
-        }
-
-        fn needs_permission(&self, capability: &str) -> bool {
-            self.base.needs_permission(capability)
-        }
-    }
-
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let policy = CapturingPolicy {
-        base: StaticPolicy::default().with_context_budget(TokenBudget::new(4)),
-        seen: seen.clone(),
-    };
-    let mut brain = Brain::new(Box::new(policy));
-
-    run_script(
-        &mut brain,
-        vec![
-            user("first"),
-            Event::ModelDone {
-                op: OpId(0),
-                output: tool_output("call-1", "shell", json!({ "cmd": "false" })),
-                usage: usage(),
-                est_tokens: 1,
-            },
-            Event::CapabilityError {
-                op: OpId(1),
-                error: json!({ "error": "test failed" }),
-                conflict: None,
-                est_tokens: 1,
-            },
-        ],
-    );
-
-    let seen = seen.lock().unwrap();
-    assert_eq!(seen.len(), 2);
-    assert_eq!(seen[0].phase, RoutingPhase::Normal);
-    assert_eq!(seen[0].tool_risk, ToolRisk::None);
-    assert_eq!(seen[0].recent_failures, 0);
-    assert!(seen[0].context_pressure > 0.0);
-    assert_eq!(seen[1].phase, RoutingPhase::ToolFollowup);
-    assert_eq!(seen[1].tool_risk, ToolRisk::Failed);
-    assert!(seen[1].recent_failures >= 1);
-    assert!(seen[1].context_pressure >= seen[0].context_pressure);
-}
-
-#[test]
-fn routing_policy_deterministically_uses_small_medium_and_big() {
-    let mut small_brain = Brain::new(Box::new(RoutingPolicy::default()));
-    let small_commands = run_script(
-        &mut small_brain,
-        vec![user("classify this request as safe or unsafe")],
-    );
-    assert!(matches!(
-        first_model_selector(&small_commands),
-        Some(ModelSelector::Named(name)) if name == "small"
-    ));
-
-    let mut medium_brain = Brain::new(Box::new(RoutingPolicy::default()));
-    let medium_commands = run_script(&mut medium_brain, vec![user("write a short note")]);
-    assert!(matches!(
-        first_model_selector(&medium_commands),
-        Some(ModelSelector::Named(name)) if name == "medium"
-    ));
-
-    let failure_script = vec![
-        user("fix the failing tests"),
-        Event::ModelDone {
-            op: OpId(0),
-            output: tool_output("call-1", "shell", json!({ "cmd": "cargo test" })),
-            usage: usage(),
-            est_tokens: 1,
-        },
-        Event::CapabilityError {
-            op: OpId(1),
-            error: json!({ "error": "test failed", "stderr": "FAILED test_one" }),
-            conflict: None,
-            est_tokens: 1,
-        },
-        Event::ModelDone {
-            op: OpId(2),
-            output: text_output("I see the failing test."),
-            usage: usage(),
-            est_tokens: 1,
-        },
-    ];
-    let mut big_brain = Brain::new(Box::new(RoutingPolicy::default()));
-    let big_commands = run_script(&mut big_brain, failure_script.clone());
-    assert!(matches!(
-        last_model_selector(&big_commands),
-        Some(ModelSelector::Named(name)) if name == "big"
-    ));
-    let big_routing = big_brain
-        .state()
-        .log()
-        .iter()
-        .find_map(|entry| match &entry.record {
-            Record::OpEnded {
-                op: OpId(2), meta, ..
-            } => meta.routing.as_ref(),
-            _ => None,
-        })
-        .expect("big model op records routing metadata");
-    assert_eq!(big_routing.selector, ModelSelector::named("big"));
-    assert!(
-        big_routing
-            .reasons
-            .iter()
-            .any(|reason| reason.contains("recent failure count")),
-        "routing reasons: {:?}",
-        big_routing.reasons
-    );
-    assert!(
-        big_routing.inputs["recent_failures"].as_u64().unwrap_or(0) >= 2,
-        "routing inputs: {}",
-        big_routing.inputs
-    );
-
-    let mut replay_brain = Brain::new(Box::new(RoutingPolicy::default()));
-    let replay_commands = run_script(&mut replay_brain, failure_script);
-    assert_eq!(big_commands, replay_commands);
-    assert_eq!(big_brain.state().log(), replay_brain.state().log());
-}
-
-#[test]
 fn model_override_forces_one_turn_then_clears() {
     let script = vec![
         Event::ModelOverride {
@@ -633,7 +485,7 @@ fn model_override_forces_one_turn_then_clears() {
         },
         user("another ordinary request"),
     ];
-    let mut brain = Brain::new(Box::new(RoutingPolicy::default()));
+    let mut brain = Brain::new(Box::new(StaticPolicy::default()));
     let commands = run_script(&mut brain, script);
     let selectors: Vec<_> = commands
         .iter()
@@ -1186,20 +1038,6 @@ fn manual_compaction_event_runs_one_pass_without_starting_turn() {
     assert_eq!(first.state().log(), second.state().log());
 }
 
-fn first_model_selector(commands: &[Command]) -> Option<&ModelSelector> {
-    commands.iter().find_map(|command| match command {
-        Command::StartModelCall { model, .. } => Some(model),
-        _ => None,
-    })
-}
-
-fn last_model_selector(commands: &[Command]) -> Option<&ModelSelector> {
-    commands.iter().rev().find_map(|command| match command {
-        Command::StartModelCall { model, .. } => Some(model),
-        _ => None,
-    })
-}
-
 /// A **duplicate** permission `Allow` for an op that already started must be a
 /// no-op — it must never drop the live op from the in-flight table
 /// (ARCHITECTURE §4.1). The reducer peeks for `AwaitingPermission` before
@@ -1639,113 +1477,6 @@ fn compaction_span_never_splits_a_tool_use_result_group() {
     );
 }
 
-/// Fix 2 (a): the reducer routes the compaction model through
-/// `TurnPolicy::choose_model` with the `Compaction` phase and uses the selector
-/// the policy returns — no hardcoded tier.
-#[test]
-fn compaction_routes_the_model_through_choose_model() {
-    struct CompactionRoutingPolicy {
-        base: StaticPolicy,
-        phases: Arc<Mutex<Vec<RoutingPhase>>>,
-    }
-
-    impl TurnPolicy for CompactionRoutingPolicy {
-        fn choose_model(
-            &self,
-            state: &hugr_core::BrainState,
-            inputs: &RoutingInputs,
-        ) -> ModelSelector {
-            self.phases.lock().unwrap().push(inputs.phase);
-            if inputs.phase == RoutingPhase::Compaction {
-                ModelSelector::named("compactor")
-            } else {
-                self.base.choose_model(state, inputs)
-            }
-        }
-
-        fn context_budget(&self, state: &hugr_core::BrainState) -> TokenBudget {
-            self.base.context_budget(state)
-        }
-
-        fn project_context(&self, log: &[LogEntry], budget: TokenBudget) -> ContextPlan {
-            self.base.project_context(log, budget)
-        }
-
-        fn compaction_high_water(
-            &self,
-            state: &hugr_core::BrainState,
-            budget: TokenBudget,
-        ) -> Option<u64> {
-            self.base.compaction_high_water(state, budget)
-        }
-
-        fn needs_permission(&self, capability: &str) -> bool {
-            self.base.needs_permission(capability)
-        }
-    }
-
-    let phases = Arc::new(Mutex::new(Vec::new()));
-    let policy = CompactionRoutingPolicy {
-        base: StaticPolicy::default()
-            .with_context_budget(TokenBudget::new(20))
-            .with_compaction_high_water_percent(90),
-        phases: phases.clone(),
-    };
-    let mut brain = Brain::from_log(Box::new(policy), compaction_prior_log());
-    let commands = run_script(&mut brain, compaction_script());
-
-    assert_eq!(
-        first_model_selector(&commands),
-        Some(&ModelSelector::named("compactor")),
-        "compaction turn must use the policy-chosen selector",
-    );
-    let phases = phases.lock().unwrap();
-    assert_eq!(
-        phases.first(),
-        Some(&RoutingPhase::Compaction),
-        "choose_model is consulted with the Compaction phase first",
-    );
-    assert!(phases.contains(&RoutingPhase::Normal));
-}
-
-/// Fix 2 (b): a `RoutingPolicy` reaches its `Compaction` arm (cheap tier), while
-/// a single-tier `StaticPolicy` with no `small` model registered still compacts
-/// using its default model rather than emitting a `ModelError`.
-#[test]
-fn routing_policy_compaction_uses_small_but_static_falls_back() {
-    let base = StaticPolicy::default()
-        .with_context_budget(TokenBudget::new(20))
-        .with_compaction_high_water_percent(90);
-
-    let make_routing = || RoutingPolicy::new(base.clone());
-    let mut routed = Brain::from_log(Box::new(make_routing()), compaction_prior_log());
-    let routed_commands = run_script(&mut routed, compaction_script());
-    assert_eq!(
-        first_model_selector(&routed_commands),
-        Some(&ModelSelector::named("small")),
-        "RoutingPolicy's Compaction arm must be exercised",
-    );
-    assert_eq!(
-        last_model_selector(&routed_commands),
-        Some(&ModelSelector::named("medium")),
-        "the real turn after compaction still uses the medium tier",
-    );
-
-    // StaticPolicy has no tiers: compaction falls back to its default model.
-    let mut fallback = Brain::from_log(Box::new(base.clone()), compaction_prior_log());
-    let fallback_commands = run_script(&mut fallback, compaction_script());
-    assert_eq!(
-        first_model_selector(&fallback_commands),
-        Some(&ModelSelector::named("medium")),
-    );
-
-    // Determinism: re-feeding the same events reproduces the same commands/log.
-    let mut replay = Brain::from_log(Box::new(make_routing()), compaction_prior_log());
-    let replay_commands = run_script(&mut replay, compaction_script());
-    assert_eq!(routed_commands, replay_commands);
-    assert_eq!(routed.state().log(), replay.state().log());
-}
-
 /// Fix 3 (default): the default `compaction_request` is byte-identical to the
 /// prompt/rendering the reducer produced before the hook existed.
 #[test]
@@ -1822,12 +1553,8 @@ fn compaction_prompt_and_rendering_are_overridable() {
     }
 
     impl TurnPolicy for CustomSummaryPolicy {
-        fn choose_model(
-            &self,
-            state: &hugr_core::BrainState,
-            inputs: &RoutingInputs,
-        ) -> ModelSelector {
-            self.base.choose_model(state, inputs)
+        fn choose_model(&self, state: &hugr_core::BrainState) -> ModelSelector {
+            self.base.choose_model(state)
         }
 
         fn context_budget(&self, state: &hugr_core::BrainState) -> TokenBudget {
@@ -1911,7 +1638,7 @@ fn compaction_prompt_and_rendering_are_overridable() {
 /// main-turn `ModelOutput` (the log is the source of truth, ARCHITECTURE §3.1).
 #[test]
 fn model_override_is_logged_and_survives_resume() {
-    let mut brain = Brain::new(Box::new(RoutingPolicy::default()));
+    let mut brain = Brain::new(Box::new(StaticPolicy::default()));
     let commands = run_script(
         &mut brain,
         vec![Event::ModelOverride {
@@ -1927,7 +1654,7 @@ fn model_override_is_logged_and_survives_resume() {
 
     // Crash/resume before the override is consumed: the fold restores it.
     let resumed = Brain::from_log(
-        Box::new(RoutingPolicy::default()),
+        Box::new(StaticPolicy::default()),
         brain.state().log().to_vec(),
     );
     assert_eq!(
@@ -1952,7 +1679,7 @@ fn model_override_is_logged_and_survives_resume() {
     );
     assert!(brain.state().next_model_override().is_none());
     let resumed = Brain::from_log(
-        Box::new(RoutingPolicy::default()),
+        Box::new(StaticPolicy::default()),
         brain.state().log().to_vec(),
     );
     assert!(
@@ -1961,7 +1688,7 @@ fn model_override_is_logged_and_survives_resume() {
     );
 
     // Clearing (`selector: None`) is durable too: it supersedes a pending one.
-    let mut cleared = Brain::new(Box::new(RoutingPolicy::default()));
+    let mut cleared = Brain::new(Box::new(StaticPolicy::default()));
     run_script(
         &mut cleared,
         vec![
@@ -1972,14 +1699,14 @@ fn model_override_is_logged_and_survives_resume() {
         ],
     );
     let resumed = Brain::from_log(
-        Box::new(RoutingPolicy::default()),
+        Box::new(StaticPolicy::default()),
         cleared.state().log().to_vec(),
     );
     assert!(resumed.state().next_model_override().is_none());
 
     // Determinism: the whole override path replays bit-for-bit.
     assert_deterministic_replay(
-        || Brain::new(Box::new(RoutingPolicy::default())),
+        || Brain::new(Box::new(StaticPolicy::default())),
         || {
             vec![
                 Event::ModelOverride {
@@ -2025,7 +1752,7 @@ fn model_override_survives_a_compaction_pass_in_the_fold() {
             },
         ),
     ];
-    let brain = Brain::from_log(Box::new(RoutingPolicy::default()), log);
+    let brain = Brain::from_log(Box::new(StaticPolicy::default()), log);
     assert_eq!(
         brain.state().next_model_override(),
         Some(&ModelSelector::named("big")),

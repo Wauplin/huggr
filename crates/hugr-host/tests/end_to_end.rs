@@ -1082,7 +1082,7 @@ async fn resume_after_crash_starts_quiescent() {
     let capture = Capture::default();
     let continued_model = MockModel::new([ModelOutput::text("continued after crash")]);
     let mut resumed = Engine::builder()
-        .model(ModelSelector::named("big"), continued_model.clone())
+        .model(ModelSelector::named("medium"), continued_model.clone())
         .frontend(Box::new(capture.clone()))
         .clock(deterministic_clock())
         .resume(saved)

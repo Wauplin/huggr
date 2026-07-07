@@ -42,7 +42,6 @@ fn representative_script() -> Vec<Event> {
         Event::CapabilityDone {
             op: OpId(1),
             result: json!({ "stdout": "a.txt" }),
-            version: None,
             est_tokens: 1,
         },
         Event::Tick {

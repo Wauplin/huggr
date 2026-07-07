@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelDelta, ModelOutput, Usage};
-use crate::primitives::{ObjectKey, OpId, Timestamp, Value};
+use crate::primitives::{OpId, Timestamp, Value};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -51,22 +51,18 @@ pub enum Event {
         op: OpId,
         chunk: Value,
     },
-    /// A capability finished. `version` carries the optimistic-concurrency
-    /// envelope (ARCHITECTURE §7.3) when the op read/refreshed a versioned object.
+    /// A capability finished.
     CapabilityDone {
         op: OpId,
         result: Value,
-        version: Option<VersionRef>,
         /// Host-provided approximate token count for the durable tool result.
         #[serde(default)]
         est_tokens: u32,
     },
-    /// A capability failed. `conflict` is set when the host's atomic CAS
-    /// rejected a stale mutation.
+    /// A capability failed.
     CapabilityError {
         op: OpId,
         error: Value,
-        conflict: Option<VersionRef>,
         /// Host-provided approximate token count for the durable tool error.
         #[serde(default)]
         est_tokens: u32,
@@ -132,24 +128,3 @@ pub enum Decision {
     Allow,
     Deny { reason: String },
 }
-
-/// Optimistic-concurrency envelope for stateful capabilities (ARCHITECTURE
-/// §7.3). Values are opaque to the brain — compared by equality, never parsed.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct VersionRef {
-    pub object: ObjectKey,
-    pub version: Version,
-}
-
-impl VersionRef {
-    pub fn new(object: impl Into<ObjectKey>, version: impl Into<Version>) -> Self {
-        Self {
-            object: object.into(),
-            version: version.into(),
-        }
-    }
-}
-
-/// An opaque version token: content hash / etag / git sha / row xmin / …
-pub type Version = String;

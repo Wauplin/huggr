@@ -2064,7 +2064,6 @@ mod tests {
                 name: name.to_string(),
                 call_id: format!("call-{seq}"),
                 result,
-                version: None,
                 est_tokens: 0,
             },
         )

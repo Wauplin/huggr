@@ -416,24 +416,16 @@ pub(crate) async fn run_capability_op(
 ) {
     let sink = ChunkSink::new(op, tx.clone());
     let event = match capability.invoke(args, &sink).await {
-        Ok(result) => {
-            let version = capability.result_version(&result);
-            Event::CapabilityDone {
-                op,
-                est_tokens: estimate_value_tokens(&result),
-                result,
-                version,
-            }
-        }
-        Err(error) => {
-            let conflict = capability.conflict_version(&error);
-            Event::CapabilityError {
-                op,
-                est_tokens: estimate_value_tokens(&error),
-                error,
-                conflict,
-            }
-        }
+        Ok(result) => Event::CapabilityDone {
+            op,
+            est_tokens: estimate_value_tokens(&result),
+            result,
+        },
+        Err(error) => Event::CapabilityError {
+            op,
+            est_tokens: estimate_value_tokens(&error),
+            error,
+        },
     };
     let _ = tx.send(event);
 }
@@ -445,7 +437,6 @@ pub(crate) fn unknown_capability_event(op: OpId, name: &str) -> Event {
         op,
         est_tokens: estimate_value_tokens(&error),
         error,
-        conflict: None,
     }
 }
 

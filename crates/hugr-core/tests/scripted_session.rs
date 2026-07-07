@@ -6,8 +6,7 @@ mod common;
 use common::*;
 use hugr_core::{
     Brain, Command, ContentPart, ContextDisposition, ContextSource, DoneReason, Event,
-    ModelSelector, OpId, Record, Role, StaticPolicy, TokenBudget, ToolSchema, ToolVersioning,
-    TurnPolicy, VersionRef,
+    ModelSelector, OpId, Record, Role, StaticPolicy, TokenBudget, ToolSchema, TurnPolicy,
 };
 use serde_json::json;
 
@@ -35,7 +34,6 @@ fn user_model_tool_model_done() {
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "stdout": "a.txt\nb.txt" }),
-                version: None,
                 est_tokens: 1,
             },
             // 4. Model gives a final answer with no tool calls → turn is done.
@@ -103,7 +101,6 @@ fn tool_results_are_projected_adjacent_to_tool_calls_even_with_records_between()
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "stdout": "a.txt\nb.txt" }),
-                version: None,
                 est_tokens: 1,
             },
         ],
@@ -132,127 +129,6 @@ fn tool_results_are_projected_adjacent_to_tool_calls_even_with_records_between()
 }
 
 #[test]
-fn versioned_tool_calls_stamp_expected_version_and_route_conflict_retry() {
-    let tools = vec![
-        ToolSchema::new(
-            "fs_read",
-            "read",
-            json!({
-                "type": "object",
-                "properties": { "path": { "type": "string" } },
-                "required": ["path"]
-            }),
-        )
-        .with_versioning(ToolVersioning::read("path")),
-        ToolSchema::new(
-            "fs_write",
-            "write",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "content": { "type": "string" },
-                    "expected_version": { "type": "string" }
-                },
-                "required": ["path", "content"]
-            }),
-        )
-        .with_versioning(ToolVersioning::mutation("path", "expected_version")),
-    ];
-    let mut brain = Brain::new(Box::new(StaticPolicy::default().with_tools(tools)));
-
-    let commands = run_script(
-        &mut brain,
-        vec![
-            user("edit src/lib.rs"),
-            Event::ModelDone {
-                op: OpId(0),
-                output: tool_output("read-1", "fs_read", json!({ "path": "src/lib.rs" })),
-                usage: usage(),
-                est_tokens: 1,
-            },
-            Event::CapabilityDone {
-                op: OpId(1),
-                result: json!({ "path": "src/lib.rs", "content": "old", "version": "v1" }),
-                version: Some(VersionRef::new("src/lib.rs", "v1")),
-                est_tokens: 1,
-            },
-            Event::ModelDone {
-                op: OpId(2),
-                output: tool_output(
-                    "write-1",
-                    "fs_write",
-                    json!({ "path": "src/lib.rs", "content": "new" }),
-                ),
-                usage: usage(),
-                est_tokens: 1,
-            },
-            Event::CapabilityError {
-                op: OpId(3),
-                error: json!({
-                    "error": "conflict",
-                    "path": "src/lib.rs",
-                    "current_version": "v2",
-                    "current_content": "changed"
-                }),
-                conflict: Some(VersionRef::new("src/lib.rs", "v2")),
-                est_tokens: 1,
-            },
-            Event::ModelDone {
-                op: OpId(4),
-                output: tool_output("read-2", "fs_read", json!({ "path": "src/lib.rs" })),
-                usage: usage(),
-                est_tokens: 1,
-            },
-        ],
-    );
-
-    let write_args = commands
-        .iter()
-        .find_map(|cmd| match cmd {
-            Command::StartCapability {
-                op: OpId(3),
-                name,
-                args,
-            } if name == "fs_write" => Some(args),
-            _ => None,
-        })
-        .expect("write capability should start");
-    assert_eq!(write_args["expected_version"], json!("v1"));
-
-    assert_eq!(
-        brain.state().versions().get("src/lib.rs"),
-        Some(&"v2".to_string())
-    );
-    let restored = Brain::from_log(
-        Box::new(StaticPolicy::default()),
-        brain.state().log().to_vec(),
-    );
-    assert_eq!(
-        restored.state().versions().get("src/lib.rs"),
-        Some(&"v2".to_string())
-    );
-
-    let retry_read = commands.iter().any(|cmd| {
-        matches!(
-            cmd,
-            Command::StartCapability {
-                op: OpId(5),
-                name,
-                ..
-            } if name == "fs_read"
-        )
-    });
-    assert!(
-        retry_read,
-        "conflict should be routed back so the model can re-read"
-    );
-}
-
-/// The same session, but the tool requires permission. The sequence gains a
-/// `RequestPermission` before the capability actually starts, and the granted
-/// capability reuses the same op id.
-#[test]
 fn permissioned_tool_round_trip() {
     let policy = StaticPolicy::default().with_permissioned(["shell".to_string()]);
     let mut brain = Brain::new(Box::new(policy));
@@ -276,7 +152,6 @@ fn permissioned_tool_round_trip() {
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "ok": true }),
-                version: None,
                 est_tokens: 1,
             },
             Event::ModelDone {
@@ -386,14 +261,12 @@ fn parallel_tool_calls_resume_once() {
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "stdout": "x" }),
-                version: None,
                 est_tokens: 1,
             },
             // Second tool finishes — now the model resumes.
             Event::CapabilityDone {
                 op: OpId(2),
                 result: json!({ "status": 200 }),
-                version: None,
                 est_tokens: 1,
             },
             Event::ModelDone {
@@ -537,7 +410,6 @@ fn duplicate_permission_allow_does_not_drop_the_live_op() {
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "ok": true }),
-                version: None,
                 est_tokens: 1,
             },
             Event::ModelDone {
@@ -612,7 +484,6 @@ fn duplicate_permission_allow_replay_is_deterministic() {
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "ok": true }),
-                version: None,
                 est_tokens: 1,
             },
             Event::ModelDone {
@@ -701,7 +572,6 @@ fn model_error_with_a_background_op_defers_done() {
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "exit_code": 0 }),
-                version: None,
                 est_tokens: 1,
             },
         ],
@@ -757,7 +627,6 @@ fn model_error_replay_is_deterministic() {
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "exit_code": 0 }),
-                version: None,
                 est_tokens: 1,
             },
         ]

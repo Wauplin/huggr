@@ -16,7 +16,7 @@
 use serde_json::json;
 
 use crate::command::{Command, DoneReason, OutputEvent, PermissionRequest};
-use crate::event::{Decision, Event, SteerMode, VersionRef};
+use crate::event::{Decision, Event, SteerMode};
 use crate::model::{ContextPlan, ModelDelta, ModelOutput, ToolCall, Usage};
 use crate::policy::{AgentSeed, StaticPolicy, TurnPolicy};
 use crate::primitives::{OpId, Value};
@@ -102,15 +102,13 @@ impl Brain {
             Event::CapabilityDone {
                 op,
                 result,
-                version,
                 est_tokens,
-            } => self.on_capability_done(op, result, version, est_tokens),
+            } => self.on_capability_done(op, result, est_tokens),
             Event::CapabilityError {
                 op,
                 error,
-                conflict,
                 est_tokens,
-            } => self.on_capability_error(op, error, conflict, est_tokens),
+            } => self.on_capability_error(op, error, est_tokens),
 
             Event::AgentDone {
                 op,
@@ -280,28 +278,16 @@ impl Brain {
     }
 
     /// The shared tail of every tool-result-shaped resolution (capability,
-    /// sub-agent, user answer, permission denial): record a version refresh if
-    /// one rode along (ARCHITECTURE §7.3), append the *one* consolidated
-    /// `ToolResult` record (ARCHITECTURE §4.5), end the op, and resume the turn.
-    fn finish_tool_result(
-        &mut self,
-        op: OpId,
-        result: Value,
-        version: Option<VersionRef>,
-        outcome: OpOutcome,
-        est_tokens: u32,
-    ) {
-        if let Some(v) = &version {
-            self.state
-                .record_version(v.object.clone(), v.version.clone());
-        }
+    /// sub-agent, user answer, permission denial): append the *one*
+    /// consolidated `ToolResult` record (ARCHITECTURE §4.5), end the op, and
+    /// resume the turn.
+    fn finish_tool_result(&mut self, op: OpId, result: Value, outcome: OpOutcome, est_tokens: u32) {
         let (name, call_id) = self.tool_ids(op);
         self.append(Record::ToolResult {
             op,
             name,
             call_id,
             result,
-            version,
             est_tokens,
         });
         self.end_op(op, outcome, None);
@@ -314,44 +300,25 @@ impl Brain {
         self.maybe_resume_model_turn();
     }
 
-    fn on_capability_done(
-        &mut self,
-        op: OpId,
-        result: Value,
-        version: Option<VersionRef>,
-        est_tokens: u32,
-    ) {
-        self.finish_tool_result(op, result, version, OpOutcome::Ok, est_tokens);
+    fn on_capability_done(&mut self, op: OpId, result: Value, est_tokens: u32) {
+        self.finish_tool_result(op, result, OpOutcome::Ok, est_tokens);
     }
 
-    fn on_capability_error(
-        &mut self,
-        op: OpId,
-        error: Value,
-        conflict: Option<VersionRef>,
-        est_tokens: u32,
-    ) {
-        // A stale-edit conflict refreshes the read-set so the model's next edit
-        // is stamped correctly; otherwise it is an ordinary error result fed
-        // back to the model (ARCHITECTURE §5.4, §7.3).
-        self.finish_tool_result(
-            op,
-            error.clone(),
-            conflict,
-            OpOutcome::Error(error),
-            est_tokens,
-        );
+    fn on_capability_error(&mut self, op: OpId, error: Value, est_tokens: u32) {
+        // A semantic tool failure is an ordinary error result fed back to the
+        // model (ARCHITECTURE §5.4).
+        self.finish_tool_result(op, error.clone(), OpOutcome::Error(error), est_tokens);
     }
 
     fn on_agent_done(&mut self, op: OpId, result: Value, est_tokens: u32) {
         // A sub-agent result returns to the parent as a tool-result-shaped value
         // the next model turn consumes (ARCHITECTURE §13.1/§14.3): the child's
         // digest flows back as *one* value; forks diverge, results flow back.
-        self.finish_tool_result(op, result, None, OpOutcome::Ok, est_tokens);
+        self.finish_tool_result(op, result, OpOutcome::Ok, est_tokens);
     }
 
     fn on_agent_error(&mut self, op: OpId, error: Value, est_tokens: u32) {
-        self.finish_tool_result(op, error.clone(), None, OpOutcome::Error(error), est_tokens);
+        self.finish_tool_result(op, error.clone(), OpOutcome::Error(error), est_tokens);
     }
 
     fn on_permission_decision(&mut self, op: OpId, decision: Decision, est_tokens: u32) {
@@ -395,13 +362,7 @@ impl Brain {
             }
             Decision::Deny { reason } => {
                 let result = json!({ "error": "permission_denied", "reason": reason });
-                self.finish_tool_result(
-                    op,
-                    result.clone(),
-                    None,
-                    OpOutcome::Error(result),
-                    est_tokens,
-                );
+                self.finish_tool_result(op, result.clone(), OpOutcome::Error(result), est_tokens);
             }
         }
     }
@@ -444,7 +405,6 @@ impl Brain {
                 name,
                 call_id,
                 result,
-                version: None,
                 est_tokens: 0,
             });
         }
@@ -581,15 +541,10 @@ impl Brain {
         &mut self,
         op: OpId,
         name: String,
-        mut args: Value,
+        args: Value,
         call_id: String,
         background: bool,
     ) {
-        // Optimistic-concurrency stamping (ARCHITECTURE §7.3): declarative
-        // schema metadata says which arg is the object key and where a mutating
-        // call expects the last-seen version. The brain never hardcodes tool
-        // names or parses paths; it only does opaque equality/table lookup.
-        self.stamp_expected_version(&name, &mut args);
         self.state.mark(
             op,
             OpKind::Capability {
@@ -600,28 +555,6 @@ impl Brain {
         );
         self.state
             .push_command(Command::StartCapability { op, name, args });
-    }
-
-    fn stamp_expected_version(&self, name: &str, args: &mut Value) {
-        let Some(versioning) = self.policy.capability_versioning(name) else {
-            return;
-        };
-        let Some(expected_arg) = versioning.expected_version_arg else {
-            return;
-        };
-        let Some(object) = args
-            .get(&versioning.object_arg)
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-        else {
-            return;
-        };
-        let Some(version) = self.state.versions().get(&object) else {
-            return;
-        };
-        if let Some(map) = args.as_object_mut() {
-            map.insert(expected_arg, Value::String(version.clone()));
-        }
     }
 
     /// Resolve a sub-agent [`AgentSeed`] into the actual log prefix to fork
@@ -707,7 +640,6 @@ impl Brain {
             name: call.name,
             call_id: call.id,
             result: json!({ "cancelled": true }),
-            version: None,
             est_tokens: 0,
         });
         self.end_op(

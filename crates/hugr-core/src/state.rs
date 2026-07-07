@@ -4,13 +4,13 @@
 //! truth (ARCHITECTURE §3.1). The state exists so the hot path (handling a
 //! delta, deciding the next command) is cheap.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::command::Command;
 use crate::model::ModelSelector;
-use crate::primitives::{ObjectKey, OpId, Timestamp, Value};
+use crate::primitives::{OpId, Timestamp, Value};
 use crate::record::LogEntry;
 
 /// The brain's working state. Derived from [`log`](BrainState::log); never the
@@ -33,9 +33,6 @@ pub struct BrainState {
     outbox: Vec<Command>,
     /// Latest injected time (ARCHITECTURE §6.1).
     now: Timestamp,
-    /// Generic optimistic-concurrency read-set: last-seen version per object,
-    /// folded from capability results (ARCHITECTURE §7.3). Opaque keys/values.
-    versions: HashMap<ObjectKey, String>,
     /// Set when an interrupt cancelled in-flight ops and a fresh turn must start
     /// once they drain.
     pending_resume: bool,
@@ -77,22 +74,11 @@ impl BrainState {
             .max()
             .map(|max| max + 1)
             .unwrap_or(0);
-        let versions = log
-            .iter()
-            .filter_map(|entry| match &entry.record {
-                crate::record::Record::ToolResult {
-                    version: Some(version),
-                    ..
-                } => Some((version.object.clone(), version.version.clone())),
-                _ => None,
-            })
-            .collect();
         Self {
             log,
             next_seq,
             next_op,
             now,
-            versions,
             ..Self::default()
         }
     }
@@ -122,11 +108,6 @@ impl BrainState {
     /// The in-flight op table (ordered by op id, so iteration is deterministic).
     pub fn inflight(&self) -> &BTreeMap<OpId, InflightOp> {
         &self.inflight
-    }
-
-    /// The optimistic-concurrency read-set (last-seen version per object).
-    pub fn versions(&self) -> &HashMap<ObjectKey, String> {
-        &self.versions
     }
 
     // --- mutation helpers, used only by the reducer --------------------------
@@ -183,10 +164,6 @@ impl BrainState {
     /// this order leaks into emitted `Cancel` commands (ARCHITECTURE §6.2).
     pub(crate) fn inflight_op_ids(&self) -> Vec<OpId> {
         self.inflight.keys().copied().collect()
-    }
-
-    pub(crate) fn record_version(&mut self, object: ObjectKey, version: String) {
-        self.versions.insert(object, version);
     }
 
     pub(crate) fn pending_resume(&self) -> bool {

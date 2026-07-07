@@ -51,14 +51,13 @@ mod state;
 
 pub use brain::Brain;
 pub use command::{Command, DoneReason, OutputEvent, PermissionRequest};
-pub use event::{Decision, Event, SteerMode, Version, VersionRef};
+pub use event::{Decision, Event, SteerMode};
 pub use model::{
     ContentPart, ContextBlock, ContextBudgetTotals, ContextCacheHint, ContextDisposition,
     ContextPlan, ContextPlanEntry, ContextSource, ModelDelta, ModelOutput, ModelRequest,
-    ModelSelector, Role, SamplingParams, StopReason, TokenBudget, ToolCall, ToolSchema,
-    ToolVersioning, Usage,
+    ModelSelector, Role, SamplingParams, StopReason, TokenBudget, ToolCall, ToolSchema, Usage,
 };
 pub use policy::{AgentSeed, StaticPolicy, TurnPolicy, decode_policy};
-pub use primitives::{ObjectKey, OpId, Seq, Timestamp, Value};
+pub use primitives::{OpId, Seq, Timestamp, Value};
 pub use record::{LogEntry, OpMeta, OpOutcome, Record};
 pub use state::{BrainState, InflightOp, OpKind};

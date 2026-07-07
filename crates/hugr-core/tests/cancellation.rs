@@ -572,7 +572,6 @@ fn user_abort_racing_a_capability_done_does_not_resume() {
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "exit_code": 0 }),
-                version: None,
                 est_tokens: 1,
             },
             Event::OpCancelled { op: OpId(1) },
@@ -650,7 +649,6 @@ fn abort_race_replay_is_deterministic() {
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "exit_code": 0 }),
-                version: None,
                 est_tokens: 1,
             },
             Event::OpCancelled { op: OpId(1) },

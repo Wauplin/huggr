@@ -13,7 +13,6 @@ use serde_json::json;
 use crate::model::{
     ContentPart, ContextBlock, ContextBudgetTotals, ContextDisposition, ContextPlan,
     ContextPlanEntry, ContextSource, ModelSelector, Role, SamplingParams, TokenBudget, ToolSchema,
-    ToolVersioning,
 };
 use crate::primitives::Value;
 use crate::record::{LogEntry, Record};
@@ -88,13 +87,6 @@ pub trait TurnPolicy: Send + Sync {
     /// the brain merely emits [`Command::StartAgent`](crate::Command::StartAgent)
     /// instead of `StartCapability` when this returns `Some`.
     fn agent_seed(&self, _capability: &str) -> Option<AgentSeed> {
-        None
-    }
-
-    /// Declarative optimistic-concurrency metadata for a capability, if any.
-    /// The reducer uses this to stamp `expected_version` without hardcoding
-    /// capability-specific argument shapes (ARCHITECTURE §7.3).
-    fn capability_versioning(&self, _capability: &str) -> Option<ToolVersioning> {
         None
     }
 }
@@ -401,13 +393,6 @@ impl TurnPolicy for StaticPolicy {
             .iter()
             .find(|(name, _)| name == capability)
             .map(|(_, seed)| *seed)
-    }
-
-    fn capability_versioning(&self, capability: &str) -> Option<ToolVersioning> {
-        self.tools
-            .iter()
-            .find(|tool| tool.name == capability)
-            .and_then(|tool| tool.versioning.clone())
     }
 }
 

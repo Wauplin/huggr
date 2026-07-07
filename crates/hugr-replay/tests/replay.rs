@@ -37,7 +37,6 @@ fn session_events() -> Vec<Event> {
         Event::CapabilityDone {
             op: OpId(1),
             result: json!({ "stdout": "hi\n", "exit": 0 }),
-            version: None,
             est_tokens: 1,
         },
         // model's final answer (op 2), no tool calls → turn ends

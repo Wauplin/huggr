@@ -7,8 +7,8 @@ use common::*;
 use hugr_core::{
     Brain, Command, ContentPart, ContextBlock, ContextDisposition, ContextPlan, ContextSource,
     DoneReason, Event, LogEntry, ModelSelector, OpId, Record, Role, SamplingParams, Seq, SeqRange,
-    SkillDescriptor, StaticPolicy, SummaryCoverage, Timestamp, TokenBudget, ToolSchema,
-    ToolVersioning, TurnPolicy, VersionRef,
+    StaticPolicy, SummaryCoverage, Timestamp, TokenBudget, ToolSchema, ToolVersioning, TurnPolicy,
+    VersionRef,
 };
 use serde_json::json;
 
@@ -392,82 +392,6 @@ fn hook_records_are_durable_and_projected() {
         .join("\n");
     assert!(rendered.contains("Host hook"));
     assert!(rendered.contains("about to run cargo_verify"));
-}
-
-#[test]
-fn skill_invocation_records_activation_and_projects_instructions() {
-    let skill = SkillDescriptor::new(
-        "rust-reviewer",
-        "Rust Reviewer",
-        "Check Rust changes for ownership, error handling, and missing tests.",
-    )
-    .with_summary("Review Rust diffs.")
-    .with_est_tokens(12);
-    let mut brain = Brain::new(Box::new(
-        StaticPolicy::default().with_skills([skill.clone()]),
-    ));
-
-    let commands = run_script(
-        &mut brain,
-        vec![
-            user("review this change"),
-            Event::ModelDone {
-                op: OpId(0),
-                output: tool_output("call-1", &skill.tool_name(), json!({})),
-                usage: usage(),
-                est_tokens: 1,
-            },
-            Event::ModelDone {
-                op: OpId(2),
-                output: text_output("Review complete."),
-                usage: usage(),
-                est_tokens: 1,
-            },
-        ],
-    );
-
-    let first_request = commands
-        .iter()
-        .find_map(|cmd| match cmd {
-            Command::StartModelCall {
-                op: OpId(0),
-                request,
-                ..
-            } => Some(request),
-            _ => None,
-        })
-        .expect("initial model call");
-    assert_eq!(first_request.tools[0].name, "skill__rust-reviewer");
-
-    let followup_request = commands
-        .iter()
-        .find_map(|cmd| match cmd {
-            Command::StartModelCall {
-                op: OpId(2),
-                request,
-                ..
-            } => Some(request),
-            _ => None,
-        })
-        .expect("follow-up model call after skill activation");
-    assert!(followup_request.blocks.iter().any(|block| {
-        block.content.iter().any(|part| {
-            matches!(
-                part,
-                ContentPart::Text(text)
-                    if text.contains("Active skill `rust-reviewer`")
-                        && text.contains("Check Rust changes")
-            )
-        })
-    }));
-
-    assert!(brain.state().log().iter().any(|entry| {
-        matches!(
-            &entry.record,
-            Record::SkillActivated { id, title, est_tokens, .. }
-                if id == "rust-reviewer" && title == "Rust Reviewer" && *est_tokens == 12
-        )
-    }));
 }
 
 #[test]

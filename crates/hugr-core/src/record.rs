@@ -161,18 +161,6 @@ pub enum Record {
         est_tokens_out: u32,
     },
 
-    /// A skill was activated by a model-invoked skill descriptor. The full
-    /// instructions are durable so replay/projection do not depend on the host
-    /// rediscovering the skill bundle on disk.
-    SkillActivated {
-        id: String,
-        title: String,
-        summary: Option<String>,
-        instructions: String,
-        #[serde(default)]
-        est_tokens: u32,
-    },
-
     /// A user-accepted task plan. This is durable context, not model
     /// self-restatement, so future turns can project it directly (ROADMAP_2 D4).
     Plan {
@@ -220,7 +208,6 @@ impl Record {
             | Record::OpEnded { op, .. } => Some(*op),
             Record::UserMessage { .. }
             | Record::ModelOverride { .. }
-            | Record::SkillActivated { .. }
             | Record::Plan { .. }
             | Record::TodoList { .. }
             | Record::Hook { .. } => None,
@@ -235,8 +222,7 @@ impl Record {
             | Record::ModelOutput { est_tokens, .. }
             | Record::ToolResult { est_tokens, .. } => Some(*est_tokens),
             Record::Summary { est_tokens_out, .. } => Some(*est_tokens_out),
-            Record::SkillActivated { est_tokens, .. }
-            | Record::Plan { est_tokens, .. }
+            Record::Plan { est_tokens, .. }
             | Record::TodoList { est_tokens, .. }
             | Record::Hook { est_tokens, .. } => Some(*est_tokens),
             Record::ModelOverride { .. } | Record::OpEnded { .. } => None,

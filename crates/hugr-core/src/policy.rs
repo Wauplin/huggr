@@ -53,70 +53,6 @@ pub struct CompactionTarget {
     pub est_tokens_in: u32,
 }
 
-/// A skill the policy may expose as a lightweight model-invocable descriptor.
-///
-/// The host loads these from disk and supplies the host-recorded token estimate.
-/// The brain stores and projects the instructions but never discovers files or
-/// tokenizes the content itself.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct SkillDescriptor {
-    pub id: String,
-    pub title: String,
-    pub summary: Option<String>,
-    pub instructions: String,
-    #[serde(default)]
-    pub est_tokens: u32,
-}
-
-impl SkillDescriptor {
-    pub fn new(
-        id: impl Into<String>,
-        title: impl Into<String>,
-        instructions: impl Into<String>,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            title: title.into(),
-            summary: None,
-            instructions: instructions.into(),
-            est_tokens: 0,
-        }
-    }
-
-    pub fn with_summary(mut self, summary: impl Into<String>) -> Self {
-        self.summary = Some(summary.into());
-        self
-    }
-
-    pub fn with_est_tokens(mut self, est_tokens: u32) -> Self {
-        self.est_tokens = est_tokens;
-        self
-    }
-
-    pub fn tool_name(&self) -> String {
-        format!("skill__{}", sanitize_skill_id(&self.id))
-    }
-
-    pub fn tool_schema(&self) -> ToolSchema {
-        let description = match &self.summary {
-            Some(summary) if !summary.is_empty() => {
-                format!("Activate the `{}` skill: {summary}", self.title)
-            }
-            _ => format!("Activate the `{}` skill.", self.title),
-        };
-        ToolSchema::new(
-            self.tool_name(),
-            description,
-            serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-        )
-    }
-}
-
 impl CompactionTarget {
     pub fn new(summary_of: SeqRange, est_tokens_in: u32) -> Self {
         Self {
@@ -236,13 +172,6 @@ pub trait TurnPolicy: Send + Sync {
         None
     }
 
-    /// Whether invoking `capability` activates a skill rather than running a
-    /// host capability. The reducer asks the policy; the skill choice is not
-    /// hardcoded in the reducer (ROADMAP_2 C5).
-    fn activate_skill(&self, _capability: &str) -> Option<SkillDescriptor> {
-        None
-    }
-
     /// Declarative optimistic-concurrency metadata for a capability, if any.
     /// The reducer uses this to stamp `expected_version` without hardcoding
     /// capability-specific argument shapes (ARCHITECTURE §7.3).
@@ -273,8 +202,6 @@ pub struct StaticPolicy {
     /// `#[serde(default)]` so traces recorded before Phase 6 still decode.
     #[serde(default)]
     agents: Vec<(String, AgentSeed)>,
-    #[serde(default)]
-    skills: Vec<SkillDescriptor>,
     params: SamplingParams,
     system: Option<String>,
     #[serde(default)]
@@ -293,7 +220,6 @@ impl Default for StaticPolicy {
             permissioned: Vec::new(),
             background: Vec::new(),
             agents: Vec::new(),
-            skills: Vec::new(),
             params: SamplingParams::default(),
             system: None,
             context_budget: TokenBudget::default(),
@@ -345,12 +271,6 @@ impl StaticPolicy {
     pub fn with_agents(mut self, names: impl IntoIterator<Item = String>) -> Self {
         self.agents
             .extend(names.into_iter().map(|n| (n, AgentSeed::ForkFull)));
-        self
-    }
-
-    /// Expose skill descriptors as lightweight model-invocable tools.
-    pub fn with_skills(mut self, skills: impl IntoIterator<Item = SkillDescriptor>) -> Self {
-        self.skills = skills.into_iter().collect();
         self
     }
 
@@ -596,34 +516,6 @@ impl TurnPolicy for StaticPolicy {
                         "durable summary projection",
                     );
                 }
-                Record::SkillActivated {
-                    id,
-                    title,
-                    summary,
-                    instructions,
-                    est_tokens,
-                } => {
-                    let summary = summary
-                        .as_ref()
-                        .filter(|summary| !summary.is_empty())
-                        .map(|summary| format!("\nSummary: {summary}"))
-                        .unwrap_or_default();
-                    let disposition = ContextDisposition::included(ContextBlock::new(
-                        Role::System,
-                        vec![ContentPart::Text(format!(
-                            "Active skill `{id}` ({title}), loaded from durable log:{}.{summary}\nInstructions:\n{instructions}",
-                            entry.seq.0
-                        ))],
-                    ));
-                    push(
-                        &mut totals,
-                        &mut entries,
-                        ContextSource::log_entry(entry.seq),
-                        *est_tokens,
-                        disposition,
-                        "active skill instructions from durable record",
-                    );
-                }
                 Record::Plan { text, est_tokens } => {
                     let disposition = ContextDisposition::included(ContextBlock::new(
                         Role::System,
@@ -736,7 +628,7 @@ impl TurnPolicy for StaticPolicy {
             budget,
             entries,
             totals,
-            self.advertised_tools(),
+            self.tools.clone(),
             self.params.clone(),
         )
         .with_extra(json!(null))
@@ -765,32 +657,11 @@ impl TurnPolicy for StaticPolicy {
             .map(|(_, seed)| *seed)
     }
 
-    fn activate_skill(&self, capability: &str) -> Option<SkillDescriptor> {
-        self.skills
-            .iter()
-            .find(|skill| skill.tool_name() == capability)
-            .cloned()
-    }
-
     fn capability_versioning(&self, capability: &str) -> Option<ToolVersioning> {
-        // This runs on every tool call, so look the tool up directly instead
-        // of cloning the whole advertised set (`advertised_tools`). Same
-        // lookup order: configured tools first, then skill-derived schemas.
-        if let Some(tool) = self.tools.iter().find(|tool| tool.name == capability) {
-            return tool.versioning.clone();
-        }
-        self.skills
+        self.tools
             .iter()
-            .find(|skill| skill.tool_name() == capability)
-            .and_then(|skill| skill.tool_schema().versioning)
-    }
-}
-
-impl StaticPolicy {
-    fn advertised_tools(&self) -> Vec<ToolSchema> {
-        let mut tools = self.tools.clone();
-        tools.extend(self.skills.iter().map(SkillDescriptor::tool_schema));
-        tools
+            .find(|tool| tool.name == capability)
+            .and_then(|tool| tool.versioning.clone())
     }
 }
 
@@ -813,22 +684,6 @@ fn find_tool_result_for_call<'a>(
 
 fn default_compaction_high_water_percent() -> u8 {
     90
-}
-
-fn sanitize_skill_id(name: &str) -> String {
-    let mut out = String::new();
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    if out.is_empty() {
-        "skill".to_string()
-    } else {
-        out
-    }
 }
 
 fn default_compaction_target(log: &[LogEntry], plan: &ContextPlan) -> Option<CompactionTarget> {
@@ -950,9 +805,6 @@ fn default_render_summary_record(seq: Seq, record: &Record) -> Option<String> {
             Some(format!("log:{} tool {}: {}", seq.0, name, result))
         }
         Record::Summary { text, .. } => Some(format!("log:{} summary: {}", seq.0, text)),
-        Record::SkillActivated { id, title, .. } => {
-            Some(format!("log:{} skill {} ({}) activated", seq.0, id, title))
-        }
         Record::Plan { text, .. } => Some(format!("log:{} accepted plan: {}", seq.0, text)),
         Record::TodoList { items, .. } => Some(format!(
             "log:{} todo state: {}",

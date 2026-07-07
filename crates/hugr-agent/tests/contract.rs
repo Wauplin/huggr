@@ -8,8 +8,7 @@
 //!    Rust types (property sets match what serde actually emits).
 
 use hugr_agent::{
-    Access, Answer, AnswerMeta, AnswerStatus, Ask, BlobHandle, BlobPerms, BlobRef, ResourceGrant,
-    ResourceGroup, ResourceRef, TierSpend, TraceId,
+    Answer, AnswerMeta, AnswerStatus, Ask, BlobHandle, BlobPerms, BlobRef, TierSpend, TraceId,
 };
 use serde_json::{Value, json};
 
@@ -32,13 +31,6 @@ fn full_ask() -> Ask {
             )
             .with_perms(BlobPerms::new(true, true, false)),
         ])
-        .with_groups(vec![ResourceGroup::new(
-            "policies",
-            vec![ResourceRef::FsRoot {
-                path: "./policies".into(),
-            }],
-        )])
-        .with_grants(vec![ResourceGrant::new("policies", Access::Read)])
         .with_extra(json!({"caller": "orchestrator-1"}))
 }
 
@@ -111,13 +103,6 @@ fn full_wire_snapshots_are_pinned() {
                     "perms": {"read": true, "write": true, "execute": false}
                 }
             ],
-            "groups": [
-                {
-                    "name": "policies",
-                    "resources": [{"kind": "fs_root", "path": "./policies"}]
-                }
-            ],
-            "grants": [{"group": "policies", "access": "read"}],
             "extra": {"caller": "orchestrator-1"}
         })
     );

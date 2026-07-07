@@ -16,10 +16,9 @@ mod http_fetch;
 #[cfg(feature = "sqlite")]
 mod sqlite_query;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
-use hugr_agent::{Access, GroupBinding, GroupCapabilityFactory, ResourceRef};
 use hugr_host::Capability;
 
 pub use fs_read::FsRoot;
@@ -176,92 +175,6 @@ pub fn build_library_grant(
     }
 }
 
-/// If a library grant's primary scope binds a resource group
-/// (`root = "group:<name>"` for `fs_read`, `file = "group:<name>"` for
-/// `sqlite_query`), return the group name (ARCHITECTURE §18.5, ROADMAP T3.7).
-/// The tool is then registered only per-ask, when a matching grant arrives.
-pub fn group_scope(grant: &ToolGrant) -> Option<String> {
-    if grant.kind != ToolKind::Library {
-        return None;
-    }
-    let key = match grant.name.as_str() {
-        "fs_read" => "root",
-        "sqlite_query" => "file",
-        _ => return None,
-    };
-    grant
-        .config
-        .get(key)
-        .and_then(|v| v.as_str())
-        .and_then(|v| v.strip_prefix("group:"))
-        .map(|g| g.trim().to_string())
-        .filter(|g| !g.is_empty())
-}
-
-/// Build the [`GroupBinding`] for a library grant whose scope names a group.
-/// The returned binding's factory builds the tool's capabilities from the
-/// granted group's resources (an `FsRoot` for `fs_read`, a `Sqlite` for
-/// `sqlite_query`). Read-class tools require only `Access::Read`.
-pub fn library_group_binding(grant: &ToolGrant, group: String, base_dir: &Path) -> GroupBinding {
-    let base_dir = base_dir.to_path_buf();
-    let tool = grant.name.clone();
-    let factory: GroupCapabilityFactory = {
-        let tool = tool.clone();
-        Arc::new(move |resources: &[ResourceRef]| build_group_tool(&tool, resources, &base_dir))
-    };
-    GroupBinding::new(group, tool, Access::Read, factory)
-}
-
-/// Resolve a possibly-relative resource path against the definition folder.
-fn resolve_resource(base_dir: &Path, path: &str) -> PathBuf {
-    let p = Path::new(path);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        base_dir.join(p)
-    }
-}
-
-/// The per-ask factory body: build a group-bound library tool's capabilities
-/// from the granted group's resources.
-fn build_group_tool(
-    tool: &str,
-    resources: &[ResourceRef],
-    base_dir: &Path,
-) -> Result<Vec<Arc<dyn Capability>>, String> {
-    match tool {
-        "fs_read" => {
-            let path = resources
-                .iter()
-                .find_map(|r| match r {
-                    ResourceRef::FsRoot { path } => Some(path.clone()),
-                    _ => None,
-                })
-                .ok_or_else(|| "group has no fs_root resource for fs_read".to_string())?;
-            let root = FsRoot::new(resolve_resource(base_dir, &path)).map_err(|e| e.to_string())?;
-            Ok(root.capabilities())
-        }
-        #[cfg(feature = "sqlite")]
-        "sqlite_query" => {
-            let path = resources
-                .iter()
-                .find_map(|r| match r {
-                    ResourceRef::Sqlite { path } => Some(path.clone()),
-                    _ => None,
-                })
-                .ok_or_else(|| "group has no sqlite resource for sqlite_query".to_string())?;
-            let cfg = serde_json::json!({ "file": resolve_resource(base_dir, &path) });
-            let tool = SqliteQuery::from_config(&cfg, base_dir).map_err(|e| e.to_string())?;
-            Ok(vec![Arc::new(tool) as Arc<dyn Capability>])
-        }
-        #[cfg(not(feature = "sqlite"))]
-        "sqlite_query" => {
-            Err("sqlite_query is not available: built without the `sqlite` feature".to_string())
-        }
-        other => Err(format!("no group factory for library tool `{other}`")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,30 +212,6 @@ mod tests {
         assert_eq!(
             spec("scratchpad").unwrap().privilege,
             PrivilegeClass::Scratchpad
-        );
-    }
-
-    #[test]
-    fn group_scope_detects_bound_tools() {
-        // fs_read root bound to a group.
-        assert_eq!(
-            group_scope(&grant("fs_read", json!({ "root": "group:policies" }))),
-            Some("policies".to_string())
-        );
-        // A concrete root is not a group binding.
-        assert_eq!(
-            group_scope(&grant("fs_read", json!({ "root": "./docs" }))),
-            None
-        );
-        // sqlite_query binds via `file`.
-        assert_eq!(
-            group_scope(&grant("sqlite_query", json!({ "file": "group:ledger" }))),
-            Some("ledger".to_string())
-        );
-        // http_fetch has no group-bindable primary scope today.
-        assert_eq!(
-            group_scope(&grant("http_fetch", json!({ "allow_hosts": ["x"] }))),
-            None
         );
     }
 

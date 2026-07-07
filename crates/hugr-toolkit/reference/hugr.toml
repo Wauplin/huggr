@@ -46,12 +46,9 @@ max_tokens = 2048
 # ---------------------------------------------------------------------------
 [tools.fs_read]
 root = "./policies"              # read/list/search jailed to this folder
-# root = "group:policies"        # OR bind to an orchestrator resource group
-#                                #   (§18.5, T3.7): registered only when an ask
-#                                #   carries a Read+ grant over `policies`.
 
 # [tools.sqlite_query]
-# file = "./expenses.db"         # read-only, file-scoped (or "group:<name>")
+# file = "./expenses.db"         # read-only, file-scoped
 
 # [tools.http_fetch]
 # allow_hosts = ["api.example.com"]   # GET-only, host-allowlisted

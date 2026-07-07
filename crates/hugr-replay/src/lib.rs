@@ -163,13 +163,6 @@ pub struct TraceMeta {
     /// (narrow-waist: stored and forwarded, never interpreted). Serde-defaulted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    /// Orchestrator-supplied resource groups + grants in effect for this ask
-    /// (ARCHITECTURE §18.5, ROADMAP T3.7) — **opaque** to this crate (narrow
-    /// waist: recorded so a resume/fork re-derives the identical capability
-    /// registration from the trace alone, never interpreted here). Serde-defaulted
-    /// and skipped when absent, so pre-T3.7 traces load and serialize unchanged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grants: Option<serde_json::Value>,
 }
 
 impl TraceMeta {
@@ -185,7 +178,6 @@ impl TraceMeta {
             agent_version: None,
             question: None,
             status: None,
-            grants: None,
         }
     }
 }

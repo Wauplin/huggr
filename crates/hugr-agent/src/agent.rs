@@ -29,8 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use hugr_core::{LogEntry, ModelSelector, OpId, Record, SamplingParams, ToolSchema};
-use hugr_host::policy::AllowAll;
-use hugr_host::{Capability, Clock, Engine, Frontend, ModelAdapter, Policy};
+use hugr_host::{Capability, Clock, Engine, Frontend, ModelAdapter};
 use hugr_replay::{BlobStore, Trace};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -78,7 +77,6 @@ pub struct Agent {
     models: Vec<(ModelSelector, Arc<dyn ModelAdapter>)>,
     default_model: Option<ModelSelector>,
     capabilities: Vec<Arc<dyn Capability>>,
-    policy: Arc<dyn Policy>,
     sampling: Option<SamplingParams>,
     clock: Option<Clock>,
     /// Root of the per-lineage scratchpad subtree (ARCHITECTURE §19.3).
@@ -129,7 +127,6 @@ impl Agent {
             models: Vec::new(),
             default_model: None,
             capabilities: Vec::new(),
-            policy: None,
             sampling: None,
             clock: None,
             scratch_root: None,
@@ -337,7 +334,6 @@ impl Agent {
         // *is* the product here.
         let mut builder = Engine::builder()
             .record(true)
-            .policy(self.policy.clone())
             .frontend(Box::new(SilentFrontend));
         // Limits enforcement (§18/§20.1, ROADMAP T3.1): the counting/cost limits
         // wrap each model adapter so a call over budget is refused (and folded
@@ -652,7 +648,6 @@ pub struct AgentBuilder {
     models: Vec<(ModelSelector, Arc<dyn ModelAdapter>)>,
     default_model: Option<ModelSelector>,
     capabilities: Vec<Arc<dyn Capability>>,
-    policy: Option<Arc<dyn Policy>>,
     sampling: Option<SamplingParams>,
     clock: Option<Clock>,
     scratch_root: Option<PathBuf>,
@@ -697,13 +692,6 @@ impl AgentBuilder {
     /// Set the system prompt.
     pub fn system_prompt(mut self, system: impl Into<String>) -> Self {
         self.system_prompt = Some(system.into());
-        self
-    }
-
-    /// Set the host permission policy (default: `AllowAll` — appropriate for
-    /// pre-vetted, jailed tool sets).
-    pub fn policy(mut self, policy: Arc<dyn Policy>) -> Self {
-        self.policy = Some(policy);
         self
     }
 
@@ -810,7 +798,6 @@ impl AgentBuilder {
             models: self.models,
             default_model: self.default_model,
             capabilities: self.capabilities,
-            policy: self.policy.unwrap_or_else(|| Arc::new(AllowAll)),
             sampling: self.sampling,
             clock: self.clock,
             scratch_root,

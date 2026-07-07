@@ -5,25 +5,21 @@
 //! [`ModelSink`], and returns the consolidated [`ModelOutput`] + [`Usage`].
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use hugr_core::{
-    ContentPart, ModelOutput, ModelRequest, ModelSelector, Role, SamplingParams, StopReason,
-    ToolCall, Usage,
+    ContentPart, ModelOutput, ModelRequest, Role, SamplingParams, StopReason, ToolCall, Usage,
 };
 use hugr_host::{ModelAdapter, ModelSink};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 // Defaults target the Hugging Face router (an OpenAI-compatible endpoint). The
 // `/v1` suffix is part of the base URL; the adapter appends `/chat/completions`.
 // Point `HUGR_BASE_URL` at `https://api.openai.com/v1` to use OpenAI directly.
 const DEFAULT_BASE_URL: &str = "https://router.huggingface.co/v1";
-const DEFAULT_MODEL: &str = "google/gemma-4-31B-it:cerebras";
 
 // Transport-level retry defaults (ARCHITECTURE: retries are the adapter's job).
 // 4 attempts = 1 initial try + up to 3 retries, with exponential backoff capped
@@ -54,31 +50,6 @@ impl OpenAiAdapter {
             default_params: SamplingParams::default(),
             max_attempts: DEFAULT_MAX_ATTEMPTS,
         }
-    }
-
-    /// Build from the environment:
-    ///
-    /// - **API key:** `HUGR_API_KEY`, else `HF_TOKEN`, else the Hugging Face
-    ///   token file (`HF_TOKEN_PATH`, else `$HF_HOME/token`, else
-    ///   `~/.cache/huggingface/token`), else the output of `hf auth token` if
-    ///   the `hf` CLI is installed and logged in.
-    /// - **Model:** the built-in default (`google/gemma-4-31B-it:cerebras`).
-    ///   Per-tier model overrides live on [`TierModelConfigSet::from_env`] via
-    ///   `HUGR_MODEL_SMALL` / `HUGR_MODEL_MEDIUM` / `HUGR_MODEL_BIG`; this
-    ///   single-adapter builder has no tier, so override it with
-    ///   [`with_model`](Self::with_model) if needed.
-    /// - **Base URL:** `HUGR_BASE_URL` (default the Hugging Face router).
-    pub fn from_env() -> anyhow::Result<Self> {
-        let api_key = resolve_api_key().context(
-            "no API key found: set HUGR_API_KEY or HF_TOKEN, or log in with `hf auth login`",
-        )?;
-        let model =
-            std::env::var("HUGR_MODEL_MEDIUM").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
-        let base_url =
-            std::env::var("HUGR_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
-        // `::new` is the single source of field defaults; only env-derived
-        // overrides are applied on top.
-        Ok(Self::new(api_key, model).with_base_url(base_url))
     }
 
     /// Override the base URL (for Azure / OpenAI-compatible gateways).
@@ -267,180 +238,6 @@ impl OpenAiAdapter {
             attempt += 1;
         }
     }
-}
-
-/// One logical tier's host-side model configuration.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct TierModelConfig {
-    pub model: String,
-    #[serde(default)]
-    pub temperature: Option<f32>,
-    #[serde(default)]
-    pub max_tokens: Option<u32>,
-}
-
-impl TierModelConfig {
-    pub fn new(model: impl Into<String>) -> Self {
-        Self {
-            model: model.into(),
-            temperature: None,
-            max_tokens: None,
-        }
-    }
-
-    pub fn with_temperature(mut self, temperature: f32) -> Self {
-        self.temperature = Some(temperature);
-        self
-    }
-
-    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
-        self.max_tokens = Some(max_tokens);
-        self
-    }
-
-    fn sampling(&self) -> SamplingParams {
-        let mut params = SamplingParams::new();
-        if let Some(temperature) = self.temperature {
-            params = params.with_temperature(temperature);
-        }
-        if let Some(max_tokens) = self.max_tokens {
-            params = params.with_max_tokens(max_tokens);
-        }
-        params
-    }
-}
-
-/// The three shipped tiers. This is provider/host config, not a core type:
-/// changing a tier's concrete HF router model id does not change the brain.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct TierModelConfigSet {
-    #[serde(default = "default_base_url")]
-    pub base_url: String,
-    pub small: TierModelConfig,
-    pub medium: TierModelConfig,
-    pub big: TierModelConfig,
-}
-
-impl TierModelConfigSet {
-    pub fn new(
-        base_url: impl Into<String>,
-        small: TierModelConfig,
-        medium: TierModelConfig,
-        big: TierModelConfig,
-    ) -> Self {
-        Self {
-            base_url: base_url.into(),
-            small,
-            medium,
-            big,
-        }
-    }
-
-    /// Default HF-router mapping. All tiers intentionally point at the same
-    /// concrete model until the product chooses distinct defaults.
-    pub fn hf_router_default() -> Self {
-        let tier = TierModelConfig::new(DEFAULT_MODEL);
-        Self::new(DEFAULT_BASE_URL, tier.clone(), tier.clone(), tier)
-    }
-
-    /// Read the `models` section from `HUGR_CONFIG` (JSON), falling back to the
-    /// built-in HF-router defaults. Environment overrides are then applied:
-    /// `HUGR_BASE_URL` for the endpoint, and `HUGR_MODEL_SMALL` /
-    /// `HUGR_MODEL_MEDIUM` / `HUGR_MODEL_BIG` for the per-tier model ids.
-    pub fn from_env() -> anyhow::Result<Self> {
-        let mut config = match std::env::var_os("HUGR_CONFIG") {
-            Some(path) => {
-                let text = std::fs::read_to_string(&path).with_context(|| {
-                    format!(
-                        "reading Hugr config from {}",
-                        PathBuf::from(&path).display()
-                    )
-                })?;
-                let root: Value = serde_json::from_str(&text).with_context(|| {
-                    format!(
-                        "parsing Hugr config from {}",
-                        PathBuf::from(&path).display()
-                    )
-                })?;
-                match root.get("models") {
-                    Some(models) => serde_json::from_value(models.clone()).context(
-                        "parsing `models` section; expected small/medium/big tier config",
-                    )?,
-                    None => Self::hf_router_default(),
-                }
-            }
-            None => Self::hf_router_default(),
-        };
-
-        if let Ok(base_url) = std::env::var("HUGR_BASE_URL") {
-            config.base_url = base_url;
-        }
-        if let Ok(model) = std::env::var("HUGR_MODEL_SMALL") {
-            config.small.model = model;
-        }
-        if let Ok(model) = std::env::var("HUGR_MODEL_MEDIUM") {
-            config.medium.model = model;
-        }
-        if let Ok(model) = std::env::var("HUGR_MODEL_BIG") {
-            config.big.model = model;
-        }
-        Ok(config)
-    }
-
-    /// Override all three tiers to one concrete model id.
-    pub fn with_all_models(mut self, model: impl Into<String>) -> Self {
-        let model = model.into();
-        self.small.model = model.clone();
-        self.medium.model = model.clone();
-        self.big.model = model;
-        self
-    }
-
-    /// Stable banner/debug representation of the shipped tier mapping.
-    pub fn mapping_summary(&self) -> String {
-        format!(
-            "small={} medium={} big={}",
-            self.small.model, self.medium.model, self.big.model
-        )
-    }
-
-    /// Iterator over `(selector, tier_config)` for host registry wiring.
-    pub fn tiers(&self) -> [(ModelSelector, &TierModelConfig); 3] {
-        [
-            (ModelSelector::named("small"), &self.small),
-            (ModelSelector::named("medium"), &self.medium),
-            (ModelSelector::named("big"), &self.big),
-        ]
-    }
-
-    pub fn adapter_for_tier(
-        &self,
-        api_key: impl Into<String>,
-        tier: &TierModelConfig,
-    ) -> OpenAiAdapter {
-        OpenAiAdapter::new(api_key, tier.model.clone())
-            .with_base_url(self.base_url.clone())
-            .with_default_params(tier.sampling())
-    }
-
-    /// Build one adapter per shipped tier using the same API-key resolution as
-    /// [`OpenAiAdapter::from_env`].
-    pub fn adapters_from_env(&self) -> anyhow::Result<Vec<(ModelSelector, OpenAiAdapter)>> {
-        let api_key = resolve_api_key().context(
-            "no API key found: set HUGR_API_KEY or HF_TOKEN, or log in with `hf auth login`",
-        )?;
-        Ok(self
-            .tiers()
-            .into_iter()
-            .map(|(selector, tier)| (selector, self.adapter_for_tier(api_key.clone(), tier)))
-            .collect())
-    }
-}
-
-fn default_base_url() -> String {
-    DEFAULT_BASE_URL.to_string()
 }
 
 /// Whether an HTTP status should be retried: `429 Too Many Requests` and any
@@ -781,79 +578,6 @@ fn stringify(value: &Value) -> String {
     }
 }
 
-/// Resolve an API key from, in order: `HUGR_API_KEY`, `HF_TOKEN`, the Hugging
-/// Face token file read directly, then (last resort) the `hf` CLI's stored
-/// token. Returns `None` if none are available.
-fn resolve_api_key() -> Option<String> {
-    for var in ["HUGR_API_KEY", "HF_TOKEN"] {
-        if let Ok(value) = std::env::var(var) {
-            let value = value.trim().to_string();
-            if !value.is_empty() {
-                return Some(value);
-            }
-        }
-    }
-    // Read the token file directly (mirrors `huggingface_hub`) before paying
-    // the cost of shelling out to `hf auth token`.
-    if let Some(token) = hf_token_file().and_then(read_token_file) {
-        return Some(token);
-    }
-    hf_cli_token()
-}
-
-/// Infer the path to the Hugging Face token file the same way `huggingface_hub`
-/// does: `HF_TOKEN_PATH` if set, else `$HF_HOME/token`, else
-/// `~/.cache/huggingface/token`. Returns `None` only if no home directory can
-/// be determined and the path can't otherwise be inferred.
-fn hf_token_file() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("HF_TOKEN_PATH") {
-        let path = path.trim();
-        if !path.is_empty() {
-            return Some(PathBuf::from(path));
-        }
-    }
-    if let Ok(home) = std::env::var("HF_HOME") {
-        let home = home.trim();
-        if !home.is_empty() {
-            return Some(PathBuf::from(home).join("token"));
-        }
-    }
-    let cache = home_dir()?.join(".cache").join("huggingface");
-    Some(cache.join("token"))
-}
-
-/// The user's home directory, from `$HOME` (Unix) or `$USERPROFILE` (Windows).
-fn home_dir() -> Option<PathBuf> {
-    for var in ["HOME", "USERPROFILE"] {
-        if let Ok(home) = std::env::var(var) {
-            if !home.is_empty() {
-                return Some(PathBuf::from(home));
-            }
-        }
-    }
-    None
-}
-
-/// Read and trim a token file, returning `None` if it is missing or empty.
-fn read_token_file(path: PathBuf) -> Option<String> {
-    let token = std::fs::read_to_string(path).ok()?.trim().to_string();
-    (!token.is_empty()).then_some(token)
-}
-
-/// The token stored by the `hf` CLI (`hf auth token`), if it is installed and
-/// logged in.
-fn hf_cli_token() -> Option<String> {
-    let output = std::process::Command::new("hf")
-        .args(["auth", "token"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let token = String::from_utf8(output.stdout).ok()?.trim().to_string();
-    (!token.is_empty()).then_some(token)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -968,56 +692,6 @@ mod tests {
         assert_eq!(backoff_delay(3), RETRY_BASE_DELAY * 4);
         // A large attempt count saturates at the cap rather than overflowing.
         assert_eq!(backoff_delay(100), RETRY_MAX_DELAY);
-    }
-
-    #[test]
-    fn token_file_path_honors_overrides_in_precedence_order() {
-        // `set_var`/`remove_var` mutate process-global state; serialize this
-        // test against itself and snapshot/restore the vars we touch.
-        use std::sync::Mutex;
-        static GUARD: Mutex<()> = Mutex::new(());
-        let _lock = GUARD.lock().unwrap_or_else(|e| e.into_inner());
-
-        let saved: Vec<(&str, Option<String>)> =
-            ["HF_TOKEN_PATH", "HF_HOME", "HOME", "USERPROFILE"]
-                .iter()
-                .map(|&k| (k, std::env::var(k).ok()))
-                .collect();
-        let restore = || {
-            for (k, v) in &saved {
-                match v {
-                    Some(val) => unsafe { std::env::set_var(k, val) },
-                    None => unsafe { std::env::remove_var(k) },
-                }
-            }
-        };
-
-        unsafe {
-            std::env::set_var("HOME", "/home/tester");
-            std::env::remove_var("USERPROFILE");
-            std::env::remove_var("HF_HOME");
-            std::env::remove_var("HF_TOKEN_PATH");
-        }
-
-        // 1. Default: ~/.cache/huggingface/token.
-        assert_eq!(
-            hf_token_file(),
-            Some(PathBuf::from("/home/tester/.cache/huggingface/token")),
-        );
-
-        // 2. HF_HOME takes precedence over the default cache dir.
-        unsafe { std::env::set_var("HF_HOME", "/custom/hf") };
-        assert_eq!(hf_token_file(), Some(PathBuf::from("/custom/hf/token")));
-
-        // 3. HF_TOKEN_PATH wins over HF_HOME (and the default).
-        unsafe { std::env::set_var("HF_TOKEN_PATH", "/secrets/hf-token") };
-        assert_eq!(hf_token_file(), Some(PathBuf::from("/secrets/hf-token")));
-
-        // Blank overrides are ignored (fall through to the next rule).
-        unsafe { std::env::set_var("HF_TOKEN_PATH", "  ") };
-        assert_eq!(hf_token_file(), Some(PathBuf::from("/custom/hf/token")));
-
-        restore();
     }
 
     #[tokio::test]

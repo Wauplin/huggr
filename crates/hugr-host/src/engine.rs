@@ -6,15 +6,12 @@
 //! here; the brain stays synchronous and single-threaded.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hugr_core::{
-    AgentSeed, Brain, Command, ContextPlan, Event, HookPhase, ModelRequest, ModelSelector, OpId,
-    RoutingPolicy, SamplingParams, SkillDescriptor, StaticPolicy, SteerMode, Timestamp, TodoItem,
-    ToolSchema, Value,
+    Brain, Command, ContextPlan, Decision, Event, ModelRequest, ModelSelector, OpId,
+    SamplingParams, StaticPolicy, SteerMode, Timestamp, Value,
 };
 use serde_json::json;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -24,105 +21,8 @@ use hugr_replay::{Trace, TraceError, policy_from_trace};
 
 use crate::ChunkSink;
 use crate::capability::CapabilityRegistry;
-use crate::coalesce::Coalescer;
-use crate::frontend::{Frontend, StdoutFrontend};
+use crate::frontend::Frontend;
 use crate::model::{ModelRegistry, ModelSink};
-use crate::policy::{AllowAll, Policy};
-
-/// How aggressively a recording engine persists its trace checkpoint.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum CheckpointCadence {
-    /// Only save when the brain emits [`Command::Checkpoint`].
-    OnCommand,
-    /// Save after every host event submitted to the brain. This is the durable
-    /// crash-resume mode: a kill during a model/tool op still leaves a trace
-    /// whose fold reconstructs the in-flight op table (ARCHITECTURE §15.1).
-    EveryEvent,
-    /// Save after every N host events, plus on [`Command::Checkpoint`].
-    EveryNEvents(usize),
-}
-
-impl CheckpointCadence {
-    fn due_after_event(self, events_since_checkpoint: usize) -> bool {
-        match self {
-            CheckpointCadence::OnCommand => false,
-            CheckpointCadence::EveryEvent => true,
-            CheckpointCadence::EveryNEvents(n) => events_since_checkpoint >= n.max(1),
-        }
-    }
-}
-
-/// State shared between the driver loop and its background checkpoint writers
-/// (see [`Engine::checkpoint`]). Writes are **single-flight**: `writing` gates
-/// scheduling (a checkpoint that comes due mid-write marks the engine dirty
-/// instead of stacking a second writer), and `written` — the highest snapshot
-/// generation persisted — guards the file itself, so a stale writer can never
-/// clobber a newer snapshot. Latest state always wins.
-struct CheckpointShared {
-    /// Highest snapshot generation persisted so far. Holding this mutex also
-    /// serializes the actual file writes: two writers never run concurrently
-    /// against the same path.
-    written: Mutex<u64>,
-    /// True while a background write is in flight (the single-flight gate).
-    writing: AtomicBool,
-    /// Errors from background writes, drained to the front-end on the loop
-    /// (the driver methods are intentionally infallible).
-    errors: Mutex<Vec<String>>,
-}
-
-impl CheckpointShared {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            written: Mutex::new(0),
-            writing: AtomicBool::new(false),
-            errors: Mutex::new(Vec::new()),
-        })
-    }
-}
-
-/// Write one checkpoint snapshot under the shared file lock. A writer whose
-/// snapshot generation is older than what is already on disk skips the write
-/// entirely (a newer snapshot supersedes it — latest state wins).
-fn write_checkpoint(
-    shared: &CheckpointShared,
-    generation: u64,
-    trace: &Trace,
-    compaction: TraceCompaction,
-    path: &std::path::Path,
-) -> Result<(), TraceError> {
-    let mut written = shared.written.lock().unwrap();
-    if generation <= *written {
-        return Ok(());
-    }
-    match compaction {
-        TraceCompaction::PreserveFull => trace.save_atomic(path)?,
-    }
-    *written = generation;
-    Ok(())
-}
-
-/// How a resumed host reconciles ops that were in flight when the previous
-/// process died.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum CrashResumePolicy {
-    /// Append recorded [`Event::OpCancelled`] events for stale in-flight ops and
-    /// let the brain fold the cancellation exactly as if the old host had
-    /// confirmed an abort before exiting. This is replay-safe and conservative;
-    /// idempotent re-issue can be added as another host policy later.
-    CancelInflight,
-}
-
-/// Durable log compaction policy for native checkpoints.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum TraceCompaction {
-    /// Preserve the full event stream and consolidated log. Phase 7 makes the
-    /// policy explicit, but keeps the default lossless because the log is the
-    /// source of truth and destructive compaction would break replay.
-    PreserveFull,
-}
 
 /// Captures the exact ordered [`Event`] stream the host feeds the brain **and**
 /// the ordered [`Command`] sequence the brain emits, so the session can be
@@ -139,9 +39,6 @@ pub enum TraceCompaction {
 ///
 /// Recording is opt-in (`Engine::builder().record()`); a non-recording engine
 /// pays nothing.
-/// Shared with the sub-agent runner ([`crate::agent`]), which records each
-/// child session the same way and nests it into the parent trace as a
-/// [`hugr_replay::ChildTrace`] (ARCHITECTURE §13.3).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Recorder {
     pub(crate) events: Vec<Event>,
@@ -171,14 +68,14 @@ impl Recorder {
     }
 
     /// Pre-load the recorder with a trace's already-recorded events **and** the
-    /// commands re-derived by re-folding them, so a **resumed** session (P3-4)
-    /// re-saves the full history (old + new) and still verifies bit-for-bit. The
-    /// events are copied verbatim (including the recorded `Tick`s); `commands`
-    /// come from the resume re-fold (see [`hugr_replay::drive`]) rather than the
-    /// old trace's `commands`, so a resumed *old* trace (empty commands) still
-    /// gets a complete, self-consistent command sequence. `created_at` is taken
-    /// from the trace's metadata so the resumed trace keeps the original
-    /// session's creation time, not a new one.
+    /// commands re-derived by re-folding them, so a **resumed** session re-saves
+    /// the full history (old + new) and still verifies bit-for-bit. The events
+    /// are copied verbatim (including the recorded `Tick`s); `commands` come
+    /// from the resume re-fold (see [`hugr_replay::drive`]) rather than the old
+    /// trace's `commands`, so a resumed *old* trace (empty commands) still gets
+    /// a complete, self-consistent command sequence. `created_at` is taken from
+    /// the trace's metadata so the resumed trace keeps the original session's
+    /// creation time, not a new one.
     fn seed(events: Vec<Event>, commands: Vec<Command>, created_at: Option<u64>) -> Self {
         Self {
             events,
@@ -191,47 +88,6 @@ impl Recorder {
 /// A source of (host-side) wall-clock time, injected into the brain as `Tick`
 /// events so the brain itself never reads a clock (ARCHITECTURE §6.1).
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
-
-/// The default maximum nested sub-agent depth (ARCHITECTURE §13): the root
-/// engine's children run at depth 1; a depth-1 child may not spawn a depth-2
-/// grandchild unless [`EngineBuilder::max_agent_depth`] raises the cap. This
-/// matches the previous implicit behavior (child policies register no agent
-/// tools, so recursion never happened) — now enforced explicitly.
-pub const DEFAULT_MAX_AGENT_DEPTH: usize = 1;
-
-/// Registration-time defaults for a sub-agent kind (ARCHITECTURE §13.1):
-/// the model tier and tool allowlist a child of this kind uses when its
-/// tool-call args don't override them. These belong to **registration** (the
-/// embedder declaring the agent), not to the generic runner — the runner only
-/// consumes whatever was registered. `#[non_exhaustive]`, so build with
-/// [`AgentDefaults::new`] + the `with_*` methods (ARCHITECTURE §2.4).
-#[derive(Clone, Debug, Default)]
-#[non_exhaustive]
-pub struct AgentDefaults {
-    /// The logical model the child calls when its config names none.
-    pub model: Option<ModelSelector>,
-    /// The tool allowlist (a subset of the parent's capabilities) the child
-    /// gets when its config passes no `tools`. `None` inherits every tool.
-    pub tools: Option<Vec<String>>,
-}
-
-impl AgentDefaults {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the default model tier for this agent kind.
-    pub fn with_model(mut self, selector: ModelSelector) -> Self {
-        self.model = Some(selector);
-        self
-    }
-
-    /// Set the default tool allowlist for this agent kind.
-    pub fn with_tools(mut self, tools: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.tools = Some(tools.into_iter().map(Into::into).collect());
-        self
-    }
-}
 
 /// A handle for injecting [`Event`]s into a running [`Engine`] from outside a
 /// turn (see [`Engine::event_sender`]). Cloneable and `Send`, so it can live in
@@ -254,13 +110,18 @@ impl EventSender {
     }
 }
 
+/// The default front-end: renders nothing. The subagent runtime's product is
+/// its `Answer` + trace, not a live render (ARCHITECTURE §18).
+struct SilentFrontend;
+
+impl Frontend for SilentFrontend {}
+
 /// Drives a [`Brain`] against real IO on tokio. Build one with
 /// [`Engine::builder`].
 pub struct Engine {
     brain: Brain,
     models: ModelRegistry,
     caps: CapabilityRegistry,
-    policy: Arc<dyn Policy>,
     frontend: Box<dyn Frontend>,
     clock: Clock,
     tx: UnboundedSender<Event>,
@@ -269,51 +130,13 @@ pub struct Engine {
     /// Capability name per in-flight op, so tool results can be labelled when
     /// the engine observes their completion events.
     op_labels: HashMap<OpId, String>,
-    /// Batches consecutive streamed text on the *render* path only, to cut
-    /// per-token flush churn (ARCHITECTURE §4.4). It never touches the brain's
-    /// event stream — every `ModelDelta` is still submitted — so replay stays
-    /// bit-for-bit identical regardless of how the render was coalesced.
-    coalescer: Coalescer,
     /// When recording is enabled, the captured event stream for the trace
     /// (ARCHITECTURE §12). `None` when recording is off (zero overhead).
     recorder: Option<Recorder>,
-    /// When recording is enabled, completed sub-agent runs push their recorded
-    /// child sessions here ([`hugr_replay::ChildTrace`], ARCHITECTURE §13.3);
-    /// [`Engine::trace`] attaches them to the parent trace. `None` when
-    /// recording is off — children then run unrecorded, exactly as before.
-    child_traces: Option<crate::agent::ChildTraceSink>,
-    /// Optional durable checkpoint target. When set, the engine writes the
-    /// current trace atomically according to `checkpoint_cadence`.
-    checkpoint_path: Option<PathBuf>,
-    checkpoint_cadence: CheckpointCadence,
-    events_since_checkpoint: usize,
-    /// Set when a checkpoint came due while a background write was still in
-    /// flight: the next opportunity (or the final flush) writes the latest
-    /// state instead of queueing a second concurrent writer.
-    checkpoint_dirty: bool,
-    /// Monotone snapshot generation for checkpoint writes (latest wins).
-    checkpoint_gen: u64,
-    checkpoint_shared: Arc<CheckpointShared>,
-    /// Wakes the driver loop when a background checkpoint write finishes, so a
-    /// dirty engine re-checkpoints promptly even if no further event arrives
-    /// (e.g. mid-model-call, exactly when crash durability matters).
-    ckpt_done_tx: UnboundedSender<()>,
-    ckpt_done_rx: UnboundedReceiver<()>,
-    compaction: TraceCompaction,
     /// The brain's policy config, serialized once at build time, so a recorded
     /// trace can carry it (the brain branches on the policy's pure decisions —
     /// permission/background — so replay needs the same policy, §6.3).
     policy_config: Option<serde_json::Value>,
-    /// The logical model a sub-agent uses when its config doesn't name one
-    /// (ARCHITECTURE §13.1); the child reuses the host's model registry.
-    default_model: ModelSelector,
-    /// Registration-time defaults per agent kind (model tier + tool allowlist),
-    /// consumed by the sub-agent runner (ARCHITECTURE §13.1).
-    agent_defaults: Arc<HashMap<String, AgentDefaults>>,
-    /// Maximum nested sub-agent depth (ARCHITECTURE §13); exceeding it is a
-    /// semantic error routed back to the model as the tool result.
-    max_agent_depth: usize,
-    session_started: bool,
 }
 
 impl Engine {
@@ -324,7 +147,6 @@ impl Engine {
     /// Submit one conversational user message and drive the resulting turn (and
     /// any tool round-trips) to completion.
     pub async fn user_turn(&mut self, text: String) {
-        self.ensure_session_started();
         self.submit(Event::UserInput {
             content: json!(text),
             mode: SteerMode::Queue,
@@ -344,44 +166,6 @@ impl Engine {
         self.brain.context_plan()
     }
 
-    /// Fire one manual compaction pass and drive it to completion. If there is
-    /// no compactable span, the brain emits a notice and remains idle.
-    pub async fn compact_context(&mut self) {
-        self.fire_hook(
-            HookPhase::Compaction,
-            "builtin_compaction",
-            json!({ "message": "manual compaction requested" }),
-        );
-        self.submit(Event::CompactContext);
-        self.drive_to_idle().await;
-    }
-
-    /// Force the next normal model turn to use `selector`, or clear a pending
-    /// override with `None`. This is recorded as a host event so replay stays
-    /// deterministic.
-    pub fn override_next_model(&mut self, selector: Option<ModelSelector>) {
-        self.submit(Event::ModelOverride { selector });
-    }
-
-    /// Persist a user-accepted/edited plan as durable future context
-    /// (ROADMAP_2 D4).
-    pub fn accept_plan(&mut self, text: impl Into<String>) {
-        let text = text.into();
-        self.submit(Event::PlanAccepted {
-            est_tokens: estimate_text_tokens(&text),
-            text,
-        });
-    }
-
-    /// Persist the current todo/task progress snapshot (ROADMAP_2 D5).
-    pub fn update_todos(&mut self, items: Vec<TodoItem>) {
-        let rendered = render_todos_for_estimate(&items);
-        self.submit(Event::TodoUpdated {
-            items,
-            est_tokens: estimate_text_tokens(&rendered),
-        });
-    }
-
     /// A cloneable handle for injecting [`Event`]s into the running loop from
     /// *outside* a turn — e.g. a Ctrl-C / signal handler sending
     /// [`Event::UserAbort`] while [`user_turn`](Self::user_turn) is awaiting the
@@ -396,13 +180,9 @@ impl Engine {
     }
 
     /// Signal the front-end that the session is finishing, so it can render any
-    /// accumulated totals (e.g. the metrics footer). Call this once after the
-    /// last turn of a one-shot run, or when an interactive session exits. Also
-    /// flushes a final synchronous checkpoint so shutdown never loses data to a
-    /// still-in-flight background write.
+    /// accumulated totals. Call this once after the last turn of a one-shot
+    /// run, or when an interactive session exits.
     pub fn session_end(&mut self) {
-        self.flush_render();
-        self.flush_checkpoint_sync();
         self.frontend.on_session_end();
     }
 
@@ -420,35 +200,6 @@ impl Engine {
         }
         self.brain.submit(tick);
         self.brain.submit(event);
-        self.events_since_checkpoint += 1;
-        if self
-            .checkpoint_cadence
-            .due_after_event(self.events_since_checkpoint)
-        {
-            self.checkpoint();
-        }
-    }
-
-    fn ensure_session_started(&mut self) {
-        if self.session_started {
-            return;
-        }
-        self.session_started = true;
-        self.fire_hook(
-            HookPhase::SessionStart,
-            "builtin_session_start",
-            json!({ "message": "session started" }),
-        );
-    }
-
-    fn fire_hook(&mut self, phase: HookPhase, name: &str, result: Value) {
-        let est_tokens = estimate_value_tokens(&result);
-        self.submit(Event::HookFired {
-            phase,
-            name: name.to_string(),
-            result,
-            est_tokens,
-        });
     }
 
     /// Build a [`Trace`] of the session so far (the captured event stream + the
@@ -470,170 +221,17 @@ impl Engine {
         if let Some(policy) = self.policy_config.clone() {
             trace = trace.with_policy(policy);
         }
-        // Attach the recorded child sessions completed so far, so sub-agent
-        // runs are visible to the trace, replay, and verification (§13.3).
-        // Checkpoints call `trace()` too, so they naturally carry them.
-        if let Some(sink) = &self.child_traces {
-            let children = sink.lock().unwrap().clone();
-            if !children.is_empty() {
-                trace = trace.with_children(children);
-            }
-        }
         Some(trace)
     }
 
     /// Save the recorded session to `path` as a trace. Errors if recording was
-    /// not enabled (`TraceError::Io` with `NotFound`-style intent is avoided —
-    /// returns a clear error) or the write fails.
+    /// not enabled or the write fails.
     pub fn save_trace(&self, path: impl AsRef<std::path::Path>) -> Result<(), TraceError> {
         match self.trace() {
             Some(trace) => trace.save(path),
             None => Err(TraceError::Io(std::io::Error::other(
                 "engine is not recording; build it with .record()",
             ))),
-        }
-    }
-
-    /// Schedule a checkpoint of the current recorded trace to the configured
-    /// target, if any. The serialization + atomic write-then-rename runs on a
-    /// blocking task **off the driver loop**; writes are single-flight — if one
-    /// is still in progress the engine marks itself dirty and writes the latest
-    /// state at the next opportunity (or at the final flush) instead of stacking
-    /// a second concurrent writer for the same path. A checkpoint with nothing
-    /// new since the last snapshot is skipped entirely. Errors are reported to
-    /// the front-end as notices because the driver methods are infallible.
-    fn checkpoint(&mut self) {
-        if self.checkpoint_path.is_none() {
-            return;
-        }
-        self.drain_checkpoint_errors();
-        // Nothing changed since the last scheduled snapshot: skip entirely.
-        if self.events_since_checkpoint == 0 && !self.checkpoint_dirty {
-            return;
-        }
-        // Single-flight: a write is still in progress. Mark dirty; the latest
-        // state is written when the next checkpoint opportunity (or the final
-        // flush) finds the writer free.
-        if self.checkpoint_shared.writing.load(Ordering::Acquire) {
-            self.checkpoint_dirty = true;
-            return;
-        }
-        let Some((trace, path, generation)) = self.checkpoint_snapshot() else {
-            return;
-        };
-        let compaction = self.compaction;
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                let shared = self.checkpoint_shared.clone();
-                let done = self.ckpt_done_tx.clone();
-                shared.writing.store(true, Ordering::Release);
-                handle.spawn_blocking(move || {
-                    if let Err(err) =
-                        write_checkpoint(&shared, generation, &trace, compaction, &path)
-                    {
-                        shared
-                            .errors
-                            .lock()
-                            .unwrap()
-                            .push(format!("checkpoint failed ({}): {err}", path.display()));
-                    }
-                    shared.writing.store(false, Ordering::Release);
-                    // Wake the driver loop: if it went dirty while this write
-                    // was in flight, it re-checkpoints with the latest state.
-                    let _ = done.send(());
-                });
-            }
-            // No runtime on this thread (e.g. events submitted before the loop
-            // starts): fall back to the old synchronous write.
-            Err(_) => {
-                if let Err(err) = write_checkpoint(
-                    &self.checkpoint_shared,
-                    generation,
-                    &trace,
-                    compaction,
-                    &path,
-                ) {
-                    self.frontend
-                        .on_notice(&format!("checkpoint failed ({}): {err}", path.display()));
-                }
-            }
-        }
-    }
-
-    /// Snapshot the current trace and claim the next write generation, resetting
-    /// the "something changed" tracking. Returns `None` (with a notice) if the
-    /// engine is not recording.
-    fn checkpoint_snapshot(&mut self) -> Option<(Trace, PathBuf, u64)> {
-        let path = self.checkpoint_path.clone()?;
-        let Some(trace) = self.trace() else {
-            self.frontend.on_notice(&format!(
-                "checkpoint failed ({}): engine is not recording; checkpoint requires .record()",
-                path.display()
-            ));
-            return None;
-        };
-        self.checkpoint_gen += 1;
-        self.events_since_checkpoint = 0;
-        self.checkpoint_dirty = false;
-        Some((trace, path, self.checkpoint_gen))
-    }
-
-    /// At a turn boundary, catch up a checkpoint that went dirty while a write
-    /// was in flight: wait for the writer to finish (the wakeup channel), then
-    /// schedule one more write with the latest state. Keeps the on-disk trace
-    /// current while the engine idles between turns.
-    async fn settle_checkpoint(&mut self) {
-        while self.checkpoint_dirty {
-            if self.checkpoint_shared.writing.load(Ordering::Acquire)
-                && self.ckpt_done_rx.recv().await.is_none()
-            {
-                return; // unreachable: the engine holds a sender
-            }
-            self.checkpoint();
-        }
-        self.drain_checkpoint_errors();
-    }
-
-    /// Report any errors from background checkpoint writes to the front-end.
-    fn drain_checkpoint_errors(&mut self) {
-        let errors: Vec<String> =
-            std::mem::take(&mut *self.checkpoint_shared.errors.lock().unwrap());
-        for err in errors {
-            self.frontend.on_notice(&err);
-        }
-    }
-
-    /// Synchronously flush a final checkpoint at shutdown/drop, so the tail of
-    /// the session is never lost to an unfinished background write. Waits for
-    /// any in-flight writer via the shared file lock; a still-pending stale
-    /// writer that runs later skips itself (its generation is superseded).
-    fn flush_checkpoint_sync(&mut self) {
-        if self.checkpoint_path.is_none() {
-            return;
-        }
-        self.drain_checkpoint_errors();
-        // Skip only when nothing changed AND no write is in flight — an
-        // in-flight write may still be queued behind us at runtime shutdown, so
-        // rewriting the latest state here is the safe way to guarantee it lands.
-        if self.events_since_checkpoint == 0
-            && !self.checkpoint_dirty
-            && !self.checkpoint_shared.writing.load(Ordering::Acquire)
-        {
-            return;
-        }
-        let Some((trace, path, generation)) = self.checkpoint_snapshot() else {
-            return;
-        };
-        let compaction = self.compaction;
-        if let Err(err) = write_checkpoint(
-            &self.checkpoint_shared,
-            generation,
-            &trace,
-            compaction,
-            &path,
-        ) {
-            self.frontend
-                .on_notice(&format!("checkpoint failed ({}): {err}", path.display()));
         }
     }
 
@@ -650,7 +248,6 @@ impl Engine {
                 }
                 // Record the drained commands (in order) before performing them,
                 // so the trace's command sequence matches what a replay re-emits
-                // — the property `hugr_replay::verify` now checks bit-for-bit
                 // (command ordering never reaches the log, §6.3).
                 if let Some(rec) = self.recorder.as_mut() {
                     rec.record_commands(&commands);
@@ -660,111 +257,41 @@ impl Engine {
                 }
             }
 
-            // No ops in flight → the turn is done. Flush any text the coalescer
-            // is still holding so it lands before control returns to the caller,
-            // and settle any checkpoint that went dirty during the turn so the
-            // on-disk trace isn't stale while the engine sits idle.
+            // No ops in flight → the turn is done.
             if self.brain.state().inflight_len() == 0 {
-                self.flush_render();
-                self.settle_checkpoint().await;
                 break;
             }
 
-            // Otherwise block until any task produces the next event — or a
-            // finished background checkpoint write asks for a dirty rewrite.
-            tokio::select! {
-                maybe_event = self.rx.recv() => match maybe_event {
-                    Some(event) => {
-                        // Every tool-shaped completion (capability *or*
-                        // sub-agent — the brain folds both tool-result-shaped)
-                        // fires the PostTool hook, off the same classification
-                        // `observe` uses so the two can never diverge.
-                        let post_tool_hook =
-                            tool_shaped_completion(&event).map(|(op, payload, is_error)| {
-                                if is_error {
-                                    json!({ "op": op.0, "ok": false, "error": payload })
-                                } else {
-                                    json!({ "op": op.0, "ok": true, "result": payload })
-                                }
-                            });
-                        self.observe(&event);
-                        self.submit(event);
-                        if let Some(result) = post_tool_hook {
-                            self.fire_hook(HookPhase::PostTool, "builtin_post_tool", result);
-                        }
-                    }
-                    None => break,
-                },
-                _ = self.ckpt_done_rx.recv() => {
-                    // A background checkpoint write finished. If events arrived
-                    // while it was in flight (dirty), write again now with the
-                    // latest state — single-flight means "write again when it
-                    // finishes", never a second concurrent writer. This keeps
-                    // the on-disk trace fresh even when the turn is blocked on
-                    // a long model/tool op (the crash-durability case).
-                    if self.checkpoint_dirty {
-                        self.checkpoint();
-                    } else {
-                        self.drain_checkpoint_errors();
-                    }
+            // Otherwise block until any task produces the next event.
+            match self.rx.recv().await {
+                Some(event) => {
+                    self.observe(&event);
+                    self.submit(event);
                 }
+                None => break,
             }
-        }
-    }
-
-    /// Drain the coalescer's buffered streamed text to the front-end as one (or
-    /// zero) merged render. Called at every boundary where order matters — a
-    /// lifecycle hook, a completion event, the end of a turn — so withheld text
-    /// always reaches the screen before whatever follows it.
-    fn flush_render(&mut self) {
-        for rendered in self.coalescer.flush() {
-            self.frontend.on_output(&rendered);
         }
     }
 
     /// Report incoming events to the front-end for observability, before the
     /// brain folds them. (Commands are reported in [`perform`](Self::perform).)
     fn observe(&mut self, event: &Event) {
-        // A model/tool *completion* line must appear after the text it follows:
-        // flush any buffered streamed text before rendering the lifecycle hook.
-        // Tool-shaped completions come from the shared classification (see
-        // [`tool_shaped_completion`]) so this render and the PostTool hook in
-        // `drive_to_idle` can never diverge.
-        if let Event::ModelDone { op, usage, .. } = event {
-            self.flush_render();
-            self.frontend.on_model_end(*op, usage);
-            return;
-        }
-        if let Some((op, payload, is_error)) = tool_shaped_completion(event) {
-            self.flush_render();
-            let name = self.op_labels.remove(&op).unwrap_or_default();
-            self.frontend.on_tool_end(op, &name, payload, is_error);
-        }
-    }
-
-    /// The shared context a sub-agent run needs from this host (registries,
-    /// permission policy, defaults, depth cap) — cheap `Arc` clones.
-    fn agent_host(&self) -> crate::agent::AgentHost {
-        crate::agent::AgentHost {
-            models: self.models.clone(),
-            caps: self.caps.clone(),
-            policy: self.policy.clone(),
-            default_model: self.default_model.clone(),
-            clock: self.clock.clone(),
-            defaults: self.agent_defaults.clone(),
-            max_depth: self.max_agent_depth,
+        match event {
+            Event::ModelDone { op, usage, .. } => self.frontend.on_model_end(*op, usage),
+            Event::CapabilityDone { op, result, .. } => {
+                let name = self.op_labels.remove(op).unwrap_or_default();
+                self.frontend.on_tool_end(*op, &name, result, false);
+            }
+            Event::CapabilityError { op, error, .. } => {
+                let name = self.op_labels.remove(op).unwrap_or_default();
+                self.frontend.on_tool_end(*op, &name, error, true);
+            }
+            _ => {}
         }
     }
 
     /// Perform a single command from the brain.
     async fn perform(&mut self, command: Command) {
-        // Every command except `Emit` may render a front-end line (model/tool
-        // start, permission, done, notice) that must follow the streamed text
-        // it comes after: flush the coalescer's buffer first to keep order.
-        // `Emit` itself is the coalescing path and must not self-flush.
-        if !matches!(command, Command::Emit(_)) {
-            self.flush_render();
-        }
         match command {
             Command::StartModelCall { op, model, request } => match self.models.get(&model) {
                 Some(adapter) => {
@@ -779,11 +306,6 @@ impl Engine {
 
             Command::StartCapability { op, name, args } => match self.caps.get(&name) {
                 Some(capability) => {
-                    self.fire_hook(
-                        HookPhase::PreTool,
-                        "builtin_pre_tool",
-                        json!({ "op": op.0, "capability": name.clone(), "args": args.clone() }),
-                    );
                     self.frontend.on_tool_start(op, &name, &args);
                     self.op_labels.insert(op, name.clone());
                     let handle =
@@ -795,55 +317,17 @@ impl Engine {
                 }
             },
 
-            // A sub-agent is another brain the host drives on its own task
-            // (ARCHITECTURE §13). It reuses (a subset of) our model + capability
-            // registries; its progress streams back as events keyed by `op` and
-            // its digest returns as `AgentDone`. Tracked in `tasks` so a `Cancel`
-            // aborts the whole subtree.
-            Command::StartAgent {
-                op,
-                agent,
-                config,
-                seed,
-            } => {
-                // A sub-agent spawn is tool-shaped: fire the same PreTool hook
-                // a capability start does (its completion fires PostTool via
-                // `tool_shaped_completion`). Skill activations, by contrast,
-                // happen entirely inside the brain with no host event, so no
-                // Pre/PostTool hook can fire for them — a known limitation.
-                let label = format!("agent:{agent}");
-                self.fire_hook(
-                    HookPhase::PreTool,
-                    "builtin_pre_tool",
-                    json!({ "op": op.0, "capability": label.clone(), "args": config.clone() }),
-                );
-                self.frontend.on_tool_start(op, &label, &config);
-                self.op_labels.insert(op, label);
-                // Root-spawned children run at depth 1 (ARCHITECTURE §13); the
-                // runner enforces `max_agent_depth`.
-                let handle = tokio::spawn(crate::agent::run_agent(
-                    op,
-                    agent,
-                    config,
-                    seed,
-                    1,
-                    self.agent_host(),
-                    self.tx.clone(),
-                    // A recording engine also records its children (§13.3);
-                    // `None` keeps non-recording children zero-overhead.
-                    self.child_traces.clone(),
-                ));
-                self.tasks.insert(op, handle);
-            }
-
+            // Library tools are ungated — the sandbox is registration
+            // (ARCHITECTURE §20.1): only what the manifest grants exists at
+            // all, so permission requests are always allowed. The decision
+            // still flows through the brain as a recorded event.
             Command::RequestPermission { op, request } => {
-                let decision = self.policy.decide(&request).await;
+                let decision = Decision::Allow;
                 self.frontend.on_permission(&request.capability, &decision);
-                let est_tokens = permission_decision_est_tokens(&decision);
                 let _ = self.tx.send(Event::PermissionDecision {
                     op,
                     decision,
-                    est_tokens,
+                    est_tokens: 0,
                 });
             }
 
@@ -854,32 +338,19 @@ impl Engine {
                 let _ = self.tx.send(Event::OpCancelled { op });
             }
 
-            // Cosmetic output goes through the coalescer: consecutive streamed
-            // text is batched into fewer, larger renders (ARCHITECTURE §4.4).
-            // The brain already saw every delta (the engine submits them all),
-            // so this affects only what the front-end draws, never the log.
-            Command::Emit(event) => {
-                for rendered in self.coalescer.push(event) {
-                    self.frontend.on_output(&rendered);
-                }
-            }
+            // Cosmetic output (streamed text, tool chunks) goes straight to the
+            // front-end; the brain already folded every delta, so this affects
+            // only what is drawn, never the log.
+            Command::Emit(event) => self.frontend.on_output(&event),
 
             // The recorder captures the event stream at `submit` (so the trace
             // is always buildable on demand via `Engine::trace`); a checkpoint
-            // just drops finished task handles so they don't accumulate. A host
-            // that wanted incremental on-disk persistence could `save_trace`
-            // here too.
+            // just drops finished task handles so they don't accumulate.
             Command::Checkpoint => {
                 self.tasks.retain(|_, h| !h.is_finished());
-                self.checkpoint();
             }
 
             Command::Done { reason } => {
-                self.fire_hook(
-                    HookPhase::Stop,
-                    "builtin_stop",
-                    json!({ "reason": format!("{reason:?}") }),
-                );
                 self.frontend.on_done(&reason);
             }
 
@@ -892,16 +363,6 @@ impl Engine {
     }
 }
 
-impl Drop for Engine {
-    fn drop(&mut self) {
-        // A dropped engine still flushes its final checkpoint synchronously, so
-        // no submitted event is lost even if the caller never reached
-        // `session_end` (e.g. an early return). A no-op when nothing changed
-        // since the last completed write, or when checkpointing is off.
-        self.flush_checkpoint_sync();
-    }
-}
-
 fn system_clock() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -911,9 +372,6 @@ fn system_clock() -> u64 {
 
 /// Run one model op to completion, streaming deltas via the [`ModelSink`] and
 /// sending the terminal [`Event::ModelDone`]/[`Event::ModelError`] into `tx`.
-/// Shared by [`Engine::perform`] and the child runner
-/// ([`crate::agent`]) so the terminal-event construction exists exactly once
-/// (the two dispatch paths can never diverge).
 pub(crate) async fn run_model_op(
     adapter: Arc<dyn crate::ModelAdapter>,
     op: OpId,
@@ -939,8 +397,7 @@ pub(crate) async fn run_model_op(
     let _ = tx.send(event);
 }
 
-/// The error event for a model selector with no registered adapter (shared by
-/// the engine and the child runner).
+/// The error event for a model selector with no registered adapter.
 pub(crate) fn missing_model_event(op: OpId, model: &ModelSelector) -> Event {
     Event::ModelError {
         op,
@@ -950,8 +407,7 @@ pub(crate) fn missing_model_event(op: OpId, model: &ModelSelector) -> Event {
 
 /// Run one capability op to completion, streaming chunks via the [`ChunkSink`]
 /// and sending the terminal [`Event::CapabilityDone`]/[`Event::CapabilityError`]
-/// (including `result_version`/`conflict_version` and token estimates) into
-/// `tx`. Shared by [`Engine::perform`] and the child runner ([`crate::agent`]).
+/// (including token estimates) into `tx`.
 pub(crate) async fn run_capability_op(
     capability: Arc<dyn crate::Capability>,
     op: OpId,
@@ -982,8 +438,7 @@ pub(crate) async fn run_capability_op(
     let _ = tx.send(event);
 }
 
-/// The error event for a capability name with no registration (shared by the
-/// engine and the child runner).
+/// The error event for a capability name with no registration.
 pub(crate) fn unknown_capability_event(op: OpId, name: &str) -> Event {
     let error = json!({ "error": format!("unknown capability: {name}") });
     Event::CapabilityError {
@@ -995,8 +450,8 @@ pub(crate) fn unknown_capability_event(op: OpId, name: &str) -> Event {
 }
 
 /// Rough token estimate for a piece of text (~4 bytes per token, min 1).
-/// Public so embedders (e.g. the CLI) can size opaque payloads consistently
-/// with the host's own estimates.
+/// Public so embedders can size opaque payloads consistently with the host's
+/// own estimates.
 pub fn estimate_text_tokens(text: &str) -> u32 {
     let bytes = text.len() as u64;
     bytes.div_ceil(4).max(1).min(u32::MAX as u64) as u32
@@ -1019,30 +474,6 @@ pub(crate) fn model_output_est_tokens(
     estimate_text_tokens(&output.text)
 }
 
-pub(crate) fn permission_decision_est_tokens(decision: &hugr_core::Decision) -> u32 {
-    match decision {
-        hugr_core::Decision::Allow => 0,
-        hugr_core::Decision::Deny { reason } => estimate_text_tokens(reason),
-        _ => 0,
-    }
-}
-
-fn render_todos_for_estimate(items: &[TodoItem]) -> String {
-    items
-        .iter()
-        .enumerate()
-        .map(|(idx, item)| {
-            format!(
-                "{}. [{}] {}",
-                idx + 1,
-                if item.done { "x" } else { " " },
-                item.text
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Builds an [`Engine`]: register models + capabilities, then `build()`. The
 /// builder also assembles the brain's [`StaticPolicy`] from the registered
 /// capabilities (their schemas become the advertised tools, and the ones that
@@ -1050,7 +481,6 @@ fn render_todos_for_estimate(items: &[TodoItem]) -> String {
 pub struct EngineBuilder {
     models: ModelRegistry,
     caps: CapabilityRegistry,
-    policy: Option<Arc<dyn Policy>>,
     frontend: Option<Box<dyn Frontend>>,
     clock: Option<Clock>,
     /// The selector explicitly chosen via [`default_model`](Self::default_model),
@@ -1063,21 +493,10 @@ pub struct EngineBuilder {
     first_model: Option<ModelSelector>,
     system_prompt: Option<String>,
     sampling: SamplingParams,
-    /// Capabilities that spawn sub-agents (ARCHITECTURE §13): each advertises a
-    /// tool schema to the model and carries a fork seed strategy (§14) plus
-    /// registration-time defaults (model tier / tool allowlist).
-    agents: Vec<(ToolSchema, AgentSeed, AgentDefaults)>,
-    /// Maximum nested sub-agent depth (default [`DEFAULT_MAX_AGENT_DEPTH`]).
-    max_agent_depth: usize,
-    skills: Vec<SkillDescriptor>,
     record: bool,
-    checkpoint_path: Option<PathBuf>,
-    checkpoint_cadence: CheckpointCadence,
-    crash_resume: CrashResumePolicy,
-    compaction: TraceCompaction,
     /// When set, the brain is pre-seeded by replaying this trace's recorded
     /// events into it (with zero IO), and the recorder is pre-loaded with those
-    /// same events so the continued session re-saves the full history (P3-4).
+    /// same events so the continued session re-saves the full history.
     resume: Option<Trace>,
 }
 
@@ -1086,21 +505,13 @@ impl Default for EngineBuilder {
         Self {
             models: ModelRegistry::new(),
             caps: CapabilityRegistry::new(),
-            policy: None,
             frontend: None,
             clock: None,
             default_model: None,
             first_model: None,
             system_prompt: None,
             sampling: SamplingParams::default(),
-            agents: Vec::new(),
-            max_agent_depth: DEFAULT_MAX_AGENT_DEPTH,
-            skills: Vec::new(),
             record: false,
-            checkpoint_path: None,
-            checkpoint_cadence: CheckpointCadence::OnCommand,
-            crash_resume: CrashResumePolicy::CancelInflight,
-            compaction: TraceCompaction::PreserveFull,
             resume: None,
         }
     }
@@ -1136,50 +547,7 @@ impl EngineBuilder {
         self
     }
 
-    /// Register a **sub-agent** tool (ARCHITECTURE §13): the model sees `schema`
-    /// as an ordinary tool, but invoking it spawns a child brain (seeded per
-    /// `seed`, §14) which the host runs on its own task and whose digest returns
-    /// as the tool's result. The child reuses this host's model + capability
-    /// registries (optionally narrowed by a `tools` allowlist in its args).
-    pub fn agent(self, schema: ToolSchema, seed: AgentSeed) -> Self {
-        self.agent_with_defaults(schema, seed, AgentDefaults::new())
-    }
-
-    /// Register a sub-agent tool together with its registration-time
-    /// [`AgentDefaults`] (model tier + tool allowlist): agent-kind knowledge
-    /// lives here at the registration site, never inside the generic runner.
-    pub fn agent_with_defaults(
-        mut self,
-        schema: ToolSchema,
-        seed: AgentSeed,
-        defaults: AgentDefaults,
-    ) -> Self {
-        self.agents.push((schema, seed, defaults));
-        self
-    }
-
-    /// Cap how deep sub-agents may nest (default [`DEFAULT_MAX_AGENT_DEPTH`]).
-    /// A spawn beyond the cap fails with a semantic error routed back to the
-    /// calling model as the tool result (never a host crash).
-    pub fn max_agent_depth(mut self, depth: usize) -> Self {
-        self.max_agent_depth = depth;
-        self
-    }
-
-    /// Register skill descriptors. The brain advertises them as lightweight
-    /// model-invocable tools and records activation durably (ROADMAP_2 C5/C6).
-    pub fn skills(mut self, skills: impl IntoIterator<Item = SkillDescriptor>) -> Self {
-        self.skills.extend(skills);
-        self
-    }
-
-    /// Set the permission policy (default: [`AllowAll`]).
-    pub fn policy(mut self, policy: Arc<dyn Policy>) -> Self {
-        self.policy = Some(policy);
-        self
-    }
-
-    /// Set the front-end (default: [`StdoutFrontend`]).
+    /// Set the front-end (default: a silent no-op).
     pub fn frontend(mut self, frontend: Box<dyn Frontend>) -> Self {
         self.frontend = Some(frontend);
         self
@@ -1212,40 +580,17 @@ impl EngineBuilder {
         self
     }
 
-    /// Persist this recording to `path` during the run. This implies
-    /// [`record`](Self::record): checkpoints are just the current trace written
-    /// atomically at the chosen cadence (ARCHITECTURE §12.2/§15.1).
-    pub fn checkpoint(mut self, path: impl Into<PathBuf>, cadence: CheckpointCadence) -> Self {
-        self.record = true;
-        self.checkpoint_path = Some(path.into());
-        self.checkpoint_cadence = cadence;
-        self
-    }
-
-    /// Set how a resumed trace reconciles stale in-flight ops left by a crash.
-    pub fn crash_resume_policy(mut self, policy: CrashResumePolicy) -> Self {
-        self.crash_resume = policy;
-        self
-    }
-
-    /// Set the checkpoint compaction policy. The Phase 7 native host exposes
-    /// the policy explicitly and defaults to lossless full-trace preservation.
-    pub fn compaction(mut self, compaction: TraceCompaction) -> Self {
-        self.compaction = compaction;
-        self
-    }
-
-    /// Resume a session from a saved [`Trace`] (P3-4). The built engine's brain
-    /// is reconstructed by re-feeding the trace's recorded events into it (with
-    /// **zero IO** — the host does *not* re-run the model/shell/http for events
-    /// that already happened; it only re-folds them to rebuild `BrainState`,
-    /// exactly as [`hugr_replay::replay`] does). New live turns then continue
-    /// from that state.
+    /// Resume a session from a saved [`Trace`]. The built engine's brain is
+    /// reconstructed by re-feeding the trace's recorded events into it (with
+    /// **zero IO** — the host does *not* re-run the model/tools for events that
+    /// already happened; it only re-folds them to rebuild `BrainState`, exactly
+    /// as [`hugr_replay::replay`] does). New live turns then continue from that
+    /// state.
     ///
     /// Resuming implies recording (so the continued session can be re-saved as a
     /// trace that still verifies bit-for-bit): the recorder is pre-loaded with
     /// the trace's events, and any new events are appended after them. The
-    /// session's [`TurnPolicy`] is restored from the trace ([`policy_from_trace`])
+    /// session's `TurnPolicy` is restored from the trace ([`policy_from_trace`])
     /// so the continued session branches identically; a trace without a captured
     /// policy falls back to the default.
     pub fn resume(mut self, trace: Trace) -> Self {
@@ -1269,169 +614,93 @@ impl EngineBuilder {
         // branches identically and re-verifies) and rebuilds the brain from the
         // trace; a fresh session assembles the policy from the registered
         // capabilities (§2.4).
-        let (brain, recorder, policy_config, resumed_children) = match self.resume {
+        let (brain, recorder, policy_config) = match self.resume {
             Some(trace) => {
                 // The brain runs under the trace's policy; carry the captured
                 // value through verbatim so re-saving round-trips it bit-for-bit.
                 let mut brain = Brain::new(policy_from_trace(&trace));
                 let events = trace.events;
                 // Reconstruct the resumed session's state with ZERO IO: re-fold
-                // the recorded events into the fresh brain (the host must not
-                // re-run the model/shell/http for work that already happened —
-                // this only rebuilds `BrainState`, exactly like
-                // `hugr_replay::replay`, via the shared `drive` fold). We *keep*
-                // the re-emitted commands (rather than discard them) to seed the
-                // recorder's command sequence: re-deriving them here makes the
-                // resumed trace's `commands` self-consistent with its events even
-                // when the original trace predates command recording (empty
-                // `commands`), so the re-saved trace still verifies bit-for-bit.
+                // the recorded events into the fresh brain (this only rebuilds
+                // `BrainState`, exactly like `hugr_replay::replay`, via the
+                // shared `drive` fold). We *keep* the re-emitted commands
+                // (rather than discard them) to seed the recorder's command
+                // sequence: re-deriving them here makes the resumed trace's
+                // `commands` self-consistent with its events even when the
+                // original trace predates command recording (empty `commands`),
+                // so the re-saved trace still verifies bit-for-bit.
                 let resume_commands = hugr_replay::drive(&mut brain, &events);
                 // Pre-seed the recorder with the same events (moved, not cloned)
                 // and the re-derived commands so a later `save_trace` carries
                 // old + new (ARCHITECTURE §6.3).
                 let mut recorder = Recorder::seed(events, resume_commands, trace.meta.created_at);
-                reconcile_crashed_ops(&mut brain, &mut recorder, self.crash_resume, &clock);
-                // Carry the trace's recorded child sessions forward, so a
-                // resumed session re-saves them (and any new children append).
-                (brain, Some(recorder), trace.policy, trace.children)
+                reconcile_crashed_ops(&mut brain, &mut recorder, &clock);
+                (brain, Some(recorder), trace.policy)
             }
             None => {
-                // Advertise both capability tools and sub-agent tools to the
-                // model; the brain routes agent-named calls to `StartAgent`.
-                let mut tools = self.caps.schemas();
-                tools.extend(self.agents.iter().map(|(schema, ..)| schema.clone()));
-                let mut base_policy = StaticPolicy::default()
+                let mut policy = StaticPolicy::default()
                     .with_model(default_model.clone())
-                    .with_tools(tools)
+                    .with_tools(self.caps.schemas())
                     .with_permissioned(self.caps.permissioned_names())
                     .with_background(self.caps.background_names())
-                    .with_skills(self.skills)
                     .with_params(self.sampling);
-                for (schema, seed, _) in &self.agents {
-                    base_policy = base_policy.with_agent(schema.name.clone(), *seed);
-                }
                 if let Some(system) = self.system_prompt {
-                    base_policy = base_policy.with_system_prompt(system);
+                    policy = policy.with_system_prompt(system);
                 }
-                let policy = RoutingPolicy::new(base_policy);
-                // Serialize the policy once (for recorded traces) before it moves
-                // into the brain. `RoutingPolicy` is serde-able; best-effort.
+                // Serialize the policy once (for recorded traces) before it
+                // moves into the brain; best-effort.
                 let policy_config = self
                     .record
                     .then(|| serde_json::to_value(&policy).ok())
                     .flatten();
                 let brain = Brain::new(Box::new(policy));
-                (
-                    brain,
-                    self.record.then(Recorder::default),
-                    policy_config,
-                    Vec::new(),
-                )
+                (brain, self.record.then(Recorder::default), policy_config)
             }
         };
-        // Recording engines also collect their sub-agents' recorded sessions
-        // (ARCHITECTURE §13.3); non-recording engines pass `None` so children
-        // stay zero-overhead.
-        let child_traces = recorder
-            .as_ref()
-            .map(|_| Arc::new(Mutex::new(resumed_children)));
-
-        // Registration-time agent defaults, keyed by tool name, for the runner.
-        let agent_defaults: Arc<HashMap<String, AgentDefaults>> = Arc::new(
-            self.agents
-                .iter()
-                .map(|(schema, _, defaults)| (schema.name.clone(), defaults.clone()))
-                .collect(),
-        );
 
         let (tx, rx) = mpsc::unbounded_channel();
-        let (ckpt_done_tx, ckpt_done_rx) = mpsc::unbounded_channel();
         Engine {
             brain,
             models: self.models,
             caps: self.caps,
-            policy: self.policy.unwrap_or_else(|| Arc::new(AllowAll)),
-            frontend: self
-                .frontend
-                .unwrap_or_else(|| Box::new(StdoutFrontend::new())),
+            frontend: self.frontend.unwrap_or_else(|| Box::new(SilentFrontend)),
             clock,
             tx,
             rx,
             tasks: HashMap::new(),
             op_labels: HashMap::new(),
-            coalescer: Coalescer::new(),
             recorder,
-            child_traces,
-            checkpoint_path: self.checkpoint_path,
-            checkpoint_cadence: self.checkpoint_cadence,
-            events_since_checkpoint: 0,
-            checkpoint_dirty: false,
-            checkpoint_gen: 0,
-            checkpoint_shared: CheckpointShared::new(),
-            ckpt_done_tx,
-            ckpt_done_rx,
-            compaction: self.compaction,
             policy_config,
-            default_model,
-            agent_defaults,
-            max_agent_depth: self.max_agent_depth,
-            session_started: false,
         }
     }
 }
 
-fn reconcile_crashed_ops(
-    brain: &mut Brain,
-    recorder: &mut Recorder,
-    policy: CrashResumePolicy,
-    clock: &Clock,
-) {
-    match policy {
-        CrashResumePolicy::CancelInflight => {
-            let stale: Vec<OpId> = brain.state().inflight().keys().copied().collect();
-            for op in stale {
-                let tick = Event::Tick {
-                    now: Timestamp(clock()),
-                };
-                recorder.record(&tick);
-                brain.submit(tick);
+/// Append recorded [`Event::OpCancelled`] events for ops that were in flight
+/// when the previous process died, so the brain folds the cancellation exactly
+/// as if the old host had confirmed an abort before exiting. Replay-safe and
+/// conservative (ARCHITECTURE §15.1).
+fn reconcile_crashed_ops(brain: &mut Brain, recorder: &mut Recorder, clock: &Clock) {
+    let stale: Vec<OpId> = brain.state().inflight().keys().copied().collect();
+    for op in stale {
+        let tick = Event::Tick {
+            now: Timestamp(clock()),
+        };
+        recorder.record(&tick);
+        brain.submit(tick);
 
-                let cancelled = Event::OpCancelled { op };
-                recorder.record(&cancelled);
-                brain.submit(cancelled);
-            }
-            // Folding the stale cancellations queues commands — typically a
-            // `Done { reason: Cancelled }` for the pre-crash turn, or even a
-            // `StartModelCall` if an interrupt was pending when the process
-            // died. The pre-crash turn is over: a resumed engine must start
-            // quiescent, so drain and discard those commands here. Otherwise
-            // they would fire at the start of the next live turn — a spurious
-            // stop hook, or a stale pre-crash model call racing the new one.
-            // They ARE still recorded: replaying the trace re-emits them, so
-            // the recorded command sequence must include them for `verify` to
-            // match bit-for-bit — "drained, not performed" is a host choice
-            // invisible to the pure fold.
-            recorder.record_commands(&brain.poll());
-        }
+        let cancelled = Event::OpCancelled { op };
+        recorder.record(&cancelled);
+        brain.submit(cancelled);
     }
-}
-
-/// Classify an event as a **tool-shaped completion**: `(op, payload, is_error)`
-/// for every event the brain folds tool-result-shaped — a capability finishing
-/// *or* a sub-agent returning its digest (ARCHITECTURE §13). This is the single
-/// place that lists them, shared by `Engine::observe` (the front-end tool-end
-/// render) and the PostTool hook in `drive_to_idle`, so the two can never
-/// diverge. Skill activations are *not* here: they happen entirely inside the
-/// brain (no host event crosses this boundary), so no Pre/PostTool hook fires
-/// for them — a known limitation.
-pub(crate) fn tool_shaped_completion(event: &Event) -> Option<(OpId, &Value, bool)> {
-    match event {
-        Event::CapabilityDone { op, result, .. } | Event::AgentDone { op, result, .. } => {
-            Some((*op, result, false))
-        }
-        Event::CapabilityError { op, error, .. } | Event::AgentError { op, error, .. } => {
-            Some((*op, error, true))
-        }
-        _ => None,
-    }
+    // Folding the stale cancellations queues commands — typically a
+    // `Done { reason: Cancelled }` for the pre-crash turn, or even a
+    // `StartModelCall` if an interrupt was pending when the process died. The
+    // pre-crash turn is over: a resumed engine must start quiescent, so drain
+    // and discard those commands here. Otherwise they would fire at the start
+    // of the next live turn — a spurious stale pre-crash model call racing the
+    // new one. They ARE still recorded: replaying the trace re-emits them, so
+    // the recorded command sequence must include them for `verify` to match
+    // bit-for-bit — "drained, not performed" is a host choice invisible to the
+    // pure fold.
+    recorder.record_commands(&brain.poll());
 }

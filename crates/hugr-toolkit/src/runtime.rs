@@ -23,7 +23,6 @@ use hugr_agent::{
 };
 use hugr_core::{ModelSelector, SamplingParams};
 use hugr_host::mcp::{McpError, McpServerConfig, load_stdio};
-use hugr_host::policy::AllowAll;
 use hugr_providers::OpenAiAdapter;
 
 use crate::manifest::{AgentDefinition, ToolGrant, ToolKind};
@@ -131,8 +130,7 @@ async fn build_agent_depth_with_provider_key(
         def.agent.version.as_str()
     };
     let mut builder = Agent::builder(def.agent.name.clone(), version, store)
-        .description(def.agent.description.clone())
-        .policy(Arc::new(AllowAll));
+        .description(def.agent.description.clone());
 
     // The provider API key rides an env var (§20.1) — never the manifest. When
     // unset, the adapter gets an empty key and the run fails as an error answer.

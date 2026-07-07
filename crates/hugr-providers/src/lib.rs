@@ -9,4 +9,4 @@
 
 mod openai;
 
-pub use openai::{OpenAiAdapter, TierModelConfig, TierModelConfigSet};
+pub use openai::OpenAiAdapter;

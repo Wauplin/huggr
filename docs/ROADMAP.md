@@ -39,7 +39,7 @@ Goal: remove whole crates with no live consumers. ~2.9k LOC.
 6. Delete the untracked local junk: `archive-light-2026-07-01/` (regenerable demo corpus), empty `.agents/` and `.codex/` dirs. Update the two README example commands that referenced `archive-light-2026-07-01` to point at any docs folder.
 7. Exit: workspace builds and tests green with 7 crates (`core`, `host`, `providers`, `replay`, `agent`, `toolkit`, `docs`); `grep -ri "plugin" crates/` finds no tool-path references.
 
-### Phase 2 — Gut `hugr-host` and `hugr-providers` to the live slice
+### Phase 2 — Gut `hugr-host` and `hugr-providers` to the live slice ✅ DONE
 
 Goal: the live stack imports only `Engine`/`EngineBuilder` (+ `resume`), the `Capability` trait + `ChunkSink`, `ModelAdapter`/`ModelSink`, the `Frontend` trait, `AllowAll`, and the MCP loader (`mcp::load_stdio`). Delete the rest. ~4k LOC.
 
@@ -107,6 +107,7 @@ Goal: the docs crate is a definition folder + answer shaping + thin CLI/PyO3 pac
 
 - 2026-07-06 — Plan authored from a full-repo audit; docs rewritten to the target state (this file + `ARCHITECTURE.md`; `DESIGN.md`/`THREAT_MODEL.md`/`BRANDING.md`/`PROGRESS.md` merged or deleted). Implementation not started.
 - 2026-07-06 — **Phase 1 done.** Deleted `hugr-cli`, `hugr-wasm`, `hugr-example-plugin`, `hugr-plugin-abi` (framing.rs moved to `hugr-host/src/framing.rs`), the plugin tool path (`plugins.rs`, `ToolKind::Plugin`, `[tools.plugin.*]`), and the untracked junk dirs. One deviation: the framing wildcard match arm in `mcp.rs` became unreachable once `FramingError` moved in-crate, so the arm and its `#[non_exhaustive]` were dropped now rather than later. 7 crates; 275 tests green.
+- 2026-07-06 — **Phase 2 done.** Deleted host capabilities/, coalescer, scheduler, skills loader, spend report, `StdoutFrontend`/`Metrics`, the in-process sub-agent runner (`agent.rs`, `AgentDefaults`, `agent()`/`max_agent_depth`), and the whole `Policy` trait (the engine now answers `RequestPermission` with `Allow` inline — the sandbox is registration); `hugr-agent`/`hugr-toolkit` dropped their policy plumbing. Deviations beyond the plan: the *entire* checkpoint machinery (`CheckpointCadence`, `CheckpointShared`, background writers) went too — the agent runtime only uses `.record(true)`/`.resume(trace)` and persists via `TraceStore`, so nothing drove it; the engine's self-fired hooks (`fire_hook`, session-start/pre-tool/post-tool/stop) were removed now rather than in Phase 3; `OpenAiAdapter::from_env` + the HF-token resolution helpers were deleted alongside the listed tier-config surface (the manifest is the one config path). `end_to_end.rs` was rewritten to the surviving behaviors (tool round-trip, MCP, background overlap, cancellation, delta consolidation, record/replay/resume, crash-quiescence via a hand-crafted in-flight trace). 233 tests green.
 
 ## 4. After the trim
 

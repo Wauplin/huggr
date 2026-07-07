@@ -3,8 +3,8 @@
 //! A Hugr agent *is* a tool: because every agent speaks the same [`Ask`] →
 //! [`Answer`] contract, granting one agent to another is one ordinary
 //! capability. [`AgentTool`] wraps a **resolver** — an async closure the host
-//! (the toolkit's `build_agent`) supplies that runs the child, whether
-//! in-process (interpreter path) or as a subprocess artifact (§21.1). To the
+//! (the toolkit's `build_agent`) supplies that runs the child as a subprocess
+//! artifact speaking the CLI JSON contract (§21.1). To the
 //! calling model it looks like any tool: its args are an `Ask` (question +
 //! optional `trace_id` for follow-ups/forks + blob handles), its result is the
 //! child's full `Answer` — so the caller can resume the child's thread across
@@ -28,8 +28,8 @@ use crate::contract::{Answer, AnswerMeta, Ask};
 
 /// An async closure that runs a child agent for one [`Ask`] and returns its
 /// [`Answer`] (or an error string, surfaced to the model as a tool error). The
-/// host supplies this — interpreter (in-process child `Agent`) or subprocess
-/// (a built artifact speaking the CLI JSON contract).
+/// host supplies this — a built artifact spawned as a subprocess speaking the
+/// CLI JSON contract.
 pub type AgentToolResolver =
     Arc<dyn Fn(Ask) -> Pin<Box<dyn Future<Output = Result<Answer, String>> + Send>> + Send + Sync>;
 

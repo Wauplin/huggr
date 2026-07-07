@@ -58,6 +58,10 @@ pub struct AgentDefinition {
     pub system_prompt: Option<String>,
     /// The folder the definition was loaded from ([`AgentDefinition::load`]).
     pub source_dir: Option<PathBuf>,
+    /// An explicit provider API key supplied by an embedding host (e.g. the
+    /// docs Python binding), taking precedence over `[models].api_key_env`.
+    /// In-memory only — never parsed from or written to a manifest.
+    pub provider_api_key: Option<String>,
     /// Non-fatal diagnostics (unknown keys). Surfaces print these; `hugr run`
     /// still proceeds.
     pub warnings: Vec<Warning>,
@@ -328,6 +332,7 @@ impl AgentDefinition {
             answer,
             system_prompt: None,
             source_dir: None,
+            provider_api_key: None,
             warnings,
         })
     }
@@ -821,7 +826,7 @@ command = "docs-mcp"
 args = ["--stdio"]
 
 [tools.agent.receipts]
-ref = "receipts"
+artifact = "./receipts"
 "#;
         let def = AgentDefinition::parse(src, "hugr.toml").unwrap();
         assert_eq!(def.tools.len(), 4);

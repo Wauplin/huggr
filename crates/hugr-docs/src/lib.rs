@@ -10,7 +10,7 @@ use hugr_agent::{Ask, TraceId};
 use hugr_core::{OpMeta, OpOutcome, Record, SamplingParams, ToolSchema, Value};
 use hugr_host::{Capability, ChunkSink, estimate_text_tokens};
 use hugr_toolkit::manifest::AgentDefinition;
-use hugr_toolkit::runtime::{build_agent_with_provider_key, trace_store_for};
+use hugr_toolkit::runtime::{build_agent, trace_store_for};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -216,7 +216,7 @@ async fn answer_question_inner(
     let docs = DocsRoot::new(&config.root)?;
     let definition = docs_definition(config, docs.root())?;
     let store = trace_store_for(&definition);
-    let (agent, _warnings) = build_agent_with_provider_key(&definition, config.api_key.clone())
+    let (agent, _warnings) = build_agent(&definition)
         .await
         .context("building docs agent from definition")?;
 
@@ -254,6 +254,7 @@ fn docs_definition(config: &DocsConfig, docs_root: &Path) -> Result<AgentDefinit
     definition.agent.version = env!("CARGO_PKG_VERSION").to_string();
     definition.models.base_url = Some(config.base_url.clone());
     definition.models.api_key_env = Some("HUGR_DOCS_API_KEY".to_string());
+    definition.provider_api_key = Some(config.api_key.clone());
     if let Some(tier) = definition.models.tiers.get_mut("docs") {
         tier.model = config.model.clone();
         tier.input_usd_per_m_tokens = Some(config.input_usd_per_m_tokens);

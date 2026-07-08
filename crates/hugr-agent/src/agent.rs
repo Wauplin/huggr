@@ -84,10 +84,6 @@ pub struct Agent {
     /// trace-recorded usage (ARCHITECTURE §18.4). Missing tiers price at zero.
     pub pricing: Pricing,
     pub limits: AgentLimits,
-    /// Optional JSON schema for `Answer.extra` (ROADMAP T3.4). When set, the
-    /// agent lifts the final JSON message into `extra` and validates it against
-    /// this schema post-hoc — violations become `Answer.warnings`, never errors.
-    pub answer_schema: Option<Value>,
     /// Effective config with real provenance, supplied by the layer that knows
     /// where values came from (the toolkit's `build_agent`: manifest/env/flag,
     /// secrets redacted — ROADMAP T3.5). When `None`, [`Agent::config`] derives a
@@ -126,7 +122,6 @@ impl Agent {
             blob_store,
             pricing: Pricing::default(),
             limits: AgentLimits::default(),
-            answer_schema: None,
             config_entries: None,
             agent_tools: Vec::new(),
             next_scratch: Arc::new(AtomicU64::new(0)),
@@ -366,8 +361,6 @@ impl Agent {
             None => None,
         };
 
-        let mut warnings: Vec<String> = Vec::new();
-
         // Agent-as-tool grants (§20.5, T3.8): register each granted child agent
         // as an `agent_<name>` capability with a per-ask spend sink, so its cost
         // folds into *this* ask's meta after the turn.
@@ -427,7 +420,7 @@ impl Agent {
         // with a typed reason on `extra` (ROADMAP T3.1). Otherwise the final
         // model output is the answer (§18.1).
         let trip = limit_state.trip();
-        let (status, message, mut extra) = match &trip {
+        let (status, message, extra) = match &trip {
             Some(trip) => (AnswerStatus::Error, trip.message(), trip.extra()),
             None => {
                 let (status, message) = final_answer(log);
@@ -435,23 +428,6 @@ impl Agent {
             }
         };
 
-        // Structured answer extras (ROADMAP T3.4): when a schema is declared and
-        // the run produced a plain (non-error, no-limit-trip) answer, lift the
-        // final JSON message into `extra` and validate it. Violations are
-        // advisory warnings on the answer, never failures — `extra` is never
-        // load-bearing for the contract.
-        if let Some(schema) = &self.answer_schema {
-            if trip.is_none() && extra.is_null() {
-                if let Ok(parsed) = serde_json::from_str::<Value>(message.trim()) {
-                    if parsed.is_object() || parsed.is_array() {
-                        extra = parsed;
-                    }
-                }
-            }
-            if !extra.is_null() {
-                warnings.extend(crate::answer_schema::validate_extra(schema, &extra));
-            }
-        }
         // Persist old + new as one NEW immutable trace; the parent file is
         // never mutated — lineage lives in `depends_on` (§19.2).
         let trace = engine
@@ -492,9 +468,6 @@ impl Agent {
         let mut answer = Answer::new(status, message, trace_id, metadata).with_blobs(out_blobs);
         if !extra.is_null() {
             answer = answer.with_extra(extra);
-        }
-        if !warnings.is_empty() {
-            answer = answer.with_warnings(warnings);
         }
         Ok(answer)
     }

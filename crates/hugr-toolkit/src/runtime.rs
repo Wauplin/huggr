@@ -208,15 +208,6 @@ pub async fn build_agent(def: &AgentDefinition) -> Result<(Agent, Vec<String>), 
         agent.scratch_root = resolve(&base_dir, root);
     }
 
-    // Structured-answer-extra schema (T3.4): inline `[answer].extra_schema` or a
-    // `.json` file. Advisory only — a schema that can't be read/parsed warns and
-    // is skipped rather than failing the build.
-    match resolve_answer_schema(def, &base_dir) {
-        Ok(Some(schema)) => agent.answer_schema = Some(schema),
-        Ok(None) => {}
-        Err(warning) => warnings.push(warning),
-    }
-
     // Effective config with real provenance + redaction for `--config` (T3.5).
     agent.config_entries = Some(effective_config(def, &base_dir));
 
@@ -357,49 +348,7 @@ pub fn effective_config(def: &AgentDefinition, base_dir: &Path) -> Vec<ConfigEnt
         manifest_or_default(store.is_some()),
     ));
 
-    // Answer-extra schema (T3.4) provenance, if declared.
-    if def.answer.extra_schema.is_some() {
-        entries.push(ConfigEntry::visible("answer.extra_schema", true, Manifest));
-    }
-    if let Some(file) = &def.answer.extra_schema_file {
-        entries.push(ConfigEntry::visible(
-            "answer.extra_schema_file",
-            resolve(base_dir, file).display().to_string(),
-            Manifest,
-        ));
-    }
-
     entries
-}
-
-/// Resolve the declared `[answer]` extra schema: prefer the inline
-/// `extra_schema`, else read `extra_schema_file` (relative to the definition
-/// folder) as JSON. Returns `Ok(None)` when nothing is declared; a read/parse
-/// failure is a non-fatal warning (the schema is advisory).
-fn resolve_answer_schema(
-    def: &AgentDefinition,
-    base_dir: &Path,
-) -> Result<Option<serde_json::Value>, String> {
-    if let Some(schema) = &def.answer.extra_schema {
-        return Ok(Some(schema.clone()));
-    }
-    if let Some(file) = &def.answer.extra_schema_file {
-        let path = resolve(base_dir, file);
-        let bytes = std::fs::read(&path).map_err(|e| {
-            format!(
-                "answer.extra_schema_file `{}`: {e} (ignored)",
-                path.display()
-            )
-        })?;
-        let schema: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
-            format!(
-                "answer.extra_schema_file `{}`: {e} (ignored)",
-                path.display()
-            )
-        })?;
-        return Ok(Some(schema));
-    }
-    Ok(None)
 }
 
 /// Extract `command` (required) and `args` (optional string array) from an

@@ -28,12 +28,6 @@
     "metadata": { "$ref": "#/$defs/answer_meta" },
     "extra": {
       "description": "Agent-specific structured extras; never load-bearing for the contract."
-    },
-    "warnings": {
-      "type": "array",
-      "description": "Advisory, non-fatal notices about this answer (e.g. extra failing its declared schema). Never load-bearing.",
-      "items": { "type": "string" },
-      "default": []
     }
   },
   "$defs": {

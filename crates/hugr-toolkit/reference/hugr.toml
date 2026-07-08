@@ -87,20 +87,3 @@ timeout_s = 120
 [traces]
 # store = "./.traces"
 
-# ---------------------------------------------------------------------------
-# [answer] — optional JSON schema for Answer.extra (ROADMAP T3.4). Validated
-# post-hoc: violations surface as Answer.warnings, never as a failure (extra is
-# never load-bearing for the contract). Declare it inline or point at a file.
-# When a schema is declared, a successful ask whose final message is JSON has
-# that value lifted into `extra`. The validator supports a small JSON-Schema
-# subset (type / required / properties / items).
-# ---------------------------------------------------------------------------
-# [answer]
-# extra_schema_file = "./answer.schema.json"   # …or inline below:
-# [answer.extra_schema]
-# type = "object"
-# required = ["related_documents"]
-# [answer.extra_schema.properties.related_documents]
-# type = "array"
-# [answer.extra_schema.properties.related_documents.items]
-# type = "string"

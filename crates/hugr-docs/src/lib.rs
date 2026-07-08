@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use hugr_agent::{Ask, TraceId};
-use hugr_core::{OpMeta, OpOutcome, Record, SamplingParams, Value};
+use hugr_core::{OpMeta, OpOutcome, Record, Value};
 use hugr_host::estimate_text_tokens;
 use hugr_toolkit::manifest::AgentDefinition;
 use hugr_toolkit::runtime::{build_agent, trace_store_for};
@@ -15,13 +15,19 @@ use serde_json::json;
 #[cfg(feature = "python")]
 mod python;
 
-pub const DEFAULT_MODEL: &str = "google/gemma-4-31B-it:cerebras";
-pub const DEFAULT_BASE_URL: &str = "https://router.huggingface.co/v1";
-pub const DEFAULT_TRACE_DIR: &str = ".hugr-docs-traces";
-pub const DEFAULT_INPUT_USD_PER_M_TOKENS: f64 = 1.0;
-pub const DEFAULT_OUTPUT_USD_PER_M_TOKENS: f64 = 1.5;
 const DEFINITION_MANIFEST: &str = include_str!("../definition/hugr.toml");
 const DEFINITION_SYSTEM: &str = include_str!("../definition/SYSTEM.md");
+
+/// The embedded definition, parsed once — the single source of the default
+/// model/base_url/pricing/trace-dir values the env vars override.
+static EMBEDDED_DEF: LazyLock<AgentDefinition> = LazyLock::new(|| {
+    AgentDefinition::parse(DEFINITION_MANIFEST, "hugr-docs/definition/hugr.toml")
+        .expect("embedded docs definition parses")
+});
+
+fn docs_tier() -> &'static hugr_toolkit::TierConfig {
+    &EMBEDDED_DEF.models.tiers["docs"]
+}
 
 /// Exact phrasing the system prompt tells the model to emit when the docs do not
 /// contain enough evidence. `build_answer` matches this (case-insensitively, after
@@ -42,7 +48,6 @@ pub struct DocsConfig {
     pub api_key: String,
     pub input_usd_per_m_tokens: f64,
     pub output_usd_per_m_tokens: f64,
-    pub sampling: SamplingParams,
 }
 
 #[non_exhaustive]
@@ -99,16 +104,6 @@ impl DocsConfigOptions {
 }
 
 impl DocsConfig {
-    pub fn from_env(root: PathBuf, model_override: Option<String>) -> Result<Self> {
-        Self::from_options(
-            root,
-            DocsConfigOptions {
-                model: model_override,
-                ..DocsConfigOptions::default()
-            },
-        )
-    }
-
     pub fn from_options(root: PathBuf, options: DocsConfigOptions) -> Result<Self> {
         let api_key = options
             .api_key
@@ -117,20 +112,22 @@ impl DocsConfig {
         let model = options
             .model
             .or_else(|| std::env::var("HUGR_DOCS_MODEL").ok())
-            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+            .unwrap_or_else(|| docs_tier().model.clone());
         let base_url = options
             .base_url
             .or_else(|| std::env::var("HUGR_DOCS_BASE_URL").ok())
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+            .unwrap_or_else(|| EMBEDDED_DEF.models.base_url.clone().unwrap_or_default());
         let trace_dir = options
             .trace_dir
             .or_else(|| std::env::var_os("HUGR_DOCS_TRACE_DIR").map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_TRACE_DIR));
+            .unwrap_or_else(|| {
+                PathBuf::from(EMBEDDED_DEF.traces.store.clone().unwrap_or_default())
+            });
         let input_usd_per_m_tokens = options.input_usd_per_m_tokens.map_or_else(
             || {
                 parse_env_f64(
                     "HUGR_DOCS_INPUT_USD_PER_M_TOKENS",
-                    DEFAULT_INPUT_USD_PER_M_TOKENS,
+                    docs_tier().input_usd_per_m_tokens.unwrap_or(0.0),
                 )
             },
             validate_price,
@@ -139,12 +136,11 @@ impl DocsConfig {
             || {
                 parse_env_f64(
                     "HUGR_DOCS_OUTPUT_USD_PER_M_TOKENS",
-                    DEFAULT_OUTPUT_USD_PER_M_TOKENS,
+                    docs_tier().output_usd_per_m_tokens.unwrap_or(0.0),
                 )
             },
             validate_price,
         )?;
-        let sampling = SamplingParams::new().with_temperature(0.0);
         Ok(Self {
             root,
             trace_dir,
@@ -156,7 +152,6 @@ impl DocsConfig {
             api_key,
             input_usd_per_m_tokens,
             output_usd_per_m_tokens,
-            sampling,
         })
     }
 }
@@ -234,9 +229,7 @@ async fn answer_question_inner(
 }
 
 fn docs_definition(config: &DocsConfig, docs_root: &Path) -> Result<AgentDefinition> {
-    let mut definition =
-        AgentDefinition::parse(DEFINITION_MANIFEST, "hugr-docs/definition/hugr.toml")
-            .context("parsing embedded docs definition")?;
+    let mut definition = EMBEDDED_DEF.clone();
     definition.source_dir = Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("definition"));
     definition.system_prompt = Some(DEFINITION_SYSTEM.to_string());
     definition.agent.version = env!("CARGO_PKG_VERSION").to_string();
@@ -247,8 +240,6 @@ fn docs_definition(config: &DocsConfig, docs_root: &Path) -> Result<AgentDefinit
         tier.model = config.model.clone();
         tier.input_usd_per_m_tokens = Some(config.input_usd_per_m_tokens);
         tier.output_usd_per_m_tokens = Some(config.output_usd_per_m_tokens);
-        tier.temperature = config.sampling.temperature.map(f64::from);
-        tier.max_tokens = config.sampling.max_tokens;
     }
     let root = docs_root.display().to_string();
     for grant in &mut definition.tools {
@@ -277,8 +268,8 @@ pub async fn answer_with_options(
         Ok(config) => config,
         Err(error) => {
             return Ok(failure_answer(
-                DEFAULT_MODEL,
-                DEFAULT_BASE_URL,
+                &docs_tier().model,
+                EMBEDDED_DEF.models.base_url.as_deref().unwrap_or(""),
                 started.elapsed(),
                 error.to_string(),
             ));
@@ -620,14 +611,10 @@ fn read_document_sets(log: &[hugr_core::LogEntry]) -> ReadSets {
             continue;
         };
         match name.as_str() {
-            "docs_read" | "docs_read_range" | "fs_read" | "fs_read_range" => {
+            "fs_read" | "fs_read_range" => {
                 collect_read_path(&mut read, result);
             }
-            "docs_read_many"
-            | "docs_read_range_many"
-            | "docs_outline"
-            | "fs_read_many"
-            | "fs_outline" => {
+            "fs_read_many" | "fs_outline" => {
                 if let Some(documents) = result.get("documents").and_then(Value::as_array) {
                     for document in documents {
                         collect_read_path(&mut read, document);
@@ -816,7 +803,6 @@ mod tests {
             api_key: "key".to_string(),
             input_usd_per_m_tokens: 1.0,
             output_usd_per_m_tokens: 1.5,
-            sampling: SamplingParams::new().with_temperature(0.0),
         }
     }
 
@@ -908,7 +894,7 @@ mod tests {
         .unwrap();
         assert_eq!(answer.status, DocsStatus::Error);
         assert!(answer.message.contains("token price"));
-        assert_eq!(answer.metadata.model, DEFAULT_MODEL);
+        assert_eq!(answer.metadata.model, docs_tier().model);
         assert!(answer.related_documents.is_empty());
     }
 
@@ -924,7 +910,6 @@ mod tests {
             api_key: "key".to_string(),
             input_usd_per_m_tokens: 2.0,
             output_usd_per_m_tokens: 3.0,
-            sampling: SamplingParams::new().with_temperature(0.0),
         };
         let root = DocsRoot::new(&config.root).unwrap();
         let def = docs_definition(&config, root.root()).unwrap();
@@ -995,46 +980,6 @@ mod tests {
         };
         let value = serde_json::to_value(answer).unwrap();
         assert_eq!(value["trace_id"], "trace-1");
-    }
-
-    #[test]
-    fn read_document_sets_counts_new_read_tools() {
-        let log = vec![
-            tool_result(
-                0,
-                "docs_read_range",
-                json!({ "path": "guide/a.md", "is_index": false }),
-            ),
-            tool_result(
-                1,
-                "docs_read_many",
-                json!({
-                    "documents": [
-                        { "path": "guide/b.md", "is_index": false },
-                        { "path": "AI_INDEX.md", "is_index": true }
-                    ]
-                }),
-            ),
-            tool_result(
-                2,
-                "docs_outline",
-                json!({
-                    "documents": [
-                        { "path": "guide/c.md", "is_index": false, "headings": [] }
-                    ]
-                }),
-            ),
-        ];
-        let read = read_document_sets(&log);
-        assert_eq!(
-            read.documents,
-            BTreeSet::from([
-                "guide/a.md".to_string(),
-                "guide/b.md".to_string(),
-                "guide/c.md".to_string()
-            ])
-        );
-        assert_eq!(read.indexes, BTreeSet::from(["AI_INDEX.md".to_string()]));
     }
 
     #[test]

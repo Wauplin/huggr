@@ -1,162 +1,146 @@
-# Roadmap
+# Roadmap & Progress
 
-> Companion to `DESIGN.md` and `ARCHITECTURE.md`. Phased plan with explicit exit criteria. Each phase is shippable and de-risks the next. The ordering is deliberate: prove the *pure core* first, then the *showcase*, then the *differentiators* (concurrency, portability), then *extensibility* and *advanced runtime* (sub-agents, forks, scheduling).
+> Companion to `ARCHITECTURE.md` (which describes the **target** state — treat it as the spec). This file is both the progress log and the work plan. The current work is **the trim**: the project grew "platform" features ahead of need; we are cutting it back to the product — *a definition folder becomes one self-contained binary that answers, persists forkable traces, and serves `--mcp-serve`*.
 
-## Guiding principles for sequencing
+## 1. Where the project stands
 
-1. **Prove the hard invariant first.** The sans-IO + deterministic-replay core is the foundation; if it isn't clean, nothing else matters. Build it before any IO exists.
-2. **Always have a runnable showcase.** From Phase 1 on, there is a real CLI you can use, so the project is never just theory.
-3. **Lead the public story with the portability demo** (Phase 4) — that's the attention moment.
-4. **Defer extensibility and advanced runtime** until the contract is stable, so plugins don't ossify a half-baked ABI.
+Built and working (pre-trim):
 
----
+- **`hugr-core`** — the sans-IO brain: turn loop, log + projection, op table, cancellation, deterministic replay. Also carries pre-pivot subsystems slated for deletion (tier routing, skills, plan/todo, hooks, compaction, model-override, stale-edit CAS, in-core sub-agent ops).
+- **`hugr-host`** — tokio engine (`Engine`/`EngineBuilder`, resume, checkpointing), uniform `Capability`/`ModelAdapter` registries, MCP stdio client. Also carries a pre-pivot capability set, frontends, policies, scheduler, and skills loader slated for deletion.
+- **`hugr-providers`** — OpenAI-compatible streaming adapter with retries (the live model path).
+- **`hugr-replay`** — the trace format (`Trace { meta, events, log, commands, blobs, children }`), content-addressed `BlobStore`, replay/verify/inspect. Kept nearly as-is.
+- **`hugr-agent`** — `Agent::ask`: Ask/Answer contract, `TraceStore` with `trace_id`/`depends_on` + fork, scratchpad with copy-on-fork, blob exchange, `[limits]` enforcement, cost accounting, agent-as-tool.
+- **`hugr-toolkit`** — `hugr.toml` + `SYSTEM.md` parsing, the tool library (`fs_read`, `http_fetch`, `sqlite_query`, scratchpad wiring), `hugr new/run/build/traces/replay/verify`, definition bundling into a CLI binary, `--mcp-serve`.
+- **`hugr-docs`** — the reference subagent, ported to run on a checked-in definition folder over the shared runtime; ships a PyO3 wheel (the only CI workflow).
+- Pre-pivot crates still present: `hugr-cli` (coding-agent REPL), `hugr-wasm` (+ Chrome extension), `hugr-plugin-abi` + `hugr-example-plugin` (bespoke subprocess plugin protocol).
 
-## Phase 0 — Pure core skeleton (no IO)
+Everything below in §2 is the plan to get from this state to the `ARCHITECTURE.md` state.
 
-**Goal.** The brain exists as a pure state machine with zero IO.
+## 2. The trim
 
-- `Command` / `Event` enums, `OpId`, the reducer `(state, event) -> (state', [command])`.
-- Append-only event log + `BrainState` with the in-flight op table.
-- Context projection trait (trivial pass-through implementation for now).
-- A scripted test harness that feeds canned events and asserts emitted commands.
+### Ground rules (read first)
 
-**Exit criteria.**
-- A scripted "user → model call → tool call → model call → done" session reduces to the expected command sequence.
-- **Deterministic replay:** feeding the same event stream twice yields identical commands. No tokio, no reqwest, no fs anywhere in `hugr-core`.
+- **Breaking changes are fine.** No deprecation shims, no serde back-compat fields, no `#[non_exhaustive]` ceremony added for stability's sake. Delete, don't wrap.
+- **One way to do each thing.** When two mechanisms do the same job, keep the one the live stack (`hugr-agent`/`hugr-toolkit`/`hugr-docs`) uses and delete the other.
+- **No enum nobody branches on.** If code only stores/serializes/displays an enum, replace it with a `String` (or delete it). Error enums matched with `?`/`thiserror` are fine.
+- **One commit per phase.** After each phase: `cargo fmt --all`, `cargo clippy --all-targets` clean, `cargo test` green, `cargo tree -p hugr-core` free of tokio/reqwest/fs. Delete the tests of deleted features; keep and adapt the tests of surviving behavior. Line numbers below are indicative (from the audit); trust symbol names.
+- `ARCHITECTURE.md` already describes the target. If an instruction here conflicts with obvious reality in the code, prefer the smallest change that reaches the ARCHITECTURE.md behavior, and note the deviation in §3's log.
 
----
+### Phase 1 — Delete the pre-pivot crates and dead weight ✅ DONE
 
-## Phase 1 — Batteries-included CLI host (the showcase)
+Goal: remove whole crates with no live consumers. ~2.9k LOC.
 
-**Goal.** A real, usable terminal agent driven by the Phase 0 core.
+1. Delete `crates/hugr-cli` entirely. Its 6 tests only guard its own private helpers (MCP spec string parsing, `/diff` arg splitting, commit-message helpers) — no engine behavior. Remove it from the workspace `Cargo.toml` members.
+2. Delete `crates/hugr-wasm` entirely, including the `extension/` JS host, icons, and the checked-in `hugr_wasm_bg.wasm`. Its tests only re-check serde round-trips already covered in `hugr-core`.
+3. Delete `crates/hugr-example-plugin` entirely.
+4. Dismantle `crates/hugr-plugin-abi`: **first move `framing.rs`** (JSON-line framing, ~58 LOC) into `hugr-host` (e.g. `crates/hugr-host/src/framing.rs`) — it is load-bearing for MCP: `hugr-host/src/mcp.rs` and `hugr-toolkit/src/mcp_serve.rs` import `write_json_line`/`read_json_line` from it. Update those imports. Then delete the crate (`protocol.rs`, `subprocess.rs`, `transport.rs`, `wasm.rs`).
+5. Delete the plugin tool path everywhere: `hugr-host/src/plugins.rs` (`load_subprocess`, `PluginCapability`), the `[tools.plugin.*]` manifest key (`ToolKind::Plugin` in `hugr-toolkit/src/manifest.rs`, its dispatch arm in `runtime.rs`, its commented block in `reference/hugr.toml`, its scaffold-template mentions). MCP is the only external-tool escape hatch now.
+6. Delete the untracked local junk: `archive-light-2026-07-01/` (regenerable demo corpus), empty `.agents/` and `.codex/` dirs. Update the two README example commands that referenced `archive-light-2026-07-01` to point at any docs folder.
+7. Exit: workspace builds and tests green with 7 crates (`core`, `host`, `providers`, `replay`, `agent`, `toolkit`, `docs`); `grep -ri "plugin" crates/` finds no tool-path references.
 
-- `hugr-host`: tokio driver loop (`poll` / `next_event` / `submit`).
-- One provider adapter (OpenAI chat completion) in `hugr-providers`, streaming model deltas.
-- Capabilities: `shell`, `fs read/write`, `http` — all via the uniform `Capability` interface (no privileged built-ins).
-- Interactive `Policy` (prompts the user) + a `-y/--yes` style allow mode.
-- Minimal TUI/stdout front-end consuming `OutputEvent`s.
+### Phase 2 — Gut `hugr-host` and `hugr-providers` to the live slice ✅ DONE
 
-**Exit criteria.**
-- Run a genuine multi-turn coding session in the terminal end-to-end.
-- "CLI on a laptop" host setup is ≈ 10 lines on top of `hugr-host`.
+Goal: the live stack imports only `Engine`/`EngineBuilder` (+ `resume`), the `Capability` trait + `ChunkSink`, `ModelAdapter`/`ModelSink`, the `Frontend` trait, `AllowAll`, and the MCP loader (`mcp::load_stdio`). Delete the rest. ~4k LOC.
 
----
+1. Delete `crates/hugr-host/src/capabilities/` entirely (`shell.rs`, `fs.rs`, `http.rs`, `repo.rs`, `patch.rs`, `verify.rs`, `blob.rs`, `mod.rs`) — all consumers were `hugr-cli` or host tests. The toolkit's `tools/` library is the one tool set. Keep `capability.rs` (the trait + registry).
+2. In `frontend.rs`, delete `StdoutFrontend`, `Metrics`, and all ANSI rendering; keep the ~40-line `Frontend` trait (the agent runtime implements a silent frontend).
+3. Delete `coalesce.rs` and the unconditional `Coalescer` wiring in `engine.rs` — it existed only to batch deltas for a rendering frontend.
+4. Delete `scheduler.rs` (cron), `skills.rs` (skills loader), `spend.rs` (spend report) — all `hugr-cli`-only.
+5. In `policy.rs`, delete `AutoApprove` (judge-model call) and `Interactive` (terminal prompt). Collapse what remains: the host answers `RequestPermission` with `Allow` always (library tools are ungated; the sandbox is registration). If that makes the `Policy` trait single-impl, delete the trait and inline the allow.
+6. Delete the host's in-process sub-agent runner: `src/agent.rs` (`AgentHost`, `run_agent`, `ChildTraceSink`) and the `EngineBuilder` surface for it (`AgentDefaults`, `agent()`, `agent_with_defaults()`, `max_agent_depth`, child-trace recording hooks). The live delegation path is `hugr-agent`'s `agent_tool.rs` (Phase 4).
+7. In `engine.rs`, delete the parked/dead knobs: `CrashResumePolicy` and `TraceCompaction` (zero external consumers), `CheckpointCadence` if only the deleted CLI drove it (keep the simplest always-checkpoint behavior the agent runtime relies on). Also remove the unconditional `RoutingPolicy::new(base_policy)` wrap (near `engine.rs:1316`) — pass the policy through unchanged; `RoutingPolicy` itself dies in Phase 3. **This fixes a real bug:** the routing wrapper hardcodes `"small"`/`"big"` selectors and kills the turn of any single-custom-tier agent when a keyword heuristic fires.
+8. In `crates/hugr-providers/src/openai.rs`, delete the dead second tier-config surface: `TierModelConfig`, `TierModelConfigSet`, `adapters_from_env`, `adapter_for_tier`, `hf_router_default`, `mapping_summary`, `with_all_models`. The toolkit builds adapters directly from the manifest (`OpenAiAdapter::new` + `with_base_url` + `with_default_params`). Keep the streaming adapter core, retries, and `with_max_attempts` (test-used).
+9. Exit: `cargo test` green; `hugr run` on the docs definition still answers; grep confirms `hugr_host::capabilities` no longer exists.
 
-## Phase 2 — Concurrency & streaming (the differentiator)
+### Phase 3 — Trim `hugr-core` to the subagent shape ✅ DONE
 
-**Goal.** Multiple in-flight operations; LLM is "just another stream."
+Goal: delete the pre-pivot subsystems and non-branching enum variants. The pivot crates consume core purely as serde data and never name any of these types. ~1.5k LOC plus tests. `hugr-replay` is touched only where noted.
 
-- ✅ **P2-1 — Multiple concurrent ops.** The op table holds many simultaneously in-flight ops keyed by `OpId`; the host runs one task per op. A **background** capability (policy-designated, `TurnPolicy::is_background`) does not block the turn, so a model response streams **while** a background `shell` op runs — interleaved events, atomic per-event reduction, deterministic replay. `ProcessExited` is reacted to instantly (event-driven; no polling/`sleep`). Core stays sans-IO/single-threaded; no new `Command`/`Event` variants (background-ness is a brain-side scheduling decision invisible to the host).
-- ✅ **P2-2 — First-class cancellation.** A `Cancel` (driven by `UserAbort`/ESC, or a steer-interrupt) aborts the op's host task; the brain records the partial work as a `Cancelled { partial }` outcome ("N tokens then cancelled", model `text_so_far` preserved) and, on a plain abort once the last op drains, emits the terminal `Done { Cancelled }`. A stale `OpCancelled` racing the op's real terminal event is idempotent (a no-op), so replay stays exact. Both model-stream ops and background capability ops cancel cleanly through the real engine (no leaked work). The host gained a cloneable `EventSender` (`Engine::event_sender()`) so a Ctrl-C / signal handler can inject `UserAbort` mid-turn. No new `Command`/`Event`/`Record` variants — the cancellation contract was already in core.
-- ✅ **P2-3 — Delta coalescing with exact recording.** The host batches the *render* of consecutive streamed text (a `Coalescer` between `Command::Emit` and the `Frontend`), cutting per-token flush churn, while recording exactly **one** consolidated `Record` per message. Coalescing is render-only: the engine still submits *every* `ModelDelta` to the brain (so `text_so_far` stays complete and a cancelled op's partial loses no tokens), and deltas never hit the durable log — so replay stays bit-for-bit identical regardless of how the stream was chunked. Entirely host-side; `hugr-core` is untouched.
+1. ✅ **Tier routing — delete.** `RoutingPolicy`, `RoutingPhase`, `RoutingInputs`, `ToolRisk`, `is_small_text_task`/`is_big_text_task` and the routing-input assembly in `brain.rs`/`policy.rs`. `TurnPolicy::choose_model` shrinks to returning the policy's default selector.
+2. ✅ **Skills — delete.** `SkillDescriptor`, `StaticPolicy::with_skills`, `activate_skill`, `Record::SkillActivated`, the projection arm rendering it, and `brain.rs` handling.
+3. ✅ **Plan/todo — delete.** `Event::PlanAccepted`, `Event::TodoUpdated`, `Record::Plan`, `Record::TodoList`, `TodoItem`/`TodoList` types, their projection arms and reducer handling.
+4. ✅ **Hooks — delete.** `HookPhase`, `Event::HookFired`, `Record::Hook`, projection arm, reducer handling. (Host-side: `engine.rs` self-fired hook constants go with it if Phase 2 didn't already remove them.)
+5. ✅ **Model-override — delete.** `Event::ModelOverride`, `Record::ModelOverride`, the `next_model_override` state field and its `from_log` re-derivation in `state.rs`.
+6. ✅ **Compaction — delete fully** (decided). `Event::CompactContext`, `Record::Summary`, `SummaryCoverage`, `CompactionTarget`, `OpKind::Compaction` and the compaction branches in `brain.rs` (`start_selected_compaction`, the auto high-water trigger, the `compaction_op` short-circuit), the `TurnPolicy` compaction hooks (`compaction_request`, `render_summary_record`, `select_compaction_span`, `extend_past_tool_group`), and `ContentPart::Ref` if compaction projection was its only producer (verify with grep first). `ContextDisposition` reduces to `Included`/`Omitted`.
+7. ✅ **Stale-edit CAS — delete.** `VersionRef`, `Version`, `ObjectKey`, `ToolVersioning`, the `versions` read-set in `state.rs`, `capability_versioning`/`stamp_expected_version` in `brain.rs`, and the `Conflict` capability-error variant. Its only consumers were the host fs/patch capabilities deleted in Phase 2 (verify with grep before deleting).
+8. ✅ **In-core sub-agent ops — verify, then delete.** With the host runner gone (Phase 2) and agent-as-tool running as an ordinary capability (Phase 4), grep for consumers of `Command::StartAgent`, `Event::AgentDone`/`AgentError`, `OpKind::Agent`/`OpState::Agent`, `AgentSeed`, `TurnPolicy::agent_seed`/`with_agents`, `resolve_seed`. Expected: only core tests (`tests/sub_agents.rs`). Delete them all, plus `Trace::children`/`ChildTrace` and the recursive child-verify in `hugr-replay` (nothing produces children anymore). **Keep `Brain::from_log`** — it is the resume/fork mechanism `hugr-agent` depends on.
+9. ✅ **Enum cleanup.** `ModelSelector`: single-variant enum → newtype `pub struct ModelSelector(pub String)`. `SteerMode`: delete (`Queue` and `AppendAndContinue` were behaviorally identical; `UserInput` just queues; `UserAbort` stays). `StopReason`: brain never branches on it → plain `String` field (providers set it, trace records it). `ModelDelta`: drop the no-op `ToolCallArgsDelta`/`ToolCallEnd` variants (the adapter consolidates tool-call args internally; update `hugr-providers` accordingly). `OutputEvent`: reduce to `ModelText` and `Notice`. Drop `ContextSource::Synthetic` (never constructed) and delete `ContextCacheHint` (never attached).
+10. ✅ Simplify the `ContextPlan` layer to what the reducer needs: entries with include/omit + token totals + `to_model_request()`; delete the per-entry reason/observability fields if nothing consumes them.
+11. ✅ Update `StaticPolicy::project_context`'s big match (it loses the Skill/Plan/Todo/Hook/Summary arms) and every scripted test in `crates/hugr-core/tests/` that exercised deleted subsystems. Keep and re-pin the surviving replay/determinism tests — determinism remains the release gate.
+12. ✅ Exit: `cargo test` green across the workspace (200 tests); record/replay/resume/verify covered by the end-to-end suite; `cargo tree -p hugr-core` clean. (A live `hugr run` needs an API key and was not exercised here.)
 
-**Exit criteria.**
-- ✅ Kick off a long `cargo build` and stream a model response simultaneously; react to `ProcessExited` instantly (no polling/`sleep`). Covered by `hugr-core/tests/concurrent_ops.rs` (scripted interleave + deterministic replay) and `hugr-host/tests/end_to_end.rs::model_stream_runs_while_background_op_is_in_flight` (real engine, proven overlap).
-- ✅ Cancel an in-flight model stream cleanly; the log records "N tokens then cancelled"; replay reproduces it. Covered by `hugr-core/tests/cancellation.rs` (scripted command sequence + deterministic replay + the stale-cancel race) and `hugr-host/tests/end_to_end.rs::cancel_in_flight_model_stream_preserves_partial` / `::cancel_in_flight_background_op_cleanly` (real engine aborts the task, partial preserved, no leaked work).
-- ✅ Delta coalescing records exactly one consolidated `Record` per message and replays bit-for-bit regardless of batching. Covered by `hugr-host` `coalesce` unit tests (chunking-invariant rendered text, ordering flushes) and `hugr-host/tests/end_to_end.rs::delta_coalescing_keeps_recording_exact` (per-char vs chunked vs single-delta streams yield identical logical records and a single `ModelOutput`, while the per-char stream coalesces to one render).
+### Phase 4 — One way per thing in `hugr-agent` / `hugr-toolkit` ✅ DONE
 
-**Phase 2 is complete.**
+Goal: one artifact, one composition mechanism, no speculative orchestration features, no non-branching enums. ~2.5k LOC.
 
----
+1. ✅ **Surfaces collapse to the CLI binary.** In `hugr-toolkit/src/build.rs`: delete the `Surface` enum and the `crate` + `python` + `mcp` build paths (`build_crate`, `crate_cargo_toml`, `agent_crate_dir`, `LIB_RS`, `build_python`, `python_cargo_toml`, `pyproject_toml`, `python_lib_rs`, `PY_LIB_RS`). `Mcp` was already an alias of `Cli`; every built binary serves `--mcp-serve`. Keep `build_cli`, `bundle.rs` (the definition-embedding mechanism), `MAIN_RS`, `cli_cargo_toml`, `sanitize_crate_name`, `run_cargo`. Update `bin/hugr.rs` to drop `--surface`.
+2. ✅ **One run path.** Keep `hugr run` (dev loop) and the built binary; both must call the same `run_ask`/`print_answer` helpers in `surface.rs` — delete the duplicated `print_answer`/`print_error`/`error_answer`/blob-handling helpers in `bin/hugr.rs`. Demote the programmatic `Agent` API to `pub(crate)`-ish internal status (stop documenting it as a user path in `lib.rs`), and fold `AgentBuilder` away: `runtime::build_agent` constructs the `Agent` directly instead of mirroring `EngineBuilder` field-by-field.
+3. ✅ **Resource groups/grants — delete** (all layers): `ResourceRef`, `ResourceGroup`, `ResourceGrant`, `Access` in `contract.rs`; `Ask.groups`/`Ask.grants`; `GroupBinding`, `GroupCapabilityFactory`, `resolve_group_bindings`, `effective_grants`, `RecordedGrants` in `agent.rs`; `TraceHeader.grants`/`with_grants` in `store.rs`; `group_scope`, `library_group_binding`, `build_group_tool`, `resolve_resource` in `tools/mod.rs`; the `group:<name>` scope syntax in the manifest; `tests/resource_groups.rs`.
+4. ✅ **Agent-as-tool — keep, subprocess-only.** In `agent_tool.rs`/`runtime.rs`: delete the interpreter path (running a child *definition folder* in-process) and the `build_agent_depth_with_provider_key` wrapper trio — collapse to one `build_agent(def)` entry. Keep the subprocess-artifact path (spawn the built binary, speak the CLI JSON contract, parse the `Answer`), the child-cost folding into `AnswerMeta` (`merge_child`), and the static depth stub that cuts cycles (`max_agent_depth`, default small). The manifest grant becomes `[tools.agent.<name>] artifact = "<path>"`.
+5. ✅ **Answer-schema machinery — delete** (`extra` stays an opaque `Value`): `answer_schema.rs`, the `[answer]` manifest section + `AnswerConfig`, `resolve_answer_schema`, the ask-path lift/validate block, `Answer.warnings`.
+6. ✅ **Config provenance — delete.** `ConfigProvenance`, `ConfigEntry`/`AgentConfig`, `effective_config` in `runtime.rs`, and the parallel fallback renderer in `agent.rs`. `--config` prints the parsed manifest as JSON with the API key env **name** shown and any resolved secret value redacted (~15 lines).
+7. ✅ **Manifest simplification.** Delete the unknown-key warning machinery (`KnownKeys`, `warn_unknown_keys`, `warn_unknown_top_level`, `locate_key`, `Span`, `Warning`, and the warning plumbing threaded through runtime/surface/bin) — use `#[serde(deny_unknown_fields)]` for a hard error instead. Delete the parsed-but-never-applied `TierConfig.top_p` (or apply it; deleting is fine). Keep template vars (`{{agent_name}}`, `{{tools}}`, `{{date}}`).
+8. ✅ **Contract de-ceremony.** Drop `#[non_exhaustive]` and the constructor/builder boilerplate on `Ask`, `Answer`, `AnswerMeta`, `BlobHandle` — plain `pub` fields, `Default` where useful. Keep `TraceId` as a newtype and `AnswerMeta::merge_child` (real logic). `AnswerStatus` enum → `status: String` (`"success"`/`"error"`; `OffTopic` was never produced — delete `status_wire`). Delete `BlobPerms`, the `perms` field, and `apply_perms` in `blobs.rs` (advisory-only mode bits inside a jail the agent owns).
+9. ✅ **More enum→string / dead code.** `ToolPrivilege` and `PrivilegeClass` → plain `String` labels on tool descriptions. `LimitKind` → a string reason on the limit trip; merge `max_turns` into `max_model_calls` (they counted the same thing). Simplify cost accounting: keep total `cost_micro_usd`/`tokens_in`/`tokens_out`/`model_calls`/`tool_calls`; delete the `per_tier: Vec<TierSpend>` breakdown and `TierAccumulator` if nothing consumes it. Delete `TraceStore::prune`/`PrunePolicy`/`size`/`StoreSize`/`PruneReport` and the `hugr traces --prune/--size` CLI arms (manual deletion is fine for now).
+10. ✅ Exit: `hugr new` → `hugr run` → `hugr build` produces a binary that answers, resumes via `--trace`, self-describes, and serves `--mcp-serve`; the toolkit conformance test passes against the built binary; `grep -rn "non_exhaustive" crates/hugr-agent crates/hugr-toolkit` is empty.
 
-## Phase 3 — Traces: save, replay, inspect
+### Phase 5 — Finish the `hugr-docs` port ✅ DONE
 
-**Goal.** Sessions are first-class artifacts.
+Goal: the docs crate is a definition folder + answer shaping + thin CLI/PyO3 packaging. ~750 LOC.
 
-- ✅ **P3-1 — `hugr-replay` crate + trace format.** New host-side persistence crate owning the versioned, portable **trace** container: `Trace { meta, events, log, blobs }` — an integer `format_version` (rejects unknown future versions), the ordered host→brain `Event` stream (the replay *input*), the consolidated seq-stamped `LogEntry` log (the *truth*; `BrainState` is never stored, always rederivable by folding the log), and a `BlobManifest` of content-addressed `BlobRef`s (structure in place for the P3-2 blob store; bytes referenced, not inlined). `Trace::save`/`load` are the **only** fs touch in the trace story; `hugr-core` stays sans-IO (`hugr-replay` uses it as pure data only). Round-trips a Phase 1/2 session to disk and back, byte-for-byte equal.
-- Trace file format (versioned, portable, shareable). ✅ (plain JSON; `FORMAT_VERSION`; forward-compatible).
-- ✅ **P3-3 — `hugr replay <trace>` + inspector.** Replay re-feeds a trace's recorded `Event` stream into a *fresh* brain and reconstructs every `Command` it emitted bit-for-bit (`hugr_replay::replay`/`verify`; `verify` asserts the reconstructed log equals the recorded log — the exit criterion). An `Inspector` steps through the session one event at a time (the commands + log tail each event produced). The CLI gains `hugr --record <path>` (capture the ordered event stream + log to a trace; the engine has an opt-in `Recorder` and serializes its `StaticPolicy` so replay reproduces the brain's permission/background branching) and `hugr replay <trace> [--step]`. `hugr-core` is untouched.
-- ✅ **P3-2 — Blob store capability.** A content-addressed, disk-backed `BlobStore` (SHA-256 keys, `"sha256:<hex>"`) lives in `hugr-replay` and produces `BlobRef`s compatible with the trace's `BlobManifest`. `hugr-host` wraps it in an ordinary `blob` `Capability` (not a privileged built-in — registered like `shell`/`fs`/`http`, args/results opaque `Value`). Same content dedupes to one file; a large tool result is offloaded by digest and rehydrated on load. `hugr-core` stays sans-IO (the new `sha2` dep is host-side only).
-- ✅ **P3-4 — CLI resume from a trace.** Resume = replay-as-a-starting-point: `EngineBuilder::resume(trace)` rebuilds the brain by re-feeding the saved trace's events into a fresh brain (with **zero IO** — recorded model/shell/http work is not re-run, only re-folded to reconstruct `BrainState`) and restores the trace's policy (`hugr_replay::policy_from_trace`, now public), then keeps recording (pre-loading the `Recorder` with the trace's events) so the continued session re-saves the full history (old + new) and still replays bit-for-bit. The CLI gains `hugr resume <trace> [prompt...]` (continue with a new one-shot turn or interactively; writes back to `<trace>` by default, or `--record <path>` to leave the original untouched; `-y`/`-m` mirror the live flags). `hugr-core` is untouched.
+1. ✅ Delete the seven dead `Docs*` capabilities in `crates/hugr-docs/src/lib.rs` (`DocsList`, `DocsRead`, `DocsReadRange`, `DocsReadMany`, `DocsReadRangeMany`, `DocsOutline`, `DocsSearch`, roughly lib.rs:442–1178) plus `DocsRoot::capabilities()` — the agent runs on the toolkit's `fs_read` grant; `capabilities()` has no call site. Delete the ~5 unit tests that only exercised them (`read_range_returns_line_window`, `read_many_returns_partial_successes_and_errors`, `read_range_many_returns_line_windows`, `outline_extracts_markdown_headings`, `read_tool_cannot_escape_root`) — the equivalent jail behavior is tested on the toolkit's `fs_read`.
+2. ✅ Simplify `DocsConfig`/`DocsConfigOptions`: the manifest `[models]` covers model/base_url/pricing; keep only the env-var overrides the Python binding actually documents. Remove the dual `docs_*`/`fs_*` tool-name handling in `read_document_sets` (only `fs_*` exists now).
+3. ✅ Keep: the `definition/` folder, `main.rs`, `python.rs` (the PyPI wheel ships from here), and the answer-shaping/`related_documents` logic (now just data in `Answer.extra`).
+4. ✅ Exit: `hugr-docs` tests green; the Python binding answers and resumes; net crate LOC roughly halves.
 
-**Exit criteria.**
-- ✅ Record a real Phase 1/2 session, replay it bit-for-bit. Covered by `hugr-host/tests/end_to_end.rs::record_then_replay_reconstructs_the_session_bit_for_bit` (record a shell-tool session through the engine → save → reload → replay through a fresh brain → reconstructed command sequence + log byte-identical to the recording; the inspector reassembles the same log step by step).
-- ✅ Resume a saved session and add a new turn. Covered by `hugr-host/tests/end_to_end.rs::resume_from_trace_continues_the_session` (record a session → save → resume into a fresh engine that reconstructs the original log with no IO → add a new user turn → the grown log contains the original records as a prefix plus the new turn's → re-save yields a trace that still `verify()`s bit-for-bit, policy preserved).
+### Phase 6 — Docs, README, CI sync ✅ DONE
 
-**Phase 3 complete.**
+1. ✅ Rewrite `README.md` to the trimmed reality: pitch, quickstart (`hugr new`/`run`/`build`), the two docs (`docs/ARCHITECTURE.md`, `docs/ROADMAP.md`), crate list (7 crates), no parked crates, no "seven docs tools" claim (it's the six `fs_*` tools).
+2. ✅ Re-check `AGENTS.md` (aka `CLAUDE.md`) against the trimmed code: crate layout, invariants, conventions. It was pre-rewritten for the target state — fix anything the implementation invalidated.
+3. ✅ Add a CI workflow running `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test` on push — there is currently **no** test CI (only the manual PyPI wheel workflow, which stays). Optionally add `cargo build --target wasm32-unknown-unknown -p hugr-core` as the sans-IO canary.
+4. ✅ Record the outcome in §3 below (date, phases done, final LOC delta, deviations from this plan).
 
----
+## 3. Trim log
 
-## Phase 4 — Portability (the attention moment) 🔶 Chrome binding done; Python deferred
+*(Append one short entry per completed phase: date, what was done, deviations from the plan and why.)*
 
-> Phases 5 and 6 were built first (by request). The **Chrome-extension leg** of this phase is now done: `hugr-wasm` + an installable MV3 side-panel agent. The `hugr-py` (PyO3) leg is still deferred, and the Phase 5 `WasmPlugin` *plugin* transport remains a stub (its wasmtime backend is a separate future item). Nothing in Phases 5/6 blocked Phase 4 — both stayed host-side and left `hugr-core` sans-IO.
+- 2026-07-06 — Plan authored from a full-repo audit; docs rewritten to the target state (this file + `ARCHITECTURE.md`; `DESIGN.md`/`THREAT_MODEL.md`/`BRANDING.md`/`PROGRESS.md` merged or deleted). Implementation not started.
+- 2026-07-06 — **Phase 1 done.** Deleted `hugr-cli`, `hugr-wasm`, `hugr-example-plugin`, `hugr-plugin-abi` (framing.rs moved to `hugr-host/src/framing.rs`), the plugin tool path (`plugins.rs`, `ToolKind::Plugin`, `[tools.plugin.*]`), and the untracked junk dirs. One deviation: the framing wildcard match arm in `mcp.rs` became unreachable once `FramingError` moved in-crate, so the arm and its `#[non_exhaustive]` were dropped now rather than later. 7 crates; 275 tests green.
+- 2026-07-08 — **Phase 6 done — THE TRIM IS COMPLETE.** README rewritten to the trimmed reality (quickstart `hugr new/run/build`, 7 crates, one binary + `--mcp-serve`, six `fs_*` tools, the two docs); `AGENTS.md` re-checked — it was pre-written for the target state and nothing in it was invalidated. Added `.github/workflows/ci.yml` (fmt --check, clippy -D warnings, cargo test, plus the `wasm32-unknown-unknown -p hugr-core` sans-IO canary — verified locally); the manual PyPI wheel workflow stays. **Final tally:** phases 1–6 done 2026-07-06→07-08; workspace Rust LOC 36,623 → 19,397 (−47%); 174 tests + 3 ignored slow gates green; clippy clean; `hugr-core` deps pure. Deviations from the plan are logged per-phase below; none changed the ARCHITECTURE.md target.
+- 2026-07-08 — **Phase 5 complete.** 5.3 was a keep-list (no change). 5.4 exit: `hugr-docs` tests green; lib.rs 2072→1046 lines (crate ~1.2k LOC total, roughly half). The Python binding compiles against the shared runtime; a live answer/resume needs an API key and was not exercised here.
+- 2026-07-08 — **Phase 5.2 done (DocsConfig simplified).** The `DEFAULT_MODEL`/`DEFAULT_BASE_URL`/`DEFAULT_TRACE_DIR`/pricing constants are gone — the embedded `definition/hugr.toml` (parsed once into a `LazyLock<AgentDefinition>`) is the single source of defaults; the documented `HUGR_DOCS_*` env overrides and the Python kwargs stay. `DocsConfig.sampling` deleted (the manifest's `temperature = 0.0` holds; `docs_definition` overrides only model + pricing), `DocsConfig::from_env` deleted (no callers), the stale `SYSTEM_PROMPT` const deleted (it described the old `docs_*` tools; `definition/SYSTEM.md` is the prompt), and `read_document_sets` handles only the `fs_*` tool names (its `docs_*` test deleted).
+- 2026-07-08 — **Phase 5.1 done (dead `Docs*` capabilities deleted).** The seven `Docs*` capabilities, `DocsRoot::capabilities()`, and their private helpers (`resolve_existing`/`rel_path`/`path_to_slash`/`looks_textual`/`read_utf8_prefix`/`walk_files` + limit constants) are gone — the agent runs on the toolkit's `fs_read` grant. Six unit tests deleted (the five listed plus `read_tool_cannot_escape_root`, which was `#[tokio::test]`-tagged; the jail behavior is covered on the toolkit's `fs_read`). ~900 LOC removed; 13 unit tests remain green.
+- 2026-07-08 — **Phase 4.10 done (Phase 4 complete).** Exit gates run: the ignored conformance suite (`every_surface_agrees_on_the_scenario`) and both ignored `build_cli` real-build tests pass against a freshly built binary (answer/resume/describe/mcp-serve); `grep -rn non_exhaustive crates/hugr-agent crates/hugr-toolkit` finds no attributes (two stale comments cleaned). 180 tests + 3 slow gates green.
+- 2026-07-08 — **Phase 4.9 done (enum→string / dead code).** `ToolPrivilege` and `PrivilegeClass` are plain string labels (`read_only`/`scratchpad`/`gated`/`agent`/`network` — wire form unchanged); `LimitKind` is a string reason on `LimitTrip` and `max_turns` merged into `max_model_calls` at every layer (contract, manifest key, runtime mapping, its test); cost accounting keeps totals only — `per_tier`/`TierSpend`/`add_tier`/`TierAccumulator`/`SpendAggregate` deleted, `meta_from_trace` folds priced totals directly and `merge_child` is five additions; `TraceStore::prune`/`size` with `PrunePolicy`/`PruneReport`/`StoreSize`, `Agent::prune`/`store_size`, the `hugr traces --prune/--size` arms, and their tests deleted (manual deletion is fine). Also stripped every remaining `#[non_exhaustive]` in `hugr-agent`/`hugr-toolkit` (the 4.10 exit criterion). Schemas re-pinned without `per_tier`/`tier_spend`.
+- 2026-07-08 — **Phase 4.8 done (contract de-ceremony).** `Ask`/`Answer`/`AnswerMeta`/`BlobHandle`/`TierSpend` are plain-`pub`-field structs with `Default`; the builder methods are gone (call sites use struct literals + `..Default::default()`; `Ask::new(question)` stays as the one shorthand, and `AnswerMeta::with_tier` became `add_tier` since it folds totals). `AnswerStatus` → `Answer.status: String` with `STATUS_SUCCESS`/`STATUS_ERROR` constants (`OffTopic` was never produced; `status_wire` deleted — the trace header takes the string directly). `BlobPerms`, `BlobHandle.perms`, and `apply_perms` deleted (advisory mode bits inside a jail the agent owns), with the schemas re-pinned (`blob_perms` def and `off_topic` enum value dropped) and the unix mode-bits test deleted. `hugr-docs`'s own `DocsStatus` enum is untouched (its answer shape, Phase 5's concern).
+- 2026-07-08 — **Phase 4.7 done (manifest simplification).** Unknown keys are hard errors: `deny_unknown_fields` on every fixed-schema section plus a top-level check (`reject_unknown_top_level`); `KnownKeys`/`warn_unknown_keys`/`warn_unknown_top_level`/`locate_key`/`Span`/`Warning` and `AgentDefinition.warnings` (plus its printing in surface/bin and test asserts) deleted; `ManifestError::Parse`/`Validate` are message-only (the TOML parse error's own line/column rendering rides the message). `TierConfig.top_p` deleted (was parsed but never applied) — removed from `reference/hugr.toml` too. One find beyond the plan: the docs definition still carried the Phase-4.5-deleted `[answer]` section, which the new hard error caught — deleted from `crates/hugr-docs/definition/hugr.toml`. `build_agent`'s own `Vec<String>` build warnings (unset api-key env, skipped grants) are separate machinery and stay.
+- 2026-07-08 — **Phase 4.6 done (config provenance deleted).** `ConfigProvenance`/`ConfigEntry`/`AgentConfig`, `Agent::config()` + `Agent.config_entries`, and `runtime::effective_config` are gone. `--config` now short-circuits in `surface::run_cli` before agent assembly: `config_json(def)` prints the parsed manifest as JSON with the API key env *name* (plus a resolved-bool) and never the secret value. Docs line in ARCHITECTURE §API updated to match.
+- 2026-07-08 — **Phase 4.5 done (answer-schema machinery deleted).** `answer_schema.rs`, the `[answer]` manifest section + `AnswerConfig`, `resolve_answer_schema`, the ask-path lift/validate block, and `Answer.warnings` are gone; `Answer.extra` stays an opaque `Value` the agent writes freely. `tests/answer_extra.rs` deleted; the wire-snapshot in `tests/contract.rs` and `answer.schema.json` re-pinned without `warnings`. ~430 LOC removed; 186 tests green.
+- 2026-07-07 — **Phase 4.4 done (agent-as-tool subprocess-only).** The interpreter path (child definition folder run in-process) is gone; `[tools.agent.<name>]` takes `artifact = "<path>"` to a built binary, spawned per call over the CLI JSON contract. The `build_agent_depth`/`build_agent_with_provider_key`/`build_agent_depth_with_provider_key` trio collapsed into one `build_agent(def)`; the explicit provider key hugr-docs needs now rides a new in-memory `AgentDefinition.provider_api_key` field (never parsed from a manifest). Deviation: with build-time recursion gone, the static depth cut became a *runtime* cut — the remaining budget rides the `HUGR_AGENT_DEPTH` env var across the subprocess boundary (default 3; at 0 the grant registers the `agent_depth_exceeded` stub), so `a`→`b`→`a` artifact cycles still terminate. Child-cost folding (`merge_child`) unchanged.
+- 2026-07-07 — **Phase 4.3 done (resource groups/grants deleted).** All layers gone: contract types (`ResourceRef`/`ResourceGroup`/`ResourceGrant`/`Access`) + `Ask.groups`/`Ask.grants`, `GroupBinding`/`GroupCapabilityFactory`/`resolve_group_bindings`/`effective_grants`/`RecordedGrants` in `agent.rs`, `TraceHeader.grants`/`with_grants` in `store.rs`, the toolkit's `group_scope`/`library_group_binding`/`build_group_tool`/`resolve_resource`, `tests/resource_groups.rs`, and the `group:<name>` syntax in the reference manifest. One addition beyond the listed items: `TraceMeta.grants` in `hugr-replay` (the opaque slot the header wrote into) was deleted too, and `ask.schema.json` lost its `groups`/`grants` properties + `$defs`. ~700 LOC removed; 194 tests green.
+- 2026-07-07 — **Phase 4.2 done (one run path).** `surface::run_ask`/`print_answer`/`error_answer` are now the shared ask-printing path; `bin/hugr.rs` lost its duplicated `print_answer`/`print_error` and `hugr run` gained the binary's `--json` compact-flag semantics. `AgentBuilder` folded away: `Agent::new(name, version, store)` plus public config fields, set directly by `runtime::build_agent` (and tests); `hugr-agent`'s lib docs now present the crate as the internal layer under the toolkit, not a user entry point.
+- 2026-07-07 — **Phase 4.1 done (surfaces collapse to the CLI binary).** `Surface` enum and the `crate`/`python` build paths (`build_crate`, `crate_cargo_toml`, `agent_crate_dir`, `LIB_RS`, `build_python`, `python_cargo_toml`, `pyproject_toml`, `python_lib_rs`, `PY_LIB_RS`) deleted; `build(def, opts)` is the one entry producing one binary (`BuildOutcome.binary` no longer optional); `hugr build` lost `--surface`; the conformance suite now compares reference/cli/mcp only; the crate/python ignored tests deleted.
+- 2026-07-07 — **Phase 3.10–3.12 done (Phase 3 complete).** `ContextPlanEntry` lost its `reason` observability string (only tests read it); projection tests re-pinned incrementally through the phase. Workspace: 200 tests green, clippy clean, `hugr-core` deps still pure. Net Phase 3 delta: hugr-core 4571→~2600 LOC plus large test trims.
+- 2026-07-07 — **Phase 3.9 done (enum cleanup).** `ModelSelector` is a newtype over `String`; `SteerMode` deleted — mid-turn input now always queues, so the whole interrupt path (`pending_resume` latch, interrupt races, their tests) went with it and `UserAbort` is the one mid-turn control; `ModelOutput.stop` is a plain string (providers map finish reasons to `\"end_turn\"`/`\"tool_use\"`/`\"max_tokens\"`); `ModelDelta` lost the no-op `ToolCallArgsDelta`/`ToolCallEnd` (adapter consolidates args internally, `ModelSink` lost the matching helpers); `OutputEvent` reduced to `ModelText`/`Notice` (the reducer now ignores `CapabilityChunk` and reasoning/tool-start deltas); `ContextSource::Synthetic` and `ContextCacheHint`/`ContextPlan.cache_hints` deleted.
+- 2026-07-07 — **Phase 3.8 done (in-core sub-agent ops deleted).** Verified only core tests consumed them, then deleted `Command::StartAgent`, `Event::AgentDone`/`AgentError`, `OpKind::Agent`, `AgentSeed`, `TurnPolicy::agent_seed`/`with_agent(s)`, `resolve_seed`, `tests/sub_agents.rs`, `Trace::children`/`ChildTrace` + the recursive child-verify (`TraceError::ChildMismatch`) in `hugr-replay`, and `hugr-agent`'s dead child-trace cost aggregation. `Brain::from_log` kept (resume/fork).
+- 2026-07-07 — **Phase 3.7 done (stale-edit CAS deleted).** `VersionRef`/`Version`/`ObjectKey`, `ToolVersioning` + `ToolSchema.versioning`, the `versions` read-set, `capability_versioning`/`stamp_expected_version`, the `version`/`conflict` event+record fields, and the host's `result_version`/`conflict_version` hooks are gone; the CAS scripted test deleted. Grep confirmed the only producers were the Phase 2-deleted fs/patch capabilities.
+- 2026-07-07 — **Phase 3.6 done (compaction deleted).** `Event::CompactContext`, `Record::Summary`, `SummaryCoverage`, `SeqRange`, `CompactionTarget`, `OpKind::Compaction`, all `brain.rs` compaction branches, the `TurnPolicy` compaction hooks, `ContentPart::Ref` (compaction projection was its only producer), and the summary/compaction tests are gone. `ContextDisposition` is now `Included`/`Omitted`; `ContextBudgetTotals` shrank to `used_tokens`/`omitted_tokens` (the per-disposition split only existed for summarize/reference).
+- 2026-07-07 — **Phase 3.5 done (model-override deleted).** `Event::ModelOverride`, `Record::ModelOverride`, the `next_model_override` state field + `from_log` re-derivation, and the override tests are gone; the reducer always asks the policy for the selector. The adjacency test now interleaves a queued mid-turn user message.
+- 2026-07-07 — **Phase 3.4 done (hooks deleted).** `HookPhase`, `Event::HookFired`, `Record::Hook`, projection/summary arms, reducer handling, and the hook test are gone (host-side hooks already died in Phase 2). The tool-result-adjacency test now interleaves a `ModelOverride` record instead of a hook.
+- 2026-07-07 — **Phase 3.3 done (plan/todo deleted).** `Event::PlanAccepted`/`TodoUpdated`, `Record::Plan`/`TodoList`, `TodoItem`, their projection/summary-render arms and reducer handling, and their two scripted tests are gone. No deviations.
+- 2026-07-07 — **Phase 3.2 done (skills deleted).** `SkillDescriptor`, `with_skills`, `activate_skill`, `Record::SkillActivated`, the projection/summary-render arms, and the reducer's skill branch in `begin_tool_call` are gone; `capability_versioning` now looks up configured tools only. No deviations.
+- 2026-07-07 — **Phase 3.1 done (tier routing deleted).** `RoutingPolicy`, `RoutingPhase`, `RoutingInputs`, `ToolRisk`, the text-task heuristics, and the routing-input assembly in `brain.rs` are gone; `TurnPolicy::choose_model(state)` returns the policy's selector directly (the one-shot override is applied by the reducer). Deviations: `RoutingDecision` + `OpMeta.routing` and `TurnPolicy::explain_model_choice` were deleted too (pure routing observability, nothing branched on them); the two compaction-routing tests died here rather than in 3.6 since they existed only to pin `RoutingPhase::Compaction` behavior; `end_to_end.rs`'s crash-resume test now registers `medium` — the old `RoutingPolicy` fallback had escalated a resumed crashed session to `big` via the tool-risk heuristic (the §2 Phase 2.7 bug).
+- 2026-07-06 — **Phase 2 done.** Deleted host capabilities/, coalescer, scheduler, skills loader, spend report, `StdoutFrontend`/`Metrics`, the in-process sub-agent runner (`agent.rs`, `AgentDefaults`, `agent()`/`max_agent_depth`), and the whole `Policy` trait (the engine now answers `RequestPermission` with `Allow` inline — the sandbox is registration); `hugr-agent`/`hugr-toolkit` dropped their policy plumbing. Deviations beyond the plan: the *entire* checkpoint machinery (`CheckpointCadence`, `CheckpointShared`, background writers) went too — the agent runtime only uses `.record(true)`/`.resume(trace)` and persists via `TraceStore`, so nothing drove it; the engine's self-fired hooks (`fire_hook`, session-start/pre-tool/post-tool/stop) were removed now rather than in Phase 3; `OpenAiAdapter::from_env` + the HF-token resolution helpers were deleted alongside the listed tier-config surface (the manifest is the one config path). `end_to_end.rs` was rewritten to the surviving behaviors (tool round-trip, MCP, background overlap, cancellation, delta consolidation, record/replay/resume, crash-quiescence via a hand-crafted in-flight trace). 233 tests green.
 
-**Goal.** Same brain, many environments.
+## 4. After the trim
 
-- ✅ `hugr-wasm`: compile `hugr-core` to WASM (`wasm-bindgen`); a **Chrome extension** host with a `fetch`-based streaming model adapter, a DOM front-end, and tab/page capabilities (read + navigate, no click/form-submit). **No backend** — an MV3 page fetches the model endpoint cross-origin directly. The binding is JSON-in/JSON-out over `submit`/`poll` (every `Event`/`Command` is already `serde`, so zero marshalling). See `crates/hugr-wasm/` and its `extension/`. The brain is byte-for-byte the same reducer as the CLI; only the host differs.
-- `hugr-py`: PyO3 bindings exposing `poll`/`submit`; a Python host script. **(deferred)** A narrower product-level `hugr-docs` binding now exists for one-question docs retrieval, but it does not replace the general brain binding.
-- Size/start-up validation against Architecture §11 targets. The WASM module is **236 KB** (well under the < 2 MB target); formal cold-start benchmarking is **deferred**.
+In rough priority order, deliberately not scheduled:
 
-**Exit criteria.**
-- 🔶 The *same* agent brain demonstrably running in (a) a Chrome extension / browser tab with no server ✅, (b) a Python script ⏳ (deferred), (c) the native CLI ✅.
-- 🔶 WASM module within size target ✅ (236 KB); cold start within target ⏳ (not yet benchmarked).
-
----
-
-## Phase 5 — Extensibility (Pi-like, runtime-free) ✅
-
-**Goal.** Third parties add tools/behavior without recompiling the core.
-
-- ✅ `hugr-plugin-abi`: the versioned, narrow plugin contract (`describe` / `invoke` / `on_event`, an integer `PROTOCOL_VERSION`, opaque `Value` payloads). Transport-agnostic behind a single `PluginTransport` trait. Implemented transport: **subprocess/stdio** (`SubprocessPlugin`) — a plugin is an external program exchanging JSON lines; language-agnostic, process-sandboxed, no core recompile. The **WASM component world** is scaffolded behind the `wasm` feature (`WasmPlugin` stub implementing the same trait) — its wasmtime backend lands with Phase 4. (`on_event` is defined in the protocol but reserved; the host does not yet deliver it — "narrow now, widen later", §8.1.)
-- ✅ Plugins surface as ordinary `Capability`s through the registry (`hugr_host::plugins::{PluginCapability, load, load_subprocess}`); no privileged built-ins, no privileged plugins. Streamed chunks bridge to the brain as `CapabilityChunk`s. The CLI gains `--plugin <CMD>` to load one live.
-- ✅ Secondary subprocess/MCP adapter path — this *is* the implemented path for now (the WASM path is the deferred primary; §8.2).
-
-**Exit criteria.**
-- ✅ A third-party plugin (separate repo, no core recompile) adds a working tool the agent can call. Covered by `hugr-example-plugin` — a standalone binary depending on **nothing** from Hugr (only `serde_json`) — and `hugr-example-plugin/tests/e2e.rs`: the real plugin process is loaded over the subprocess transport, its `uppercase` tool is called end-to-end through the real engine, and its result folds back into the turn loop.
-- ✅ Plugin cannot touch core internals; contract is versioned and documented. The plugin only ever answers protocol messages (it links no Hugr crate); `PROTOCOL_VERSION` is checked on load (a newer version is rejected); the wire shape is pinned by `protocol` unit tests and documented in `hugr-plugin-abi`.
-
-**Phase 5 is complete** (subprocess transport; WASM transport scaffolded for Phase 4).
-
----
-
-## Phase 6 — Sub-agents & forks ✅
-
-**Goal.** Cheap, portable sub-agents built on log forking.
-
-- ✅ `Command::StartAgent { op, config, seed }`: a child is just another `hugr-core` instance. A policy-designated tool (`TurnPolicy::agent_seed`, like `is_background`) makes the brain emit `StartAgent` instead of `StartCapability`; the child's `AgentDone`/`AgentError` result folds back into the turn loop exactly like a tool result (§13.1). No hardcoding in the reducer — spawning is a *strategy* decision in the policy.
-- ✅ **Forking:** `AgentSeed` (`Fresh` / `ForkAt { seq }` / `ForkFull`) copies a log prefix to seed the child (shared context) or starts fresh (isolated). Resolving the seed is a pure operation on the brain's log; `Brain::from_log` re-derives a child's state by folding the inherited prefix (§14). The same primitive underlies branch/rewind.
-- ✅ Aggregation: child results return to the parent as the op's result value (a text digest + aggregated token usage for per-agent attribution, §14.3); forks diverge, results flow back one-directionally.
-- ✅ Isolation: the host runs the child **in-process** (a spawned task reusing a subset of the parent's model + capability registries; `hugr_host::agent`). Its ops live in a `JoinSet` so a parent `Cancel` tears down the whole subtree. Subprocess/worktree isolation are future host choices behind the same contract (§13.2). Nested sub-agents (a child spawning grandchildren) work with no special case.
-
-**Exit criteria.**
-- ✅ A parent agent fans out to N child agents (fork-shared context), collects results, and the whole tree replays deterministically from one trace. Covered by `hugr-core/tests/sub_agents.rs` (scripted delegate/fan-out + the fan-out join + deterministic replay) and `hugr-host/tests/end_to_end.rs::parent_fans_out_to_sub_agents_and_replays` (through the **real engine**: a parent spawns two child agents that run as their own brains, their digests fold back as `task` tool results, and the recorded parent trace `verify()`s bit-for-bit — the recorded `AgentDone` results drive the fold, §13.3).
-
-**Phase 6 is complete.**
-
----
-
-## Phase 7 — Durable resume & scheduling (cron) ✅
-
-**Goal.** Survive crashes; fire on a schedule.
-
-- ✅ **Resume-after-crash:** `EngineBuilder::checkpoint(path, cadence)` writes atomic trace checkpoints during the run (including `EveryEvent`, which captures mid-turn in-flight state), and `EngineBuilder::resume(trace)` now reconciles stale in-flight ops with the conservative recorded `CrashResumePolicy::CancelInflight` policy by appending `OpCancelled` events before going live. The choice is replayable because it is recorded in the trace; idempotent re-issue remains a future host policy.
-- ✅ **Host-side scheduler:** `hugr_host::Schedule` / `TriggerTarget` / `fire_once` fire prompts into (a) a resumed existing trace, (b) a named persistent session, or (c) a fresh trace. The CLI gains `hugr schedule --cron ... --trace|--session|--fresh ... [prompt...]`, with `--once` for one-shot fires and a loop otherwise.
-- ✅ **Checkpoint cadence + compaction policy:** checkpoint cadence is explicit (`OnCommand`, `EveryEvent`, `EveryNEvents`), trace writes are atomic (`Trace::save_atomic`), and the native compaction policy is explicit and lossless (`TraceCompaction::PreserveFull`) so durable traces keep the full event stream + consolidated log as the source of truth.
-
-**Exit criteria.**
-- ✅ Kill the process mid-turn; resume and continue correctly from the trace. Covered by `hugr-host/tests/end_to_end.rs::durable_checkpoint_resumes_after_mid_turn_crash`.
-- ✅ A scheduled trigger fires a prompt into a session on a cron cadence. Covered by `hugr-host/tests/end_to_end.rs::scheduled_trigger_fires_into_named_persistent_session`.
-
-**Phase 7 is complete.**
-
----
-
-## Phase 8 — Multi-provider, accounting & hardening
-
-**Goal.** Production-readiness breadth.
-
-- Additional provider adapters (OpenAI, others) with cache/reasoning/tool-call fidelity preserved.
-- Usage/cost accounting as events; per-op, per-sub-agent attribution.
-- `hugr-js` (Node/Deno) and `hugr-py` bindings.
-- Docs, examples, conformance tests for hosts and plugins.
-
-**Exit criteria.**
-- Swap providers without touching the core; cost reports are accurate per sub-agent; a non-Rust host (Python/JS) drives a full session.
-
----
-
-## Cross-cutting tracks (run throughout)
-
-- **Conformance suite:** scripted scenarios that any host/binding must pass (deterministic command sequences).
-- **Benchmarks:** WASM size, cold start, per-event reduce latency, idle memory — tracked from Phase 0 so regressions are caught early.
-- **Trace corpus:** accumulate real recorded sessions as regression fixtures.
+- **The demo.** One story proving the pitch: 3–4 differently-privileged subagents (docs Q&A on a policies folder, read-only SQLite over an expenses db, a scratchpad-only report writer) + a ~100-line orchestrator script that delegates, resumes one thread via `trace_id`, forks a what-if, and prints a per-agent cost table. Runs from checked-in sample data; later pinned in CI via recorded traces (replay mode, no live model).
+- **Golden traces.** Recorded fork trees and definition-run sessions as regression fixtures; `verify()` stays the release gate.
+- **Publish.** Crates + the `hugr` binary on crates.io so `cargo install` → `hugr new` → `hugr run` works outside the repo; a short "define → run → build → orchestrate" guide.
+- **Tool library growth on demand.** `pdf_read` (text/table extraction, no network) for a receipts-style agent; `code_exec` as the one sandboxed exec-class tool (pinned interpreter, cwd = scratchpad, no network, caps from `[limits]`); a general `shell` never enters the library.
+- **Provider breadth.** An Anthropic-native adapter behind the same streaming contract.
+- **Trace migration.** Versioned migration hooks so old traces stay resumable across schema bumps.
+- **Ideas backlog.** Unstructured candidates live in `new_ideas.md` (feedback channel between agents, shared memory, pluggable storage backends, Hub integration, cron, a local agent registry + gateway MCP server, a builder agent that scaffolds new definitions). Promote to this section only when the toolkit needs them.

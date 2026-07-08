@@ -4,14 +4,14 @@
 //! truth (ARCHITECTURE §3.1). The state exists so the hot path (handling a
 //! delta, deciding the next command) is cheap.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::command::Command;
 use crate::model::ModelSelector;
-use crate::primitives::{ObjectKey, OpId, Timestamp, Value};
-use crate::record::{LogEntry, RoutingDecision, SeqRange};
+use crate::primitives::{OpId, Timestamp, Value};
+use crate::record::LogEntry;
 
 /// The brain's working state. Derived from [`log`](BrainState::log); never the
 /// source of truth itself.
@@ -23,19 +23,16 @@ pub struct BrainState {
     next_seq: u64,
     /// Next op id to assign.
     next_op: u64,
-    /// Every started, not-yet-finished op.
-    inflight: HashMap<OpId, InflightOp>,
+    /// Every started, not-yet-finished op. A `BTreeMap` on purpose: iteration
+    /// order leaks into emitted commands (e.g. the `Cancel` fan-out on
+    /// abort/interrupt), and replay must be bit-for-bit deterministic
+    /// (ARCHITECTURE §6.2) — a hash map would emit them in random order.
+    inflight: BTreeMap<OpId, InflightOp>,
     /// Commands queued for the host to drain via [`Brain::poll`](crate::Brain::poll).
     #[serde(skip)]
     outbox: Vec<Command>,
     /// Latest injected time (ARCHITECTURE §6.1).
     now: Timestamp,
-    /// Generic optimistic-concurrency read-set: last-seen version per object,
-    /// folded from capability results (ARCHITECTURE §7.3). Opaque keys/values.
-    versions: HashMap<ObjectKey, String>,
-    /// Set when an interrupt cancelled in-flight ops and a fresh turn must start
-    /// once they drain.
-    pending_resume: bool,
     /// Set when a `UserAbort` arrived while ops were in flight (ARCHITECTURE
     /// §4.3/§4.6). The abort's `Cancel` commands race each op's own terminal
     /// event; while latched, terminal events fold their records but start no
@@ -48,9 +45,6 @@ pub struct BrainState {
     /// ARCHITECTURE §4.2): emitted once the last op drains.
     #[serde(default)]
     deferred_error: Option<String>,
-    /// One-shot model selector override, injected as an event and consumed by
-    /// the next normal model turn.
-    next_model_override: Option<ModelSelector>,
 }
 
 impl BrainState {
@@ -63,6 +57,7 @@ impl BrainState {
     /// copy of a log prefix. `BrainState` is a fold over the log (§3.1), so we
     /// take the log verbatim and derive the counters/clock/read-set from it.
     /// Nothing is in flight (a consolidated prefix has no open ops).
+    ///
     pub(crate) fn from_log(log: Vec<LogEntry>) -> Self {
         let next_seq = log.last().map(|e| e.seq.0 + 1).unwrap_or(0);
         let now = log.last().map(|e| e.at).unwrap_or_default();
@@ -73,22 +68,11 @@ impl BrainState {
             .max()
             .map(|max| max + 1)
             .unwrap_or(0);
-        let versions = log
-            .iter()
-            .filter_map(|entry| match &entry.record {
-                crate::record::Record::ToolResult {
-                    version: Some(version),
-                    ..
-                } => Some((version.object.clone(), version.version.clone())),
-                _ => None,
-            })
-            .collect();
         Self {
             log,
             next_seq,
             next_op,
             now,
-            versions,
             ..Self::default()
         }
     }
@@ -115,19 +99,9 @@ impl BrainState {
         !self.inflight.is_empty()
     }
 
-    /// The in-flight op table.
-    pub fn inflight(&self) -> &HashMap<OpId, InflightOp> {
+    /// The in-flight op table (ordered by op id, so iteration is deterministic).
+    pub fn inflight(&self) -> &BTreeMap<OpId, InflightOp> {
         &self.inflight
-    }
-
-    /// The optimistic-concurrency read-set (last-seen version per object).
-    pub fn versions(&self) -> &HashMap<ObjectKey, String> {
-        &self.versions
-    }
-
-    /// Pending one-shot model selector override, if any.
-    pub fn next_model_override(&self) -> Option<&ModelSelector> {
-        self.next_model_override.as_ref()
     }
 
     // --- mutation helpers, used only by the reducer --------------------------
@@ -161,13 +135,7 @@ impl BrainState {
     }
 
     pub(crate) fn mark(&mut self, op: OpId, kind: OpKind) {
-        self.inflight.insert(
-            op,
-            InflightOp {
-                started_at: self.now,
-                kind,
-            },
-        );
+        self.inflight.insert(op, InflightOp::new(self.now, kind));
     }
 
     pub(crate) fn get_op(&self, op: OpId) -> Option<&InflightOp> {
@@ -176,11 +144,8 @@ impl BrainState {
 
     pub(crate) fn buffer_model_text(&mut self, op: OpId, text: &str) {
         if let Some(entry) = self.inflight.get_mut(&op) {
-            match &mut entry.kind {
-                OpKind::Model { text_so_far, .. }
-                | OpKind::Compaction { text_so_far, .. }
-                | OpKind::ManualCompaction { text_so_far, .. } => text_so_far.push_str(text),
-                _ => {}
+            if let OpKind::Model { text_so_far, .. } = &mut entry.kind {
+                text_so_far.push_str(text)
             }
         }
     }
@@ -189,20 +154,10 @@ impl BrainState {
         self.inflight.remove(&op)
     }
 
+    /// The in-flight op ids, in ascending op-id order — deterministic, because
+    /// this order leaks into emitted `Cancel` commands (ARCHITECTURE §6.2).
     pub(crate) fn inflight_op_ids(&self) -> Vec<OpId> {
         self.inflight.keys().copied().collect()
-    }
-
-    pub(crate) fn record_version(&mut self, object: ObjectKey, version: String) {
-        self.versions.insert(object, version);
-    }
-
-    pub(crate) fn pending_resume(&self) -> bool {
-        self.pending_resume
-    }
-
-    pub(crate) fn set_pending_resume(&mut self, v: bool) {
-        self.pending_resume = v;
     }
 
     pub(crate) fn abort_requested(&self) -> bool {
@@ -224,23 +179,23 @@ impl BrainState {
     pub(crate) fn take_deferred_error(&mut self) -> Option<String> {
         self.deferred_error.take()
     }
-
-    pub(crate) fn set_model_override(&mut self, selector: Option<ModelSelector>) {
-        self.next_model_override = selector;
-    }
-
-    pub(crate) fn take_model_override(&mut self) -> Option<ModelSelector> {
-        self.next_model_override.take()
-    }
 }
 
 /// An entry in the in-flight op table: live scratch space for an op that has
-/// started but not yet ended.
+/// started but not yet ended. `#[non_exhaustive]` so adding a field isn't
+/// breaking (ARCHITECTURE §2.4); construct via [`InflightOp::new`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct InflightOp {
     /// When the op started (from the injected clock), for latency accounting.
     pub started_at: Timestamp,
     pub kind: OpKind,
+}
+
+impl InflightOp {
+    pub fn new(started_at: Timestamp, kind: OpKind) -> Self {
+        Self { started_at, kind }
+    }
 }
 
 /// The kind of an in-flight op. Rebuildable by folding the log.
@@ -251,25 +206,6 @@ pub enum OpKind {
     /// `ModelDone` is authoritative for logic.
     Model {
         selector: ModelSelector,
-        routing: RoutingDecision,
-        text_so_far: String,
-    },
-    /// A small-tier model call that summarizes an exact log span for lossless
-    /// compaction (ARCHITECTURE §3.4).
-    Compaction {
-        selector: ModelSelector,
-        routing: RoutingDecision,
-        summary_of: SeqRange,
-        est_tokens_in: u32,
-        text_so_far: String,
-    },
-    /// A host-triggered compaction pass. Unlike automatic compaction, this
-    /// returns to idle after checkpointing instead of resuming a model turn.
-    ManualCompaction {
-        selector: ModelSelector,
-        routing: RoutingDecision,
-        summary_of: SeqRange,
-        est_tokens_in: u32,
         text_so_far: String,
     },
     /// A capability (tool) invocation in progress. `background` ops do **not**
@@ -286,31 +222,13 @@ pub enum OpKind {
         args: Value,
         call_id: String,
     },
-    /// A pending `AskUser` awaiting the user's answer.
-    AwaitingUser,
-    /// A sub-agent op in progress (ARCHITECTURE §13). Like a capability it
-    /// blocks the turn and returns a tool-result-shaped value; it carries the
-    /// originating model `tool_call` id so its result correlates (§13.1).
-    Agent { name: String, call_id: String },
 }
 
 impl OpKind {
     /// The model selector, if this is a model op (for [`OpMeta`](crate::OpMeta)).
     pub(crate) fn selector(&self) -> Option<ModelSelector> {
         match self {
-            OpKind::Model { selector, .. }
-            | OpKind::Compaction { selector, .. }
-            | OpKind::ManualCompaction { selector, .. } => Some(selector.clone()),
-            _ => None,
-        }
-    }
-
-    /// The routing decision, if this is a model op.
-    pub(crate) fn routing(&self) -> Option<RoutingDecision> {
-        match self {
-            OpKind::Model { routing, .. }
-            | OpKind::Compaction { routing, .. }
-            | OpKind::ManualCompaction { routing, .. } => Some(routing.clone()),
+            OpKind::Model { selector, .. } => Some(selector.clone()),
             _ => None,
         }
     }
@@ -318,9 +236,7 @@ impl OpKind {
     /// The capability (or sub-agent) name, if this op has one.
     pub(crate) fn capability_name(&self) -> Option<&str> {
         match self {
-            OpKind::Capability { name, .. }
-            | OpKind::AwaitingPermission { name, .. }
-            | OpKind::Agent { name, .. } => Some(name),
+            OpKind::Capability { name, .. } | OpKind::AwaitingPermission { name, .. } => Some(name),
             _ => None,
         }
     }
@@ -328,32 +244,27 @@ impl OpKind {
     /// The originating model `tool_call` id, if this op has one.
     pub(crate) fn call_id(&self) -> Option<&str> {
         match self {
-            OpKind::Capability { call_id, .. }
-            | OpKind::AwaitingPermission { call_id, .. }
-            | OpKind::Agent { call_id, .. } => Some(call_id),
+            OpKind::Capability { call_id, .. } | OpKind::AwaitingPermission { call_id, .. } => {
+                Some(call_id)
+            }
             _ => None,
         }
     }
 
     /// Whether this op is something a model turn is waiting on (a foreground
-    /// tool, a pending permission, a sub-agent, or a user answer) — as opposed
-    /// to a model op or a **background** capability. Used to decide when to
-    /// resume the turn: a background op runs *alongside* the model stream, so it
-    /// must not hold the turn open.
+    /// tool, a pending permission, or a sub-agent) — as opposed to a model op
+    /// or a **background** capability. Used to decide when to resume the turn:
+    /// a background op runs *alongside* the model stream, so it must not hold
+    /// the turn open.
     pub(crate) fn blocks_turn(&self) -> bool {
         match self {
             OpKind::Capability { background, .. } => !background,
-            OpKind::AwaitingPermission { .. } | OpKind::Agent { .. } | OpKind::AwaitingUser => true,
-            OpKind::Model { .. } | OpKind::Compaction { .. } | OpKind::ManualCompaction { .. } => {
-                false
-            }
+            OpKind::AwaitingPermission { .. } => true,
+            OpKind::Model { .. } => false,
         }
     }
 
     pub(crate) fn is_model_call(&self) -> bool {
-        matches!(
-            self,
-            OpKind::Model { .. } | OpKind::Compaction { .. } | OpKind::ManualCompaction { .. }
-        )
+        matches!(self, OpKind::Model { .. })
     }
 }

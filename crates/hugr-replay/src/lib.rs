@@ -135,6 +135,34 @@ pub struct TraceMeta {
     /// When the session was created, as a host-defined logical timestamp (the
     /// `seq 0` tick — never a syscall in the core). `None` for an empty trace.
     pub created_at: Option<u64>,
+    /// Store-assigned identifier of this trace (ARCHITECTURE §19.1). Set by a
+    /// `TraceStore` when the trace is persisted; `None` for traces recorded
+    /// outside a store. **New** field (serde default) — pre-existing traces
+    /// load unchanged, and skipping the key when absent keeps traces recorded
+    /// without a store byte-identical to the pre-store format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    /// The parent trace this trace resumed from (ARCHITECTURE §19.2). `None`
+    /// for a root trace. Lineage is a DAG recorded entirely in headers; two
+    /// children with the same `depends_on` are a fork. Serde-defaulted and
+    /// skipped when absent, like `trace_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depends_on: Option<String>,
+    /// The name of the agent that recorded this trace (§19.1). Serde-defaulted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    /// The version of the agent that recorded this trace (§19.1). Serde-defaulted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_version: Option<String>,
+    /// The question this ask answered (§19.1), so lineage listings are
+    /// human-readable without folding events. Serde-defaulted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+    /// The ask's outcome status (the `Answer.status` wire string, e.g.
+    /// `"success"` / `"off_topic"` / `"error"`) — **opaque** to this crate
+    /// (narrow-waist: stored and forwarded, never interpreted). Serde-defaulted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
 }
 
 impl TraceMeta {
@@ -144,6 +172,12 @@ impl TraceMeta {
             codename: CODENAME.to_string(),
             format_version: FORMAT_VERSION,
             created_at,
+            trace_id: None,
+            depends_on: None,
+            agent_name: None,
+            agent_version: None,
+            question: None,
+            status: None,
         }
     }
 }

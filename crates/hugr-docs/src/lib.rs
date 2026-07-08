@@ -1,35 +1,33 @@
-use std::collections::{BTreeSet, VecDeque};
-use std::fs;
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
-use async_trait::async_trait;
-use hugr_core::{ModelSelector, OpMeta, OpOutcome, Record, SamplingParams, ToolSchema, Value};
-use hugr_host::{Capability, ChunkSink, Engine, Frontend, estimate_text_tokens, policy::AllowAll};
-use hugr_providers::OpenAiAdapter;
+use anyhow::{Context, Result};
+use hugr_agent::{Ask, TraceId};
+use hugr_core::{OpMeta, OpOutcome, Record, Value};
+use hugr_host::estimate_text_tokens;
+use hugr_toolkit::manifest::AgentDefinition;
+use hugr_toolkit::runtime::{build_agent, trace_store_for};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 #[cfg(feature = "python")]
 mod python;
 
-pub const DEFAULT_MODEL: &str = "google/gemma-4-31B-it:cerebras";
-pub const DEFAULT_BASE_URL: &str = "https://router.huggingface.co/v1";
-pub const DEFAULT_INPUT_USD_PER_M_TOKENS: f64 = 1.0;
-pub const DEFAULT_OUTPUT_USD_PER_M_TOKENS: f64 = 1.5;
+const DEFINITION_MANIFEST: &str = include_str!("../definition/hugr.toml");
+const DEFINITION_SYSTEM: &str = include_str!("../definition/SYSTEM.md");
 
-const DEFAULT_READ_LIMIT_BYTES: usize = 200_000;
-const MAX_READ_LIMIT_BYTES: usize = 1_000_000;
-const DEFAULT_SEARCH_LIMIT_BYTES: u64 = 512_000;
-const DEFAULT_MAX_MATCHES: usize = 50;
-const DEFAULT_LIST_LIMIT: usize = 500;
-const DEFAULT_RANGE_MAX_LINES: usize = 200;
-const MAX_RANGE_LINES: usize = 5_000;
-const MAX_BATCH_READS: usize = 50;
-const DEFAULT_OUTLINE_MAX_DOCUMENTS: usize = 100;
-const DEFAULT_OUTLINE_MAX_HEADINGS: usize = 1_000;
+/// The embedded definition, parsed once — the single source of the default
+/// model/base_url/pricing/trace-dir values the env vars override.
+static EMBEDDED_DEF: LazyLock<AgentDefinition> = LazyLock::new(|| {
+    AgentDefinition::parse(DEFINITION_MANIFEST, "hugr-docs/definition/hugr.toml")
+        .expect("embedded docs definition parses")
+});
+
+fn docs_tier() -> &'static hugr_toolkit::TierConfig {
+    &EMBEDDED_DEF.models.tiers["docs"]
+}
 
 /// Exact phrasing the system prompt tells the model to emit when the docs do not
 /// contain enough evidence. `build_answer` matches this (case-insensitively, after
@@ -43,12 +41,13 @@ You are a documentation retrieval agent. Answer the user's question using only t
 #[derive(Clone, Debug)]
 pub struct DocsConfig {
     pub root: PathBuf,
+    pub trace_dir: PathBuf,
+    pub trace_id: Option<String>,
     pub model: String,
     pub base_url: String,
     pub api_key: String,
     pub input_usd_per_m_tokens: f64,
     pub output_usd_per_m_tokens: f64,
-    pub sampling: SamplingParams,
 }
 
 #[non_exhaustive]
@@ -57,6 +56,8 @@ pub struct DocsConfigOptions {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     pub model: Option<String>,
+    pub trace_id: Option<String>,
+    pub trace_dir: Option<PathBuf>,
     pub input_usd_per_m_tokens: Option<f64>,
     pub output_usd_per_m_tokens: Option<f64>,
 }
@@ -81,6 +82,16 @@ impl DocsConfigOptions {
         self
     }
 
+    pub fn with_trace_id(mut self, trace_id: impl Into<String>) -> Self {
+        self.trace_id = Some(trace_id.into());
+        self
+    }
+
+    pub fn with_trace_dir(mut self, trace_dir: impl Into<PathBuf>) -> Self {
+        self.trace_dir = Some(trace_dir.into());
+        self
+    }
+
     pub fn with_input_usd_per_m_tokens(mut self, price: f64) -> Self {
         self.input_usd_per_m_tokens = Some(price);
         self
@@ -93,16 +104,6 @@ impl DocsConfigOptions {
 }
 
 impl DocsConfig {
-    pub fn from_env(root: PathBuf, model_override: Option<String>) -> Result<Self> {
-        Self::from_options(
-            root,
-            DocsConfigOptions {
-                model: model_override,
-                ..DocsConfigOptions::default()
-            },
-        )
-    }
-
     pub fn from_options(root: PathBuf, options: DocsConfigOptions) -> Result<Self> {
         let api_key = options
             .api_key
@@ -111,16 +112,22 @@ impl DocsConfig {
         let model = options
             .model
             .or_else(|| std::env::var("HUGR_DOCS_MODEL").ok())
-            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+            .unwrap_or_else(|| docs_tier().model.clone());
         let base_url = options
             .base_url
             .or_else(|| std::env::var("HUGR_DOCS_BASE_URL").ok())
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+            .unwrap_or_else(|| EMBEDDED_DEF.models.base_url.clone().unwrap_or_default());
+        let trace_dir = options
+            .trace_dir
+            .or_else(|| std::env::var_os("HUGR_DOCS_TRACE_DIR").map(PathBuf::from))
+            .unwrap_or_else(|| {
+                PathBuf::from(EMBEDDED_DEF.traces.store.clone().unwrap_or_default())
+            });
         let input_usd_per_m_tokens = options.input_usd_per_m_tokens.map_or_else(
             || {
                 parse_env_f64(
                     "HUGR_DOCS_INPUT_USD_PER_M_TOKENS",
-                    DEFAULT_INPUT_USD_PER_M_TOKENS,
+                    docs_tier().input_usd_per_m_tokens.unwrap_or(0.0),
                 )
             },
             validate_price,
@@ -129,20 +136,22 @@ impl DocsConfig {
             || {
                 parse_env_f64(
                     "HUGR_DOCS_OUTPUT_USD_PER_M_TOKENS",
-                    DEFAULT_OUTPUT_USD_PER_M_TOKENS,
+                    docs_tier().output_usd_per_m_tokens.unwrap_or(0.0),
                 )
             },
             validate_price,
         )?;
-        let sampling = SamplingParams::new().with_temperature(0.0);
         Ok(Self {
             root,
+            trace_dir,
+            trace_id: options
+                .trace_id
+                .or_else(|| std::env::var("HUGR_DOCS_TRACE_ID").ok()),
             model,
             base_url,
             api_key,
             input_usd_per_m_tokens,
             output_usd_per_m_tokens,
-            sampling,
         })
     }
 }
@@ -187,28 +196,59 @@ async fn answer_question_inner(
 ) -> Result<DocsAnswer> {
     anyhow::ensure!(!question.trim().is_empty(), "question cannot be empty");
     let docs = DocsRoot::new(&config.root)?;
-    let selector = ModelSelector::named("docs");
-    let adapter = OpenAiAdapter::new(config.api_key.clone(), config.model.clone())
-        .with_base_url(config.base_url.clone())
-        .with_default_params(config.sampling.clone());
+    let definition = docs_definition(config, docs.root())?;
+    let store = trace_store_for(&definition);
+    let (agent, _warnings) = build_agent(&definition)
+        .await
+        .context("building docs agent from definition")?;
 
-    let mut builder = Engine::builder()
-        .model(selector.clone(), Arc::new(adapter))
-        .default_model(selector)
-        .system_prompt(SYSTEM_PROMPT)
-        .sampling(config.sampling.clone())
-        .policy(Arc::new(AllowAll))
-        .frontend(Box::new(JsonFrontend));
-    for capability in docs.capabilities() {
-        builder = builder.capability(capability);
-    }
+    let ask = Ask {
+        question: user_prompt(question),
+        trace_id: config.trace_id.clone().map(TraceId::new),
+        ..Ask::default()
+    };
+    let agent_answer = agent.ask(ask).await?;
+    let trace = store.get(&agent_answer.trace_id)?;
 
-    let mut engine = builder.build();
-    engine.user_turn(user_prompt(question)).await;
-    engine.session_end();
-
-    build_answer(engine.brain().state().log(), config, started.elapsed())
+    let mut docs_answer = build_answer(trace.log.as_slice(), config, started.elapsed())
         .context("building JSON answer from Hugr session")
+        .map(|mut answer| {
+            answer.trace_id = Some(agent_answer.trace_id.to_string());
+            answer.metadata.tokens_in = agent_answer.metadata.tokens_in;
+            answer.metadata.tokens_out = agent_answer.metadata.tokens_out;
+            answer.metadata.estimated_cost_micro_usd = agent_answer.metadata.cost_micro_usd;
+            answer.metadata.model_calls = agent_answer.metadata.model_calls as usize;
+            answer.metadata.tool_calls = agent_answer.metadata.tool_calls as usize;
+            answer
+        })?;
+    if agent_answer.status == hugr_agent::STATUS_ERROR {
+        docs_answer.status = DocsStatus::Error;
+        docs_answer.message = agent_answer.message;
+    }
+    Ok(docs_answer)
+}
+
+fn docs_definition(config: &DocsConfig, docs_root: &Path) -> Result<AgentDefinition> {
+    let mut definition = EMBEDDED_DEF.clone();
+    definition.source_dir = Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("definition"));
+    definition.system_prompt = Some(DEFINITION_SYSTEM.to_string());
+    definition.agent.version = env!("CARGO_PKG_VERSION").to_string();
+    definition.models.base_url = Some(config.base_url.clone());
+    definition.models.api_key_env = Some("HUGR_DOCS_API_KEY".to_string());
+    definition.provider_api_key = Some(config.api_key.clone());
+    if let Some(tier) = definition.models.tiers.get_mut("docs") {
+        tier.model = config.model.clone();
+        tier.input_usd_per_m_tokens = Some(config.input_usd_per_m_tokens);
+        tier.output_usd_per_m_tokens = Some(config.output_usd_per_m_tokens);
+    }
+    let root = docs_root.display().to_string();
+    for grant in &mut definition.tools {
+        if grant.kind == hugr_toolkit::ToolKind::Library && grant.name == "fs_read" {
+            grant.config = json!({ "root": root });
+        }
+    }
+    definition.traces.store = Some(config.trace_dir.display().to_string());
+    Ok(definition)
 }
 
 /// Build a docs answer from raw inputs, swallowing every error into a
@@ -228,8 +268,8 @@ pub async fn answer_with_options(
         Ok(config) => config,
         Err(error) => {
             return Ok(failure_answer(
-                DEFAULT_MODEL,
-                DEFAULT_BASE_URL,
+                &docs_tier().model,
+                EMBEDDED_DEF.models.base_url.as_deref().unwrap_or(""),
                 started.elapsed(),
                 error.to_string(),
             ));
@@ -259,69 +299,9 @@ impl DocsRoot {
         })
     }
 
-    pub fn capabilities(&self) -> Vec<Arc<dyn Capability>> {
-        vec![
-            Arc::new(DocsList::new(self.clone())),
-            Arc::new(DocsSearch::new(self.clone())),
-            Arc::new(DocsRead::new(self.clone())),
-            Arc::new(DocsReadRange::new(self.clone())),
-            Arc::new(DocsReadMany::new(self.clone())),
-            Arc::new(DocsReadRangeMany::new(self.clone())),
-            Arc::new(DocsOutline::new(self.clone())),
-        ]
-    }
-
     fn root(&self) -> &Path {
         self.root.as_path()
     }
-
-    fn resolve_existing(&self, rel: Option<&str>) -> Result<PathBuf> {
-        let rel = rel.unwrap_or("").trim();
-        let candidate = if rel.is_empty() {
-            self.root().to_path_buf()
-        } else {
-            let path = Path::new(rel);
-            anyhow::ensure!(!path.is_absolute(), "path must be relative to docs root");
-            for component in path.components() {
-                match component {
-                    Component::Normal(_) | Component::CurDir => {}
-                    Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                        return Err(anyhow!("path escapes docs root"));
-                    }
-                }
-            }
-            self.root().join(path)
-        };
-        let canonical = candidate
-            .canonicalize()
-            .with_context(|| format!("path does not exist inside docs root: {rel}"))?;
-        anyhow::ensure!(
-            canonical.starts_with(self.root()),
-            "path escapes docs root: {rel}"
-        );
-        Ok(canonical)
-    }
-
-    fn rel_path(&self, path: &Path) -> Result<String> {
-        let rel = path.strip_prefix(self.root()).with_context(|| {
-            format!(
-                "path {} is not under docs root {}",
-                path.display(),
-                self.root().display()
-            )
-        })?;
-        Ok(path_to_slash(rel))
-    }
-}
-
-fn path_to_slash(path: &Path) -> String {
-    path.components()
-        .filter_map(|component| match component {
-            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("/")
 }
 
 fn is_ai_index(path: &str) -> bool {
@@ -329,798 +309,6 @@ fn is_ai_index(path: &str) -> bool {
         .file_name()
         .is_some_and(|name| name == "AI_INDEX.md")
 }
-
-fn looks_textual(path: &Path) -> bool {
-    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-        return false;
-    };
-    matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "md" | "mdx" | "txt" | "rst" | "adoc" | "json" | "yaml" | "yml" | "toml"
-    )
-}
-
-fn read_utf8_prefix(path: &Path, limit: usize) -> Result<(String, bool)> {
-    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let truncated = bytes.len() > limit;
-    let slice = if truncated { &bytes[..limit] } else { &bytes };
-    Ok((String::from_utf8_lossy(slice).into_owned(), truncated))
-}
-
-fn walk_files(root: &DocsRoot, start: &Path, limit: usize) -> Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    let mut queue = VecDeque::from([start.to_path_buf()]);
-    while let Some(dir) = queue.pop_front() {
-        let mut entries = fs::read_dir(&dir)
-            .with_context(|| format!("listing {}", dir.display()))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .with_context(|| format!("reading directory entries for {}", dir.display()))?;
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let path = entry.path();
-            let canonical = match path.canonicalize() {
-                Ok(path) if path.starts_with(root.root()) => path,
-                _ => continue,
-            };
-            let metadata = match fs::metadata(&canonical) {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
-            };
-            if metadata.is_dir() {
-                queue.push_back(canonical);
-            } else if metadata.is_file() {
-                out.push(canonical);
-                if out.len() >= limit {
-                    return Ok(out);
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-#[derive(Clone)]
-struct DocsList {
-    root: DocsRoot,
-}
-
-impl DocsList {
-    fn new(root: DocsRoot) -> Self {
-        Self { root }
-    }
-}
-
-#[async_trait]
-impl Capability for DocsList {
-    fn name(&self) -> &str {
-        "docs_list"
-    }
-
-    fn schema(&self) -> ToolSchema {
-        ToolSchema::new(
-            self.name(),
-            "List files and directories under the docs root. Paths are relative to the docs root.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Relative directory path. Defaults to the root." },
-                    "recursive": { "type": "boolean", "description": "Whether to list recursively. Defaults to false." },
-                    "max_entries": { "type": "integer", "minimum": 1, "maximum": 2000, "description": "Maximum entries to return." }
-                },
-                "additionalProperties": false
-            }),
-        )
-    }
-
-    fn requires_permission(&self) -> bool {
-        false
-    }
-
-    async fn invoke(&self, args: Value, _sink: &ChunkSink) -> std::result::Result<Value, Value> {
-        match list_impl(&self.root, args) {
-            Ok(value) => Ok(value),
-            Err(error) => Err(json!({ "error": error.to_string() })),
-        }
-    }
-}
-
-fn list_impl(root: &DocsRoot, args: Value) -> Result<Value> {
-    let path = args.get("path").and_then(Value::as_str);
-    let recursive = args
-        .get("recursive")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let max_entries = args
-        .get("max_entries")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_LIST_LIMIT as u64)
-        .clamp(1, 2000) as usize;
-    let start = root.resolve_existing(path)?;
-    anyhow::ensure!(start.is_dir(), "docs_list path must be a directory");
-
-    let paths = if recursive {
-        walk_files(root, &start, max_entries)?
-    } else {
-        let mut entries = fs::read_dir(&start)
-            .with_context(|| format!("listing {}", start.display()))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .with_context(|| format!("reading directory entries for {}", start.display()))?;
-        entries.sort_by_key(|entry| entry.file_name());
-        entries
-            .into_iter()
-            .take(max_entries)
-            .filter_map(|entry| entry.path().canonicalize().ok())
-            .filter(|path| path.starts_with(root.root()))
-            .collect()
-    };
-
-    let mut entries = Vec::new();
-    for path in paths {
-        let metadata = fs::metadata(&path).with_context(|| format!("stat {}", path.display()))?;
-        entries.push(json!({
-            "path": root.rel_path(&path)?,
-            "kind": if metadata.is_dir() { "dir" } else { "file" },
-            "bytes": if metadata.is_file() { Some(metadata.len()) } else { None },
-            "is_index": root.rel_path(&path).is_ok_and(|p| is_ai_index(&p)),
-        }));
-    }
-    Ok(json!({ "entries": entries, "truncated": entries.len() >= max_entries }))
-}
-
-#[derive(Clone)]
-struct DocsRead {
-    root: DocsRoot,
-}
-
-impl DocsRead {
-    fn new(root: DocsRoot) -> Self {
-        Self { root }
-    }
-}
-
-#[async_trait]
-impl Capability for DocsRead {
-    fn name(&self) -> &str {
-        "docs_read"
-    }
-
-    fn schema(&self) -> ToolSchema {
-        ToolSchema::new(
-            self.name(),
-            "Read one text document under the docs root. This is read-only and cannot access paths outside the docs root.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Document path relative to the docs root." },
-                    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 1000000, "description": "Maximum bytes to return. Defaults to 200000." }
-                },
-                "required": ["path"],
-                "additionalProperties": false
-            }),
-        )
-    }
-
-    fn requires_permission(&self) -> bool {
-        false
-    }
-
-    async fn invoke(&self, args: Value, _sink: &ChunkSink) -> std::result::Result<Value, Value> {
-        match read_impl(&self.root, args) {
-            Ok(value) => Ok(value),
-            Err(error) => Err(json!({ "error": error.to_string() })),
-        }
-    }
-}
-
-fn read_impl(root: &DocsRoot, args: Value) -> Result<Value> {
-    let rel = args
-        .get("path")
-        .and_then(Value::as_str)
-        .context("docs_read requires string `path`")?;
-    let limit = args
-        .get("max_bytes")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_READ_LIMIT_BYTES as u64)
-        .clamp(1, MAX_READ_LIMIT_BYTES as u64) as usize;
-    read_document(root, rel, limit)
-}
-
-fn read_document(root: &DocsRoot, rel: &str, limit: usize) -> Result<Value> {
-    let path = root.resolve_existing(Some(rel))?;
-    anyhow::ensure!(path.is_file(), "docs_read path must be a file");
-    let rel = root.rel_path(&path)?;
-    let (content, truncated) = read_utf8_prefix(&path, limit)?;
-    Ok(json!({
-        "path": rel,
-        "is_index": is_ai_index(&rel),
-        "bytes_returned": content.len(),
-        "truncated": truncated,
-        "content": content,
-    }))
-}
-
-#[derive(Clone)]
-struct DocsReadRange {
-    root: DocsRoot,
-}
-
-impl DocsReadRange {
-    fn new(root: DocsRoot) -> Self {
-        Self { root }
-    }
-}
-
-#[async_trait]
-impl Capability for DocsReadRange {
-    fn name(&self) -> &str {
-        "docs_read_range"
-    }
-
-    fn schema(&self) -> ToolSchema {
-        ToolSchema::new(
-            self.name(),
-            "Read a line range from one text document under the docs root. Line numbers are 1-based and inclusive.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Document path relative to the docs root." },
-                    "start_line": { "type": "integer", "minimum": 1, "description": "First line to read, 1-based." },
-                    "end_line": { "type": "integer", "minimum": 1, "description": "Last line to read, inclusive. If omitted, max_lines controls the window." },
-                    "max_lines": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "Maximum lines to return when end_line is omitted or too large. Defaults to 200." },
-                    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 1000000, "description": "Maximum bytes of content to return. Defaults to 200000." }
-                },
-                "required": ["path", "start_line"],
-                "additionalProperties": false
-            }),
-        )
-    }
-
-    fn requires_permission(&self) -> bool {
-        false
-    }
-
-    async fn invoke(&self, args: Value, _sink: &ChunkSink) -> std::result::Result<Value, Value> {
-        match read_range_impl(&self.root, args) {
-            Ok(value) => Ok(value),
-            Err(error) => Err(json!({ "error": error.to_string() })),
-        }
-    }
-}
-
-fn read_range_impl(root: &DocsRoot, args: Value) -> Result<Value> {
-    let rel = args
-        .get("path")
-        .and_then(Value::as_str)
-        .context("docs_read_range requires string `path`")?;
-    let start_line = args
-        .get("start_line")
-        .and_then(Value::as_u64)
-        .context("docs_read_range requires integer `start_line`")? as usize;
-    let end_line = args
-        .get("end_line")
-        .and_then(Value::as_u64)
-        .map(|line| line as usize);
-    let max_lines = args
-        .get("max_lines")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_RANGE_MAX_LINES as u64)
-        .clamp(1, MAX_RANGE_LINES as u64) as usize;
-    let max_bytes = args
-        .get("max_bytes")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_READ_LIMIT_BYTES as u64)
-        .clamp(1, MAX_READ_LIMIT_BYTES as u64) as usize;
-    read_range_document(root, rel, start_line, end_line, max_lines, max_bytes)
-}
-
-fn read_range_document(
-    root: &DocsRoot,
-    rel: &str,
-    start_line: usize,
-    end_line: Option<usize>,
-    max_lines: usize,
-    max_bytes: usize,
-) -> Result<Value> {
-    anyhow::ensure!(start_line >= 1, "start_line must be at least 1");
-    if let Some(end_line) = end_line {
-        anyhow::ensure!(end_line >= start_line, "end_line must be >= start_line");
-    }
-    let path = root.resolve_existing(Some(rel))?;
-    anyhow::ensure!(path.is_file(), "docs_read_range path must be a file");
-    let rel = root.rel_path(&path)?;
-    let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let content = String::from_utf8_lossy(&bytes);
-    let lines = content.lines().collect::<Vec<_>>();
-    let requested_end = end_line.unwrap_or_else(|| start_line.saturating_add(max_lines - 1));
-    let capped_end = requested_end.min(start_line.saturating_add(max_lines - 1));
-    let selected = if start_line > lines.len() {
-        Vec::new()
-    } else {
-        lines[(start_line - 1)..lines.len().min(capped_end)].to_vec()
-    };
-    let line_truncated =
-        requested_end > capped_end || (end_line.is_none() && capped_end < lines.len());
-    let end_line_returned = if selected.is_empty() {
-        start_line.saturating_sub(1)
-    } else {
-        start_line + selected.len() - 1
-    };
-    let (content, byte_truncated) = truncate_utf8_prefix(&selected.join("\n"), max_bytes);
-    Ok(json!({
-        "path": rel,
-        "is_index": is_ai_index(&rel),
-        "start_line": start_line,
-        "end_line": end_line_returned,
-        "total_lines": lines.len(),
-        "bytes_returned": content.len(),
-        "truncated": line_truncated || byte_truncated,
-        "content": content,
-    }))
-}
-
-fn truncate_utf8_prefix(text: &str, limit: usize) -> (String, bool) {
-    if text.len() <= limit {
-        return (text.to_string(), false);
-    }
-    let mut end = limit;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    (text[..end].to_string(), true)
-}
-
-#[derive(Clone)]
-struct DocsReadMany {
-    root: DocsRoot,
-}
-
-impl DocsReadMany {
-    fn new(root: DocsRoot) -> Self {
-        Self { root }
-    }
-}
-
-#[async_trait]
-impl Capability for DocsReadMany {
-    fn name(&self) -> &str {
-        "docs_read_many"
-    }
-
-    fn schema(&self) -> ToolSchema {
-        ToolSchema::new(
-            self.name(),
-            "Read multiple text documents under the docs root in one call.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "paths": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 50, "description": "Document paths relative to the docs root." },
-                    "max_bytes_per_document": { "type": "integer", "minimum": 1, "maximum": 1000000, "description": "Maximum bytes to return per document. Defaults to 200000." },
-                    "max_documents": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum documents to read from paths. Defaults to 50." }
-                },
-                "required": ["paths"],
-                "additionalProperties": false
-            }),
-        )
-    }
-
-    fn requires_permission(&self) -> bool {
-        false
-    }
-
-    async fn invoke(&self, args: Value, _sink: &ChunkSink) -> std::result::Result<Value, Value> {
-        match read_many_impl(&self.root, args) {
-            Ok(value) => Ok(value),
-            Err(error) => Err(json!({ "error": error.to_string() })),
-        }
-    }
-}
-
-fn read_many_impl(root: &DocsRoot, args: Value) -> Result<Value> {
-    let paths = args
-        .get("paths")
-        .and_then(Value::as_array)
-        .context("docs_read_many requires array `paths`")?;
-    anyhow::ensure!(!paths.is_empty(), "docs_read_many paths cannot be empty");
-    let max_documents = args
-        .get("max_documents")
-        .and_then(Value::as_u64)
-        .unwrap_or(MAX_BATCH_READS as u64)
-        .clamp(1, MAX_BATCH_READS as u64) as usize;
-    let max_bytes = args
-        .get("max_bytes_per_document")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_READ_LIMIT_BYTES as u64)
-        .clamp(1, MAX_READ_LIMIT_BYTES as u64) as usize;
-    let mut documents = Vec::new();
-    let mut errors = Vec::new();
-    for path in paths.iter().take(max_documents) {
-        let Some(rel) = path.as_str() else {
-            errors.push(json!({ "path": path, "error": "path must be a string" }));
-            continue;
-        };
-        match read_document(root, rel, max_bytes) {
-            Ok(document) => documents.push(document),
-            Err(error) => errors.push(json!({ "path": rel, "error": error.to_string() })),
-        }
-    }
-    Ok(json!({
-        "documents": documents,
-        "errors": errors,
-        "truncated": paths.len() > max_documents,
-    }))
-}
-
-#[derive(Clone)]
-struct DocsReadRangeMany {
-    root: DocsRoot,
-}
-
-impl DocsReadRangeMany {
-    fn new(root: DocsRoot) -> Self {
-        Self { root }
-    }
-}
-
-#[async_trait]
-impl Capability for DocsReadRangeMany {
-    fn name(&self) -> &str {
-        "docs_read_range_many"
-    }
-
-    fn schema(&self) -> ToolSchema {
-        ToolSchema::new(
-            self.name(),
-            "Read line ranges from multiple text documents under the docs root in one call.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "ranges": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 50,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "path": { "type": "string", "description": "Document path relative to the docs root." },
-                                "start_line": { "type": "integer", "minimum": 1, "description": "First line to read, 1-based." },
-                                "end_line": { "type": "integer", "minimum": 1, "description": "Last line to read, inclusive." },
-                                "max_lines": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "Maximum lines to return for this range. Defaults to 200." }
-                            },
-                            "required": ["path", "start_line"],
-                            "additionalProperties": false
-                        },
-                        "description": "Line ranges to read."
-                    },
-                    "max_bytes_per_range": { "type": "integer", "minimum": 1, "maximum": 1000000, "description": "Maximum bytes to return per range. Defaults to 200000." },
-                    "max_ranges": { "type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum ranges to read. Defaults to 50." }
-                },
-                "required": ["ranges"],
-                "additionalProperties": false
-            }),
-        )
-    }
-
-    fn requires_permission(&self) -> bool {
-        false
-    }
-
-    async fn invoke(&self, args: Value, _sink: &ChunkSink) -> std::result::Result<Value, Value> {
-        match read_range_many_impl(&self.root, args) {
-            Ok(value) => Ok(value),
-            Err(error) => Err(json!({ "error": error.to_string() })),
-        }
-    }
-}
-
-fn read_range_many_impl(root: &DocsRoot, args: Value) -> Result<Value> {
-    let ranges = args
-        .get("ranges")
-        .and_then(Value::as_array)
-        .context("docs_read_range_many requires array `ranges`")?;
-    anyhow::ensure!(
-        !ranges.is_empty(),
-        "docs_read_range_many ranges cannot be empty"
-    );
-    let max_ranges = args
-        .get("max_ranges")
-        .and_then(Value::as_u64)
-        .unwrap_or(MAX_BATCH_READS as u64)
-        .clamp(1, MAX_BATCH_READS as u64) as usize;
-    let max_bytes = args
-        .get("max_bytes_per_range")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_READ_LIMIT_BYTES as u64)
-        .clamp(1, MAX_READ_LIMIT_BYTES as u64) as usize;
-    let mut documents = Vec::new();
-    let mut errors = Vec::new();
-    for range in ranges.iter().take(max_ranges) {
-        let Some(object) = range.as_object() else {
-            errors.push(json!({ "range": range, "error": "range must be an object" }));
-            continue;
-        };
-        let Some(rel) = object.get("path").and_then(Value::as_str) else {
-            errors.push(json!({ "range": range, "error": "range path must be a string" }));
-            continue;
-        };
-        let Some(start_line) = object.get("start_line").and_then(Value::as_u64) else {
-            errors.push(json!({ "path": rel, "error": "start_line must be an integer" }));
-            continue;
-        };
-        let end_line = object
-            .get("end_line")
-            .and_then(Value::as_u64)
-            .map(|line| line as usize);
-        let max_lines = object
-            .get("max_lines")
-            .and_then(Value::as_u64)
-            .unwrap_or(DEFAULT_RANGE_MAX_LINES as u64)
-            .clamp(1, MAX_RANGE_LINES as u64) as usize;
-        match read_range_document(
-            root,
-            rel,
-            start_line as usize,
-            end_line,
-            max_lines,
-            max_bytes,
-        ) {
-            Ok(document) => documents.push(document),
-            Err(error) => errors.push(json!({ "path": rel, "error": error.to_string() })),
-        }
-    }
-    Ok(json!({
-        "documents": documents,
-        "errors": errors,
-        "truncated": ranges.len() > max_ranges,
-    }))
-}
-
-#[derive(Clone)]
-struct DocsOutline {
-    root: DocsRoot,
-}
-
-impl DocsOutline {
-    fn new(root: DocsRoot) -> Self {
-        Self { root }
-    }
-}
-
-#[async_trait]
-impl Capability for DocsOutline {
-    fn name(&self) -> &str {
-        "docs_outline"
-    }
-
-    fn schema(&self) -> ToolSchema {
-        ToolSchema::new(
-            self.name(),
-            "Return markdown-style headings for one text document or for text documents under a directory.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Optional relative file or directory path. Defaults to the docs root." },
-                    "max_documents": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "Maximum text documents to inspect. Defaults to 100." },
-                    "max_headings": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "Maximum headings to return across all inspected documents. Defaults to 1000." }
-                },
-                "additionalProperties": false
-            }),
-        )
-    }
-
-    fn requires_permission(&self) -> bool {
-        false
-    }
-
-    async fn invoke(&self, args: Value, _sink: &ChunkSink) -> std::result::Result<Value, Value> {
-        match outline_impl(&self.root, args) {
-            Ok(value) => Ok(value),
-            Err(error) => Err(json!({ "error": error.to_string() })),
-        }
-    }
-}
-
-fn outline_impl(root: &DocsRoot, args: Value) -> Result<Value> {
-    let start = root.resolve_existing(args.get("path").and_then(Value::as_str))?;
-    let max_documents = args
-        .get("max_documents")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_OUTLINE_MAX_DOCUMENTS as u64)
-        .clamp(1, 1_000) as usize;
-    let max_headings = args
-        .get("max_headings")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_OUTLINE_MAX_HEADINGS as u64)
-        .clamp(1, 5_000) as usize;
-    let start_is_file = start.is_file();
-    let candidates = if start_is_file {
-        vec![start]
-    } else {
-        walk_files(root, &start, 20_000)?
-    };
-    let mut documents = Vec::new();
-    let mut searched_files = 0usize;
-    let mut heading_count = 0usize;
-    let mut hit_document_limit = false;
-    let mut hit_heading_limit = false;
-
-    for file in candidates {
-        if !start_is_file && searched_files >= max_documents {
-            hit_document_limit = true;
-            break;
-        }
-        let metadata = match fs::metadata(&file) {
-            Ok(metadata) if metadata.is_file() => metadata,
-            _ => continue,
-        };
-        if !looks_textual(&file) || metadata.len() > DEFAULT_SEARCH_LIMIT_BYTES {
-            continue;
-        }
-        searched_files += 1;
-        let (content, content_truncated) =
-            read_utf8_prefix(&file, DEFAULT_SEARCH_LIMIT_BYTES as usize)?;
-        let rel = root.rel_path(&file)?;
-        let mut headings = Vec::new();
-        for (line_idx, line) in content.lines().enumerate() {
-            let Some((level, text)) = markdown_heading(line) else {
-                continue;
-            };
-            if heading_count >= max_headings {
-                hit_heading_limit = true;
-                break;
-            }
-            heading_count += 1;
-            headings.push(json!({
-                "line": line_idx + 1,
-                "level": level,
-                "text": text,
-            }));
-        }
-        if start_is_file || !headings.is_empty() {
-            documents.push(json!({
-                "path": rel,
-                "is_index": is_ai_index(&rel),
-                "headings": headings,
-                "truncated": content_truncated || hit_heading_limit,
-            }));
-        }
-        if hit_heading_limit {
-            break;
-        }
-    }
-
-    Ok(json!({
-        "documents": documents,
-        "searched_files": searched_files,
-        "truncated": hit_document_limit || hit_heading_limit,
-    }))
-}
-
-fn markdown_heading(line: &str) -> Option<(usize, String)> {
-    let trimmed = line.trim_start();
-    let level = trimmed.chars().take_while(|ch| *ch == '#').count();
-    if level == 0 || level > 6 {
-        return None;
-    }
-    let rest = &trimmed[level..];
-    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
-        return None;
-    }
-    let text = rest.trim().trim_end_matches('#').trim().to_string();
-    if text.is_empty() {
-        return None;
-    }
-    Some((level, text))
-}
-
-#[derive(Clone)]
-struct DocsSearch {
-    root: DocsRoot,
-}
-
-impl DocsSearch {
-    fn new(root: DocsRoot) -> Self {
-        Self { root }
-    }
-}
-
-#[async_trait]
-impl Capability for DocsSearch {
-    fn name(&self) -> &str {
-        "docs_search"
-    }
-
-    fn schema(&self) -> ToolSchema {
-        ToolSchema::new(
-            self.name(),
-            "Search text documents under the docs root for a case-insensitive substring. Returns snippets with relative paths and line numbers.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Case-insensitive substring to search for." },
-                    "path": { "type": "string", "description": "Optional relative directory or file to search within." },
-                    "max_matches": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Maximum matches to return. Defaults to 50." }
-                },
-                "required": ["query"],
-                "additionalProperties": false
-            }),
-        )
-    }
-
-    fn requires_permission(&self) -> bool {
-        false
-    }
-
-    async fn invoke(&self, args: Value, _sink: &ChunkSink) -> std::result::Result<Value, Value> {
-        match search_impl(&self.root, args) {
-            Ok(value) => Ok(value),
-            Err(error) => Err(json!({ "error": error.to_string() })),
-        }
-    }
-}
-
-fn search_impl(root: &DocsRoot, args: Value) -> Result<Value> {
-    let query = args
-        .get("query")
-        .and_then(Value::as_str)
-        .context("docs_search requires string `query`")?
-        .trim();
-    anyhow::ensure!(!query.is_empty(), "docs_search query cannot be empty");
-    let query_lower = query.to_ascii_lowercase();
-    let max_matches = args
-        .get("max_matches")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_MAX_MATCHES as u64)
-        .clamp(1, 500) as usize;
-    let start = root.resolve_existing(args.get("path").and_then(Value::as_str))?;
-    let files = if start.is_file() {
-        vec![start]
-    } else {
-        walk_files(root, &start, 20_000)?
-    };
-    let mut matches = Vec::new();
-    let mut searched_files = 0usize;
-    for file in files {
-        let metadata = match fs::metadata(&file) {
-            Ok(metadata) if metadata.is_file() => metadata,
-            _ => continue,
-        };
-        if !looks_textual(&file) || metadata.len() > DEFAULT_SEARCH_LIMIT_BYTES {
-            continue;
-        }
-        searched_files += 1;
-        let (content, _) = read_utf8_prefix(&file, DEFAULT_SEARCH_LIMIT_BYTES as usize)?;
-        let rel = root.rel_path(&file)?;
-        for (line_idx, line) in content.lines().enumerate() {
-            if line.to_ascii_lowercase().contains(&query_lower) {
-                matches.push(json!({
-                    "path": rel,
-                    "line": line_idx + 1,
-                    "is_index": is_ai_index(&rel),
-                    "snippet": line.trim(),
-                }));
-                if matches.len() >= max_matches {
-                    return Ok(json!({
-                        "query": query,
-                        "matches": matches,
-                        "searched_files": searched_files,
-                        "truncated": true,
-                    }));
-                }
-            }
-        }
-    }
-    Ok(json!({
-        "query": query,
-        "matches": matches,
-        "searched_files": searched_files,
-        "truncated": false,
-    }))
-}
-
-#[derive(Default)]
-pub struct JsonFrontend;
-
-impl Frontend for JsonFrontend {}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AnswerPayload {
@@ -1195,6 +383,8 @@ pub struct DocsAnswer {
     /// The answer on success; the [`NOT_FOUND_MESSAGE`] phrasing when the docs
     /// lacked evidence; the error message/stacktrace when an error stopped the run.
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
     pub related_documents: Vec<String>,
     pub metadata: RunMetadata,
 }
@@ -1283,6 +473,7 @@ fn build_answer_with_reads(
         return Ok(DocsAnswer {
             status: DocsStatus::Error,
             message: missing_final_answer_message(log),
+            trace_id: None,
             related_documents: sanitize_related_documents(Vec::new(), &read.documents),
             metadata,
         });
@@ -1298,6 +489,7 @@ fn build_answer_with_reads(
     Ok(DocsAnswer {
         status,
         message: payload.answer,
+        trace_id: None,
         related_documents,
         metadata,
     })
@@ -1316,6 +508,7 @@ fn failure_answer(model: &str, endpoint: &str, elapsed: Duration, message: Strin
     DocsAnswer {
         status: DocsStatus::Error,
         message,
+        trace_id: None,
         related_documents: Vec::new(),
         metadata: RunMetadata {
             model: model.to_string(),
@@ -1418,10 +611,10 @@ fn read_document_sets(log: &[hugr_core::LogEntry]) -> ReadSets {
             continue;
         };
         match name.as_str() {
-            "docs_read" | "docs_read_range" => {
+            "fs_read" | "fs_read_range" => {
                 collect_read_path(&mut read, result);
             }
-            "docs_read_many" | "docs_read_range_many" | "docs_outline" => {
+            "fs_read_many" | "fs_outline" => {
                 if let Some(documents) = result.get("documents").and_then(Value::as_array) {
                     for document in documents {
                         collect_read_path(&mut read, document);
@@ -1511,6 +704,7 @@ pub fn prompt_est_tokens(question: &str) -> u32 {
 mod tests {
     use super::*;
     use hugr_core::{LogEntry, ModelOutput, OpId, Seq, Timestamp};
+    use std::fs;
 
     #[test]
     fn parses_json_from_fenced_model_text() {
@@ -1577,24 +771,24 @@ mod tests {
 
     #[test]
     fn missing_final_answer_reports_terminal_error() {
-        let log = vec![LogEntry {
-            seq: Seq(0),
-            at: Timestamp(0),
-            record: serde_json::from_value(json!({
+        let log = vec![LogEntry::new(
+            Seq(0),
+            Timestamp(0),
+            serde_json::from_value(json!({
                 "OpEnded": {
                     "op": 7,
                     "outcome": { "Error": { "message": "provider rejected tools" } },
                     "meta": {
                         "started_at": 0,
                         "ended_at": 1,
-                        "model": { "Named": "docs" },
+                        "model": "docs",
                         "usage": null,
                         "extra": null
                     }
                 }
             }))
             .unwrap(),
-        }];
+        )];
         let message = missing_final_answer_message(&log);
         assert!(message.contains("model operation 7 failed: provider rejected tools"));
     }
@@ -1602,25 +796,26 @@ mod tests {
     fn test_config() -> DocsConfig {
         DocsConfig {
             root: PathBuf::from("/docs"),
+            trace_dir: PathBuf::from(".hugr-docs-traces"),
+            trace_id: None,
             model: "provider/model".to_string(),
             base_url: "https://example.test/v1".to_string(),
             api_key: "key".to_string(),
             input_usd_per_m_tokens: 1.0,
             output_usd_per_m_tokens: 1.5,
-            sampling: SamplingParams::new().with_temperature(0.0),
         }
     }
 
     fn model_output_entry(seq: u64, text: &str) -> LogEntry {
-        LogEntry {
-            seq: Seq(seq),
-            at: Timestamp(seq),
-            record: Record::ModelOutput {
+        LogEntry::new(
+            Seq(seq),
+            Timestamp(seq),
+            Record::ModelOutput {
                 op: OpId(seq),
                 output: ModelOutput::text(text.to_string()),
                 est_tokens: 0,
             },
-        }
+        )
     }
 
     #[test]
@@ -1652,24 +847,24 @@ mod tests {
 
     #[test]
     fn build_answer_error_for_missing_final_answer() {
-        let log = vec![LogEntry {
-            seq: Seq(0),
-            at: Timestamp(0),
-            record: serde_json::from_value(json!({
+        let log = vec![LogEntry::new(
+            Seq(0),
+            Timestamp(0),
+            serde_json::from_value(json!({
                 "OpEnded": {
                     "op": 7,
                     "outcome": { "Error": { "message": "provider rejected tools" } },
                     "meta": {
                         "started_at": 0,
                         "ended_at": 1,
-                        "model": { "Named": "docs" },
+                        "model": "docs",
                         "usage": null,
                         "extra": null
                     }
                 }
             }))
             .unwrap(),
-        }];
+        )];
         let config = test_config();
         let answer = build_answer(&log, &config, Duration::from_millis(10)).unwrap();
         assert_eq!(answer.status, DocsStatus::Error);
@@ -1699,8 +894,43 @@ mod tests {
         .unwrap();
         assert_eq!(answer.status, DocsStatus::Error);
         assert!(answer.message.contains("token price"));
-        assert_eq!(answer.metadata.model, DEFAULT_MODEL);
+        assert_eq!(answer.metadata.model, docs_tier().model);
         assert!(answer.related_documents.is_empty());
+    }
+
+    #[test]
+    fn embedded_definition_is_toolkit_parseable_and_overridable() {
+        let dir = test_docs_dir();
+        let config = DocsConfig {
+            root: dir.join("docs"),
+            trace_dir: dir.join("traces"),
+            trace_id: None,
+            model: "provider/override".to_string(),
+            base_url: "https://override.test/v1".to_string(),
+            api_key: "key".to_string(),
+            input_usd_per_m_tokens: 2.0,
+            output_usd_per_m_tokens: 3.0,
+        };
+        let root = DocsRoot::new(&config.root).unwrap();
+        let def = docs_definition(&config, root.root()).unwrap();
+        assert_eq!(def.agent.name, "hugr-docs");
+        assert_eq!(
+            def.models.base_url.as_deref(),
+            Some("https://override.test/v1")
+        );
+        assert_eq!(def.models.tiers["docs"].model, "provider/override");
+        assert_eq!(
+            def.traces.store.as_deref(),
+            Some(dir.join("traces").to_str().unwrap())
+        );
+        assert_eq!(def.tools[0].name, "fs_read");
+        assert_eq!(
+            def.tools[0].config["root"],
+            root.root().display().to_string()
+        );
+        assert!(def.system_prompt.unwrap().contains("fs_search"));
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1727,128 +957,51 @@ mod tests {
     }
 
     #[test]
-    fn read_range_returns_line_window() {
-        let dir = test_docs_dir();
-        fs::write(
-            dir.join("docs/page.md"),
-            "one\ntwo\nthree\nfour\nfive\nsix\n",
-        )
-        .unwrap();
-
-        let root = DocsRoot::new(dir.join("docs")).unwrap();
-        let value = read_range_impl(
-            &root,
-            json!({ "path": "page.md", "start_line": 2, "end_line": 4 }),
-        )
-        .unwrap();
-        assert_eq!(value["content"], "two\nthree\nfour");
-        assert_eq!(value["start_line"], 2);
-        assert_eq!(value["end_line"], 4);
-        assert_eq!(value["truncated"], false);
-
-        let value = read_range_impl(
-            &root,
-            json!({ "path": "page.md", "start_line": 3, "max_lines": 2 }),
-        )
-        .unwrap();
-        assert_eq!(value["content"], "three\nfour");
-        assert_eq!(value["truncated"], true);
-
-        let _ = fs::remove_dir_all(dir);
+    fn docs_answer_serializes_trace_id_when_present() {
+        let answer = DocsAnswer {
+            status: DocsStatus::Success,
+            message: "A".to_string(),
+            trace_id: Some("trace-1".to_string()),
+            related_documents: Vec::new(),
+            metadata: RunMetadata {
+                model: "provider/model".to_string(),
+                endpoint: "https://example.test/v1".to_string(),
+                elapsed_ms: 1,
+                tokens_in: 2,
+                tokens_out: 3,
+                estimated_cost_micro_usd: 4,
+                input_usd_per_m_tokens: 1.0,
+                output_usd_per_m_tokens: 1.5,
+                model_calls: 1,
+                tool_calls: 0,
+                read_documents: 0,
+                read_indexes: 0,
+            },
+        };
+        let value = serde_json::to_value(answer).unwrap();
+        assert_eq!(value["trace_id"], "trace-1");
     }
 
     #[test]
-    fn read_many_returns_partial_successes_and_errors() {
-        let dir = test_docs_dir();
-        fs::write(dir.join("docs/a.md"), "alpha").unwrap();
-        fs::write(dir.join("docs/b.md"), "bravo").unwrap();
-        fs::write(dir.join("secret.md"), "nope").unwrap();
-
-        let root = DocsRoot::new(dir.join("docs")).unwrap();
-        let value =
-            read_many_impl(&root, json!({ "paths": ["a.md", "../secret.md", "b.md"] })).unwrap();
-        let documents = value["documents"].as_array().unwrap();
-        let errors = value["errors"].as_array().unwrap();
-        assert_eq!(documents.len(), 2);
-        assert_eq!(documents[0]["path"], "a.md");
-        assert_eq!(documents[1]["path"], "b.md");
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0]["path"], "../secret.md");
-
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn read_range_many_returns_line_windows() {
-        let dir = test_docs_dir();
-        fs::write(dir.join("docs/a.md"), "a1\na2\na3\n").unwrap();
-        fs::write(dir.join("docs/b.md"), "b1\nb2\nb3\n").unwrap();
-
-        let root = DocsRoot::new(dir.join("docs")).unwrap();
-        let value = read_range_many_impl(
-            &root,
-            json!({
-                "ranges": [
-                    { "path": "a.md", "start_line": 2, "end_line": 3 },
-                    { "path": "b.md", "start_line": 1, "max_lines": 1 }
-                ]
-            }),
-        )
-        .unwrap();
-        let documents = value["documents"].as_array().unwrap();
-        assert_eq!(documents.len(), 2);
-        assert_eq!(documents[0]["content"], "a2\na3");
-        assert_eq!(documents[1]["content"], "b1");
-
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn outline_extracts_markdown_headings() {
-        let dir = test_docs_dir();
-        fs::write(
-            dir.join("docs/page.md"),
-            "# Title\n\nbody\n## Child\n### Deep ###\nnot # heading\n",
-        )
-        .unwrap();
-
-        let root = DocsRoot::new(dir.join("docs")).unwrap();
-        let value = outline_impl(&root, json!({ "path": "page.md" })).unwrap();
-        let documents = value["documents"].as_array().unwrap();
-        let headings = documents[0]["headings"].as_array().unwrap();
-        assert_eq!(headings.len(), 3);
-        assert_eq!(headings[0]["line"], 1);
-        assert_eq!(headings[0]["level"], 1);
-        assert_eq!(headings[0]["text"], "Title");
-        assert_eq!(headings[2]["text"], "Deep");
-
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn read_document_sets_counts_new_read_tools() {
+    fn read_document_sets_counts_definition_fs_tools() {
         let log = vec![
-            tool_result(
-                0,
-                "docs_read_range",
-                json!({ "path": "guide/a.md", "is_index": false }),
-            ),
+            tool_result(0, "fs_read_range", json!({ "path": "guide/a.md" })),
             tool_result(
                 1,
-                "docs_read_many",
+                "fs_read_many",
                 json!({
                     "documents": [
-                        { "path": "guide/b.md", "is_index": false },
-                        { "path": "AI_INDEX.md", "is_index": true }
+                        { "path": "guide/b.md" },
+                        { "path": "AI_INDEX.md" }
                     ]
                 }),
             ),
             tool_result(
                 2,
-                "docs_outline",
+                "fs_outline",
                 json!({
                     "documents": [
-                        { "path": "guide/c.md", "is_index": false, "headings": [] }
+                        { "path": "guide/c.md", "headings": [] }
                     ]
                 }),
             ),
@@ -1865,20 +1018,6 @@ mod tests {
         assert_eq!(read.indexes, BTreeSet::from(["AI_INDEX.md".to_string()]));
     }
 
-    #[tokio::test]
-    async fn read_tool_cannot_escape_root() {
-        let dir = test_docs_dir();
-        fs::write(dir.join("docs/page.md"), "hello").unwrap();
-        fs::write(dir.join("secret.md"), "nope").unwrap();
-
-        let root = DocsRoot::new(dir.join("docs")).unwrap();
-        let ok = read_impl(&root, json!({ "path": "page.md" })).unwrap();
-        assert_eq!(ok["content"], "hello");
-        assert!(read_impl(&root, json!({ "path": "../secret.md" })).is_err());
-
-        let _ = fs::remove_dir_all(dir);
-    }
-
     fn test_docs_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "hugr-docs-test-{}",
@@ -1892,17 +1031,16 @@ mod tests {
     }
 
     fn tool_result(seq: u64, name: &str, result: Value) -> LogEntry {
-        LogEntry {
-            seq: Seq(seq),
-            at: Timestamp(seq),
-            record: Record::ToolResult {
+        LogEntry::new(
+            Seq(seq),
+            Timestamp(seq),
+            Record::ToolResult {
                 op: OpId(seq),
                 name: name.to_string(),
                 call_id: format!("call-{seq}"),
                 result,
-                version: None,
                 est_tokens: 0,
             },
-        }
+        )
     }
 }

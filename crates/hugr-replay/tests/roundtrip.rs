@@ -6,8 +6,7 @@
 //! build on: a trace persisted today reconstructs the same session later.
 
 use hugr_core::{
-    Decision, Event, LogEntry, ModelOutput, OpId, Record, Seq, SteerMode, Timestamp, ToolCall,
-    Usage,
+    Decision, Event, LogEntry, ModelOutput, OpId, Record, Seq, Timestamp, ToolCall, Usage,
 };
 use hugr_replay::{BlobManifest, BlobRef, FORMAT_VERSION, Trace};
 use serde_json::json;
@@ -22,7 +21,6 @@ fn sample_events() -> Vec<Event> {
         },
         Event::UserInput {
             content: json!("run `echo hi` and tell me the output"),
-            mode: SteerMode::Queue,
             est_tokens: 1,
         },
         Event::ModelDelta {
@@ -51,7 +49,6 @@ fn sample_events() -> Vec<Event> {
         Event::CapabilityDone {
             op: OpId(2),
             result: json!({ "stdout": "hi\n", "exit": 0 }),
-            version: None,
             est_tokens: 1,
         },
         Event::ModelDone {
@@ -66,18 +63,18 @@ fn sample_events() -> Vec<Event> {
 /// A representative consolidated log (one record per logical message/tool-result).
 fn sample_log() -> Vec<LogEntry> {
     vec![
-        LogEntry {
-            seq: Seq(0),
-            at: Timestamp(1_000),
-            record: Record::UserMessage {
+        LogEntry::new(
+            Seq(0),
+            Timestamp(1_000),
+            Record::UserMessage {
                 text: "run `echo hi` and tell me the output".to_string(),
                 est_tokens: 10,
             },
-        },
-        LogEntry {
-            seq: Seq(1),
-            at: Timestamp(1_010),
-            record: Record::ModelOutput {
+        ),
+        LogEntry::new(
+            Seq(1),
+            Timestamp(1_010),
+            Record::ModelOutput {
                 op: OpId(1),
                 output: ModelOutput::tool_calls(vec![ToolCall::new(
                     "call_1",
@@ -86,26 +83,25 @@ fn sample_log() -> Vec<LogEntry> {
                 )]),
                 est_tokens: 8,
             },
-        },
-        LogEntry {
-            seq: Seq(2),
-            at: Timestamp(1_020),
-            record: Record::ToolResult {
+        ),
+        LogEntry::new(
+            Seq(2),
+            Timestamp(1_020),
+            Record::ToolResult {
                 op: OpId(2),
                 name: "shell".to_string(),
                 call_id: "call_1".to_string(),
                 result: json!({ "stdout": "hi\n", "exit": 0 }),
-                version: None,
                 est_tokens: 8,
             },
-        },
+        ),
         // `OpEnded` carries `OpMeta`, which is `#[non_exhaustive]` (no struct
         // literal from outside its crate). Build it from JSON — this also pins
         // the real on-the-wire shape the trace persists.
-        LogEntry {
-            seq: Seq(3),
-            at: Timestamp(1_021),
-            record: serde_json::from_value(json!({
+        LogEntry::new(
+            Seq(3),
+            Timestamp(1_021),
+            serde_json::from_value(json!({
                 "OpEnded": {
                     "op": 2,
                     "outcome": "Ok",
@@ -119,34 +115,34 @@ fn sample_log() -> Vec<LogEntry> {
                 }
             }))
             .unwrap(),
-        },
-        LogEntry {
-            seq: Seq(4),
-            at: Timestamp(1_030),
-            record: Record::ModelOutput {
+        ),
+        LogEntry::new(
+            Seq(4),
+            Timestamp(1_030),
+            Record::ModelOutput {
                 op: OpId(3),
                 output: ModelOutput::text("It printed: hi"),
                 est_tokens: 5,
             },
-        },
-        LogEntry {
-            seq: Seq(5),
-            at: Timestamp(1_031),
-            record: serde_json::from_value(json!({
+        ),
+        LogEntry::new(
+            Seq(5),
+            Timestamp(1_031),
+            serde_json::from_value(json!({
                 "OpEnded": {
                     "op": 3,
                     "outcome": "Ok",
                     "meta": {
                         "started_at": 1_022,
                         "ended_at": 1_031,
-                        "model": { "Named": "big" },
+                        "model": "big",
                         "usage": { "input_tokens": 60, "output_tokens": 5, "extra": null },
                         "extra": { "cost": 0.0003, "cost_source": "router" }
                     }
                 }
             }))
             .unwrap(),
-        },
+        ),
     ]
 }
 

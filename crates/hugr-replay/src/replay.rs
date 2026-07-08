@@ -21,7 +21,7 @@
 //! the session one event at a time, watching the commands each event produced
 //! and the log entries it appended.
 
-use hugr_core::{Brain, Command, Event, LogEntry, RoutingPolicy, TurnPolicy, decode_policy};
+use hugr_core::{Brain, Command, Event, LogEntry, StaticPolicy, TurnPolicy, decode_policy};
 
 use crate::{Trace, TraceError};
 
@@ -51,8 +51,8 @@ pub fn replay(trace: &Trace) -> Replay {
 }
 
 /// Reconstruct the [`TurnPolicy`] a trace was recorded under: decode the
-/// captured [`RoutingPolicy`] / [`StaticPolicy`](hugr_core::StaticPolicy)
-/// config if present (via [`decode_policy`]), else the default.
+/// captured [`StaticPolicy`] config if present (via [`decode_policy`]), else
+/// the default.
 ///
 /// This is the policy a faithful replay (or **resume**, P3-4) must run under —
 /// the brain branches on the policy's pure decisions, so continuing a session
@@ -66,7 +66,7 @@ pub fn policy_from_trace(trace: &Trace) -> Box<dyn TurnPolicy> {
         // No captured policy, or one we can't decode (e.g. a custom host
         // policy): fall back to the default rather than fail. The caller can
         // supply the right policy via `replay_with_policy`.
-        .unwrap_or_else(|| Box::new(RoutingPolicy::default()))
+        .unwrap_or_else(|| Box::new(StaticPolicy::default()))
 }
 
 /// Fold an ordered event stream into `brain`, draining and returning every
@@ -114,6 +114,11 @@ pub fn replay_with_policy(trace: &Trace, policy: Box<dyn TurnPolicy>) -> Replay 
 /// log-only, exactly as before. Any non-empty `commands` is compared bit-for-bit.
 /// Either mismatch means the fold is no longer deterministic for this trace —
 /// exactly the regression replay exists to catch.
+///
+/// After the parent checks pass, every recorded **child session**
+/// ([`ChildTrace`], §13.3) is verified recursively the same way (re-seeded from
+/// its recorded fork prefix, under its own recorded policy); a failing child
+/// fails the whole verify with [`TraceError::ChildMismatch`] naming its op.
 pub fn verify(trace: &Trace) -> Result<Replay, TraceError> {
     verify_with_policy(trace, policy_from_trace(trace))
 }
@@ -124,11 +129,18 @@ pub fn verify_with_policy(
     policy: Box<dyn TurnPolicy>,
 ) -> Result<Replay, TraceError> {
     let replay = replay_with_policy(trace, policy);
-    // Compare the recorded command sequence bit-for-bit, in order — but only
-    // when the trace actually captured one. An empty `commands` means the trace
-    // predates command recording (serde default), so we fall back to the
-    // log-only check to keep verifying old traces (§6.3). Every `Command` is
-    // serde-serializable, so there is no non-recordable command to special-case.
+    check_replay(trace, &replay)?;
+    Ok(replay)
+}
+
+/// Assert a reconstruction matches a trace's recorded commands and log.
+///
+/// Compares the recorded command sequence bit-for-bit, in order — but only
+/// when the trace actually captured one. An empty `commands` means the trace
+/// predates command recording (serde default), so we fall back to the
+/// log-only check to keep verifying old traces (§6.3). Every `Command` is
+/// serde-serializable, so there is no non-recordable command to special-case.
+fn check_replay(trace: &Trace, replay: &Replay) -> Result<(), TraceError> {
     if !trace.commands.is_empty() && replay.commands != trace.commands {
         let index = first_divergence(&trace.commands, &replay.commands);
         return Err(TraceError::CommandMismatch {
@@ -143,7 +155,7 @@ pub fn verify_with_policy(
             reconstructed: replay.log.len(),
         });
     }
-    Ok(replay)
+    Ok(())
 }
 
 /// Index of the first position where two command slices differ (or the length
@@ -189,7 +201,7 @@ pub struct Inspector {
 
 impl Inspector {
     /// An inspector over a trace, using the policy the trace captured (or the
-    /// default [`RoutingPolicy`] if none) — see [`replay`] for why the policy
+    /// default [`StaticPolicy`] if none) — see [`replay`] for why the policy
     /// matters for faithful reconstruction.
     pub fn new(trace: &Trace) -> Self {
         Self::with_policy(trace, policy_from_trace(trace))

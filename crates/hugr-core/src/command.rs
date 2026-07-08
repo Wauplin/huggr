@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{ModelRequest, ModelSelector};
 use crate::primitives::{OpId, Value};
-use crate::record::LogEntry;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -22,28 +21,9 @@ pub enum Command {
         request: ModelRequest,
     },
 
-    /// Invoke a host capability (a tool). Covers shell, fs, http, plugins —
+    /// Invoke a host capability (a tool). Covers fs, http, MCP tools —
     /// there are no privileged built-ins. `args` is opaque to the brain.
     StartCapability { op: OpId, name: String, args: Value },
-
-    /// Spawn a **sub-agent**: a child `hugr-core` instance the host runs as an
-    /// op (ARCHITECTURE §13). `config` is opaque to the brain (the model's
-    /// tool-call args — the host interprets the child's prompt/model/tools).
-    /// `seed` is the child's initial log — a **fork** of the parent's log
-    /// prefix (ARCHITECTURE §14), resolved here from the parent's log by the
-    /// [`TurnPolicy`](crate::TurnPolicy)'s
-    /// [`agent_seed`](crate::TurnPolicy::agent_seed); it is empty for an
-    /// isolated (`Fresh`) child. The child's result returns via
-    /// [`Event::AgentDone`](crate::Event::AgentDone).
-    StartAgent {
-        op: OpId,
-        config: Value,
-        seed: Vec<LogEntry>,
-    },
-
-    /// Ask the user a free-form question. Answered by
-    /// [`Event::UserAnswer`](crate::Event::UserAnswer).
-    AskUser { op: OpId, prompt: UserPrompt },
 
     /// Request permission for a pending action; the host's policy decides and
     /// replies with [`Event::PermissionDecision`](crate::Event::PermissionDecision).
@@ -66,15 +46,6 @@ pub enum Command {
 
     /// The turn/session reached a terminal state.
     Done { reason: DoneReason },
-}
-
-/// A free-form question for the user. Kept minimal in Phase 0; `detail` is an
-/// opaque blob a richer front-end can interpret.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct UserPrompt {
-    pub message: String,
-    pub detail: Value,
 }
 
 /// A request for the host's policy to decide. Carries a typed outcome channel
@@ -107,12 +78,6 @@ pub enum DoneReason {
 pub enum OutputEvent {
     /// A chunk of streamed assistant text (for live rendering).
     ModelText { op: OpId, text: String },
-    /// A chunk of streamed model reasoning/thinking.
-    ModelReasoning { op: OpId, text: String },
-    /// The model began a tool call (id + name known before args complete).
-    ToolCallStarted { op: OpId, id: String, name: String },
-    /// A streamed chunk from a capability (e.g. a line of stdout).
-    ToolChunk { op: OpId, chunk: Value },
     /// A free-form notice for logs/status lines.
     Notice(String),
 }

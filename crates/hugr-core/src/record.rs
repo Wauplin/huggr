@@ -8,68 +8,25 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::event::VersionRef;
 use crate::model::{ModelOutput, ModelSelector, Usage};
 use crate::primitives::{OpId, Seq, Timestamp, Value};
 
-/// One durable task/todo item (ROADMAP_2 D5).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct TodoItem {
-    pub text: String,
-    pub done: bool,
-}
-
-impl TodoItem {
-    pub fn new(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            done: false,
-        }
-    }
-
-    pub fn done(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            done: true,
-        }
-    }
-}
-
-/// Inclusive range of log entries covered by a durable summary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct SeqRange {
-    pub start: Seq,
-    pub end: Seq,
-}
-
-impl SeqRange {
-    pub fn new(start: Seq, end: Seq) -> Self {
-        Self { start, end }
-    }
-
-    pub fn contains(&self, seq: Seq) -> bool {
-        self.start <= seq && seq <= self.end
-    }
-}
-
-/// How completely a summary covers its source span.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum SummaryCoverage {
-    Complete,
-    Partial { reason: String },
-}
-
-/// One ordered, timestamped entry in the append-only log.
+/// One ordered, timestamped entry in the append-only log. Prefer constructing
+/// via [`LogEntry::new`] (ARCHITECTURE §2.4).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct LogEntry {
     /// Host-assigned global order (also the replay key).
     pub seq: Seq,
     /// From the latest injected [`Tick`](crate::Event::Tick), never a syscall.
     pub at: Timestamp,
     pub record: Record,
+}
+
+impl LogEntry {
+    pub fn new(seq: Seq, at: Timestamp, record: Record) -> Self {
+        Self { seq, at, record }
+    }
 }
 
 /// The persisted forms of state-changing facts.
@@ -106,72 +63,7 @@ pub enum Record {
         /// this (not the op id) to correlate the two.
         call_id: String,
         result: Value,
-        /// Version refreshed by this tool result, if it read or conflicted on a
-        /// versioned object. This keeps the brain's read-set rebuildable from
-        /// the durable log (ARCHITECTURE §7.3).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<VersionRef>,
         /// Host-provided approximate token count for this content.
-        #[serde(default)]
-        est_tokens: u32,
-    },
-
-    /// A durable, non-destructive compaction summary over an exact log span.
-    /// The original records stay in the log; later projections use this record
-    /// to evict covered entries to references (ARCHITECTURE §3.4).
-    Summary {
-        /// The model op that produced the summary.
-        op: OpId,
-        /// Human/model-readable summary text.
-        text: String,
-        /// Exact inclusive source span.
-        summary_of: SeqRange,
-        /// Whether the summary fully covers the span.
-        coverage: SummaryCoverage,
-        /// Tier used to produce the summary, e.g. `small`.
-        tier: ModelSelector,
-        /// Sum of host-recorded token estimates for the source span.
-        #[serde(default)]
-        est_tokens_in: u32,
-        /// Host/provider estimate for the summary text.
-        #[serde(default)]
-        est_tokens_out: u32,
-    },
-
-    /// A skill was activated by a model-invoked skill descriptor. The full
-    /// instructions are durable so replay/projection do not depend on the host
-    /// rediscovering the skill bundle on disk.
-    SkillActivated {
-        id: String,
-        title: String,
-        summary: Option<String>,
-        instructions: String,
-        #[serde(default)]
-        est_tokens: u32,
-    },
-
-    /// A user-accepted task plan. This is durable context, not model
-    /// self-restatement, so future turns can project it directly (ROADMAP_2 D4).
-    Plan {
-        text: String,
-        #[serde(default)]
-        est_tokens: u32,
-    },
-
-    /// Durable todo/task state snapshot. Hosts append a new snapshot when
-    /// progress changes; projection uses the latest snapshot.
-    TodoList {
-        items: Vec<TodoItem>,
-        #[serde(default)]
-        est_tokens: u32,
-    },
-
-    /// A deterministic host hook result. Hooks can add context or warnings, but
-    /// never mutate core internals (ROADMAP_2 D10).
-    Hook {
-        phase: crate::event::HookPhase,
-        name: String,
-        result: Value,
         #[serde(default)]
         est_tokens: u32,
     },
@@ -193,13 +85,8 @@ impl Record {
         match self {
             Record::ModelOutput { op, .. }
             | Record::ToolResult { op, .. }
-            | Record::Summary { op, .. }
             | Record::OpEnded { op, .. } => Some(*op),
-            Record::UserMessage { .. }
-            | Record::SkillActivated { .. }
-            | Record::Plan { .. }
-            | Record::TodoList { .. }
-            | Record::Hook { .. } => None,
+            Record::UserMessage { .. } => None,
         }
     }
 
@@ -210,11 +97,6 @@ impl Record {
             Record::UserMessage { est_tokens, .. }
             | Record::ModelOutput { est_tokens, .. }
             | Record::ToolResult { est_tokens, .. } => Some(*est_tokens),
-            Record::Summary { est_tokens_out, .. } => Some(*est_tokens_out),
-            Record::SkillActivated { est_tokens, .. }
-            | Record::Plan { est_tokens, .. }
-            | Record::TodoList { est_tokens, .. }
-            | Record::Hook { est_tokens, .. } => Some(*est_tokens),
             Record::OpEnded { .. } => None,
         }
     }
@@ -243,36 +125,7 @@ pub struct OpMeta {
     pub ended_at: Timestamp,
     /// Which logical model (for model ops).
     pub model: Option<ModelSelector>,
-    /// Why this selector was chosen, for trace-visible routing/spend analysis.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routing: Option<RoutingDecision>,
     /// Tokens / cost, when applicable.
     pub usage: Option<Usage>,
     pub extra: Value,
-}
-
-/// Trace-visible routing metadata for a model op (ROADMAP_2 B3).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct RoutingDecision {
-    pub selector: ModelSelector,
-    pub reasons: Vec<String>,
-    /// Opaque snapshot of the pure routing inputs. The brain stores this for
-    /// observability but does not interpret it after the decision is made.
-    pub inputs: Value,
-}
-
-impl RoutingDecision {
-    pub fn new(selector: ModelSelector, reasons: Vec<String>) -> Self {
-        Self {
-            selector,
-            reasons,
-            inputs: Value::Null,
-        }
-    }
-
-    pub fn with_inputs(mut self, inputs: Value) -> Self {
-        self.inputs = inputs;
-        self
-    }
 }

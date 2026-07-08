@@ -15,18 +15,14 @@ use crate::primitives::{Seq, Value};
 
 /// A logical model **role**, not a concrete endpoint. The brain names a role;
 /// the host's model registry resolves it to a provider/model/key/adapter
-/// (ARCHITECTURE §5.3). This is how multi-model routing works.
+/// (ARCHITECTURE §5.3). An open string set, e.g. `"medium"`, `"summarizer"`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum ModelSelector {
-    /// e.g. `"router"`, `"big"`, `"fast"`, `"summarizer"`, `"vision"`.
-    Named(String),
-}
+pub struct ModelSelector(pub String);
 
 impl ModelSelector {
     /// Convenience constructor: `ModelSelector::named("big")`.
     pub fn named(name: impl Into<String>) -> Self {
-        ModelSelector::Named(name.into())
+        ModelSelector(name.into())
     }
 }
 
@@ -94,7 +90,6 @@ pub struct ContextPlan {
     pub budget: TokenBudget,
     pub entries: Vec<ContextPlanEntry>,
     pub totals: ContextBudgetTotals,
-    pub cache_hints: Vec<ContextCacheHint>,
     pub tools: Vec<ToolSchema>,
     pub params: SamplingParams,
     pub extra: Value,
@@ -112,7 +107,6 @@ impl ContextPlan {
             budget,
             entries,
             totals,
-            cache_hints: Vec::new(),
             tools,
             params,
             extra: Value::Null,
@@ -133,11 +127,6 @@ impl ContextPlan {
         }
     }
 
-    pub fn with_cache_hints(mut self, cache_hints: Vec<ContextCacheHint>) -> Self {
-        self.cache_hints = cache_hints;
-        self
-    }
-
     pub fn with_extra(mut self, extra: Value) -> Self {
         self.extra = extra;
         self
@@ -151,21 +140,14 @@ pub struct ContextPlanEntry {
     pub source: ContextSource,
     pub est_tokens: u32,
     pub disposition: ContextDisposition,
-    pub reason: String,
 }
 
 impl ContextPlanEntry {
-    pub fn new(
-        source: ContextSource,
-        est_tokens: u32,
-        disposition: ContextDisposition,
-        reason: impl Into<String>,
-    ) -> Self {
+    pub fn new(source: ContextSource, est_tokens: u32, disposition: ContextDisposition) -> Self {
         Self {
             source,
             est_tokens,
             disposition,
-            reason: reason.into(),
         }
     }
 }
@@ -176,7 +158,6 @@ impl ContextPlanEntry {
 pub enum ContextSource {
     System,
     LogEntry { seq: Seq },
-    Synthetic { label: String },
 }
 
 impl ContextSource {
@@ -187,12 +168,6 @@ impl ContextSource {
     pub fn log_entry(seq: Seq) -> Self {
         Self::LogEntry { seq }
     }
-
-    pub fn synthetic(label: impl Into<String>) -> Self {
-        Self::Synthetic {
-            label: label.into(),
-        }
-    }
 }
 
 /// How a source block is represented in the request, if at all.
@@ -200,8 +175,6 @@ impl ContextSource {
 #[non_exhaustive]
 pub enum ContextDisposition {
     Included { block: ContextBlock },
-    Referenced { block: ContextBlock },
-    Summarized { block: ContextBlock },
     Omitted,
 }
 
@@ -210,23 +183,13 @@ impl ContextDisposition {
         Self::Included { block }
     }
 
-    pub fn referenced(block: ContextBlock) -> Self {
-        Self::Referenced { block }
-    }
-
-    pub fn summarized(block: ContextBlock) -> Self {
-        Self::Summarized { block }
-    }
-
     pub fn omitted() -> Self {
         Self::Omitted
     }
 
     fn as_request_block(&self) -> Option<&ContextBlock> {
         match self {
-            ContextDisposition::Included { block }
-            | ContextDisposition::Referenced { block }
-            | ContextDisposition::Summarized { block } => Some(block),
+            ContextDisposition::Included { block } => Some(block),
             ContextDisposition::Omitted => None,
         }
     }
@@ -239,9 +202,6 @@ impl ContextDisposition {
 #[non_exhaustive]
 pub struct ContextBudgetTotals {
     pub used_tokens: u64,
-    pub included_tokens: u64,
-    pub referenced_tokens: u64,
-    pub summarized_tokens: u64,
     pub omitted_tokens: u64,
 }
 
@@ -254,39 +214,11 @@ impl ContextBudgetTotals {
         let est_tokens = u64::from(est_tokens);
         match disposition {
             ContextDisposition::Included { .. } => {
-                self.included_tokens += est_tokens;
-                self.used_tokens += est_tokens;
-            }
-            ContextDisposition::Referenced { .. } => {
-                self.referenced_tokens += est_tokens;
-                self.used_tokens += est_tokens;
-            }
-            ContextDisposition::Summarized { .. } => {
-                self.summarized_tokens += est_tokens;
                 self.used_tokens += est_tokens;
             }
             ContextDisposition::Omitted => {
                 self.omitted_tokens += est_tokens;
             }
-        }
-    }
-}
-
-/// Provider/context-cache hint attached to a planned request.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct ContextCacheHint {
-    pub entry_index: usize,
-    pub key: String,
-    pub reason: String,
-}
-
-impl ContextCacheHint {
-    pub fn new(entry_index: usize, key: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self {
-            entry_index,
-            key: key.into(),
-            reason: reason.into(),
         }
     }
 }
@@ -314,9 +246,7 @@ pub enum Role {
     Tool,
 }
 
-/// A piece of content within a [`ContextBlock`]. A large payload can be carried
-/// as a `Ref` to a content-addressed blob (the blob store arrives in Phase 3);
-/// for Phase 0 content is inline.
+/// A piece of content within a [`ContextBlock`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ContentPart {
@@ -331,12 +261,6 @@ pub enum ContentPart {
     ToolResult {
         id: String,
         result: Value,
-    },
-    /// A reference to an evicted/large payload (rehydratable). Phase 3+.
-    Ref {
-        reference: String,
-        summary: String,
-        est_tokens: u32,
     },
 }
 
@@ -371,11 +295,6 @@ pub struct ToolSchema {
     pub name: String,
     pub description: String,
     pub parameters: Value,
-    /// Declarative optimistic-concurrency metadata (ARCHITECTURE §7.3). Omitted
-    /// for stateless capabilities. The brain uses this generically; it never
-    /// hardcodes capability-specific argument names.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub versioning: Option<ToolVersioning>,
 }
 
 impl ToolSchema {
@@ -384,43 +303,6 @@ impl ToolSchema {
             name: name.into(),
             description: description.into(),
             parameters,
-            versioning: None,
-        }
-    }
-
-    pub fn with_versioning(mut self, versioning: ToolVersioning) -> Self {
-        self.versioning = Some(versioning);
-        self
-    }
-}
-
-/// Declarative metadata for a capability that reads or mutates a versioned
-/// external object (ARCHITECTURE §7.3).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub struct ToolVersioning {
-    /// Argument field that identifies the target object, e.g. `"path"`.
-    pub object_arg: String,
-    /// Argument field where the brain stamps the last seen version for
-    /// mutating calls. `None` means the capability only refreshes versions.
-    pub expected_version_arg: Option<String>,
-}
-
-impl ToolVersioning {
-    pub fn read(object_arg: impl Into<String>) -> Self {
-        Self {
-            object_arg: object_arg.into(),
-            expected_version_arg: None,
-        }
-    }
-
-    pub fn mutation(
-        object_arg: impl Into<String>,
-        expected_version_arg: impl Into<String>,
-    ) -> Self {
-        Self {
-            object_arg: object_arg.into(),
-            expected_version_arg: Some(expected_version_arg.into()),
         }
     }
 }
@@ -438,8 +320,6 @@ pub enum ModelDelta {
     Text(String),
     Reasoning(String),
     ToolCallStart { id: String, name: String },
-    ToolCallArgsDelta { id: String, json_fragment: String },
-    ToolCallEnd { id: String },
 }
 
 /// The consolidated, authoritative result of a model call — exactly what the
@@ -451,7 +331,10 @@ pub struct ModelOutput {
     pub text: String,
     pub reasoning: Option<String>,
     pub tool_calls: Vec<ToolCall>,
-    pub stop: StopReason,
+    /// Provider-reported stop reason, e.g. `"end_turn"`, `"tool_use"`,
+    /// `"max_tokens"`. Recorded for the trace; the brain never branches on it
+    /// (the presence of `tool_calls` drives the turn loop).
+    pub stop: String,
 }
 
 impl ModelOutput {
@@ -460,13 +343,13 @@ impl ModelOutput {
         text: String,
         reasoning: Option<String>,
         tool_calls: Vec<ToolCall>,
-        stop: StopReason,
+        stop: impl Into<String>,
     ) -> Self {
         Self {
             text,
             reasoning,
             tool_calls,
-            stop,
+            stop: stop.into(),
         }
     }
 
@@ -474,7 +357,7 @@ impl ModelOutput {
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             text: text.into(),
-            stop: StopReason::EndTurn,
+            stop: "end_turn".to_string(),
             ..Self::default()
         }
     }
@@ -483,7 +366,7 @@ impl ModelOutput {
     pub fn tool_calls(calls: Vec<ToolCall>) -> Self {
         Self {
             tool_calls: calls,
-            stop: StopReason::ToolUse,
+            stop: "tool_use".to_string(),
             ..Self::default()
         }
     }
@@ -506,16 +389,6 @@ impl ToolCall {
             args,
         }
     }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum StopReason {
-    #[default]
-    EndTurn,
-    ToolUse,
-    MaxTokens,
-    Other(String),
 }
 
 /// Authoritative token accounting returned by the provider after a call.

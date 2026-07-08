@@ -72,7 +72,6 @@ fn model_stream_and_background_shell_run_concurrently() {
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "exit_code": 0, "stdout": "Finished" }),
-                version: None,
                 est_tokens: 1,
             },
             // The final model call ends the turn.
@@ -139,7 +138,6 @@ fn concurrent_ops_replay_is_deterministic() {
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "exit_code": 0 }),
-                version: None,
                 est_tokens: 1,
             },
             Event::ModelDone {
@@ -198,14 +196,12 @@ fn background_op_does_not_gate_a_concurrent_foreground_op() {
             Event::CapabilityDone {
                 op: OpId(1),
                 result: json!({ "exit_code": 0 }),
-                version: None,
                 est_tokens: 1,
             },
             // The foreground http finishes — now the model resumes (op 3).
             Event::CapabilityDone {
                 op: OpId(2),
                 result: json!({ "status": 200 }),
-                version: None,
                 est_tokens: 1,
             },
             Event::ModelDone {

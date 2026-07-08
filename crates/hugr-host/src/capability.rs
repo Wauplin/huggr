@@ -1,14 +1,14 @@
 //! The uniform capability (tool) interface and its registry.
 //!
 //! There are **no privileged built-ins** (DESIGN §5.3): shell, fs and http are
-//! all ordinary [`Capability`]s, exactly like a plugin would be. The brain only
+//! all ordinary [`Capability`]s, exactly like an external MCP tool would be. The brain only
 //! ever emits `StartCapability { name, args }`; the host looks the name up here.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use hugr_core::{Event, OpId, ToolSchema, Value, VersionRef};
+use hugr_core::{Event, OpId, ToolSchema, Value};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// A host-provided tool. Streaming-capable: it may emit chunks via the
@@ -41,26 +41,13 @@ pub trait Capability: Send + Sync {
     /// react to, ARCHITECTURE §5.4) — return `Err` only for tool-level failures,
     /// not transport issues.
     async fn invoke(&self, args: Value, sink: &ChunkSink) -> Result<Value, Value>;
-
-    /// Extract the version envelope refreshed by a successful result, if any.
-    /// Defaults to stateless. The engine places this in the typed event slot so
-    /// the brain can rebuild its read-set without interpreting opaque payloads.
-    fn result_version(&self, _result: &Value) -> Option<VersionRef> {
-        None
-    }
-
-    /// Extract the current version from a stale-edit conflict, if this error is
-    /// one. Defaults to an ordinary semantic error.
-    fn conflict_version(&self, _error: &Value) -> Option<VersionRef> {
-        None
-    }
 }
 
 /// Lets a capability stream intermediate chunks (transport only) back to the
 /// brain as `CapabilityChunk` events while it runs.
 ///
 /// `Clone` is cheap (it clones the op id + an `Arc`-backed sender) so a wrapper
-/// (e.g. a plugin capability bridging to a [`hugr_plugin_abi::PluginSink`]) can
+/// (e.g. an MCP capability bridging an external process stream) can
 /// move an emitter into a closure.
 #[derive(Clone)]
 pub struct ChunkSink {

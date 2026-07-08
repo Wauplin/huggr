@@ -16,13 +16,11 @@
 use serde_json::json;
 
 use crate::command::{Command, DoneReason, OutputEvent, PermissionRequest};
-use crate::event::{Decision, Event, SteerMode, VersionRef};
-use crate::model::{ContextPlan, ModelDelta, ModelOutput, ModelSelector, ToolCall, Usage};
-use crate::policy::{AgentSeed, RoutingInputs, RoutingPhase, StaticPolicy, TurnPolicy};
+use crate::event::{Decision, Event};
+use crate::model::{ContextPlan, ModelDelta, ModelOutput, ToolCall, Usage};
+use crate::policy::{StaticPolicy, TurnPolicy};
 use crate::primitives::{OpId, Value};
-use crate::record::{
-    LogEntry, OpMeta, OpOutcome, Record, RoutingDecision, SeqRange, SummaryCoverage,
-};
+use crate::record::{LogEntry, OpMeta, OpOutcome, Record};
 use crate::state::{BrainState, OpKind};
 
 /// The pure, sans-IO agent core. Construct one with a [`TurnPolicy`], feed it
@@ -49,8 +47,8 @@ impl Brain {
     }
 
     /// Create a brain **seeded from an inherited log** — the fork primitive
-    /// (ARCHITECTURE §14). A sub-agent (`Command::StartAgent`'s `seed`) or a
-    /// resumed session starts from a copy of a log prefix; the brain re-derives
+    /// (ARCHITECTURE §14). A fork or a resumed session starts from a copy of a
+    /// log prefix; the brain re-derives
     /// its state by folding it (§3.1). No IO: the recorded ops are not re-run,
     /// only re-folded to reconstruct `BrainState`.
     pub fn from_log(policy: Box<dyn TurnPolicy>, log: Vec<LogEntry>) -> Self {
@@ -84,34 +82,9 @@ impl Brain {
         match event {
             Event::UserInput {
                 content,
-                mode,
                 est_tokens,
-            } => self.on_user_input(content, mode, est_tokens),
+            } => self.on_user_input(content, est_tokens),
             Event::UserAbort => self.on_user_abort(),
-            Event::CompactContext => self.on_compact_context(),
-            Event::ModelOverride { selector } => self.state.set_model_override(selector),
-            Event::PlanAccepted { text, est_tokens } => {
-                self.append(Record::Plan { text, est_tokens });
-                self.checkpoint();
-            }
-            Event::TodoUpdated { items, est_tokens } => {
-                self.append(Record::TodoList { items, est_tokens });
-                self.checkpoint();
-            }
-            Event::HookFired {
-                phase,
-                name,
-                result,
-                est_tokens,
-            } => {
-                self.append(Record::Hook {
-                    phase,
-                    name,
-                    result,
-                    est_tokens,
-                });
-                self.checkpoint();
-            }
 
             Event::ModelDelta { op, delta } => self.on_model_delta(op, delta),
             Event::ModelDone {
@@ -122,38 +95,20 @@ impl Brain {
             } => self.on_model_done(op, output, usage, est_tokens),
             Event::ModelError { op, error } => self.on_model_error(op, error),
 
-            Event::CapabilityChunk { op, chunk } => {
-                self.emit(OutputEvent::ToolChunk { op, chunk });
-            }
+            // Capability chunks are transport-only progress; nothing durable
+            // and no reduced output — the host may render them itself.
+            Event::CapabilityChunk { .. } => {}
             Event::CapabilityDone {
                 op,
                 result,
-                version,
                 est_tokens,
-            } => self.on_capability_done(op, result, version, est_tokens),
+            } => self.on_capability_done(op, result, est_tokens),
             Event::CapabilityError {
                 op,
                 error,
-                conflict,
                 est_tokens,
-            } => self.on_capability_error(op, error, conflict, est_tokens),
+            } => self.on_capability_error(op, error, est_tokens),
 
-            Event::AgentDone {
-                op,
-                result,
-                est_tokens,
-            } => self.on_agent_done(op, result, est_tokens),
-            Event::AgentError {
-                op,
-                error,
-                est_tokens,
-            } => self.on_agent_error(op, error, est_tokens),
-
-            Event::UserAnswer {
-                op,
-                answer,
-                est_tokens,
-            } => self.on_user_answer(op, answer, est_tokens),
             Event::PermissionDecision {
                 op,
                 decision,
@@ -170,39 +125,24 @@ impl Brain {
     // Event handlers
     // ========================================================================
 
-    fn on_user_input(&mut self, content: Value, mode: SteerMode, est_tokens: u32) {
+    fn on_user_input(&mut self, content: Value, est_tokens: u32) {
         self.append(Record::UserMessage {
             text: stringify(&content),
             est_tokens,
         });
-
+        // Idle: start a turn immediately. Mid-turn input just queues: the next
+        // turn boundary's projection sees the new message (ARCHITECTURE §4.6).
         if !self.state.is_busy() {
-            // Idle: start a turn immediately, regardless of mode.
             self.start_model_turn();
-            return;
-        }
-
-        match mode {
-            // Append now; the next turn boundary picks it up (its projection
-            // sees the new message). No new mechanism needed.
-            SteerMode::Queue | SteerMode::AppendAndContinue => {}
-            // Cancel in-flight ops; once they drain (partial work logged first),
-            // a fresh turn starts that sees both the partial work and the input.
-            SteerMode::Interrupt => {
-                self.state.set_pending_resume(true);
-                self.cancel_all_inflight();
-            }
         }
     }
 
     /// A pure control-signal abort (ARCHITECTURE §4.6). While ops are in flight
     /// this latches `abort_requested`: the `Cancel` commands race each op's own
     /// terminal event, and whichever arrives first must still end the turn
-    /// `Cancelled` without starting new work (ARCHITECTURE §4.3). An abort also
-    /// supersedes a pending interrupt-resume — a steer followed by an abort
-    /// must not become a surprise model turn. An idle abort stays a no-op.
+    /// `Cancelled` without starting new work (ARCHITECTURE §4.3). An idle abort
+    /// stays a no-op.
     fn on_user_abort(&mut self) {
-        self.state.set_pending_resume(false);
         if self.state.is_busy() {
             self.state.set_abort_requested(true);
             self.cancel_all_inflight();
@@ -212,46 +152,18 @@ impl Brain {
     fn on_model_delta(&mut self, op: OpId, delta: ModelDelta) {
         // Deltas are transport only: accumulate cheaply for live UI and forward
         // a cosmetic event. Never written to the log (ARCHITECTURE §4.5).
-        let is_compaction = matches!(
-            self.state.get_op(op).map(|entry| &entry.kind),
-            Some(OpKind::Compaction { .. } | OpKind::ManualCompaction { .. })
-        );
         match delta {
             ModelDelta::Text(t) => {
                 self.state.buffer_model_text(op, &t);
-                if !is_compaction {
-                    self.emit(OutputEvent::ModelText { op, text: t });
-                }
+                self.emit(OutputEvent::ModelText { op, text: t });
             }
-            ModelDelta::Reasoning(t) => {
-                if !is_compaction {
-                    self.emit(OutputEvent::ModelReasoning { op, text: t });
-                }
-            }
-            ModelDelta::ToolCallStart { id, name } => {
-                if !is_compaction {
-                    self.emit(OutputEvent::ToolCallStarted { op, id, name });
-                }
-            }
-            ModelDelta::ToolCallArgsDelta { .. } | ModelDelta::ToolCallEnd { .. } => {}
+            // Reasoning and tool-call-start deltas produce no reduced output;
+            // they only exist so adapters can stream uniformly.
+            ModelDelta::Reasoning(_) | ModelDelta::ToolCallStart { .. } => {}
         }
     }
 
     fn on_model_done(&mut self, op: OpId, output: ModelOutput, usage: Usage, est_tokens: u32) {
-        if let Some((summary_of, est_tokens_in, tier, resume_turn)) = self.compaction_op(op) {
-            self.on_compaction_done(
-                op,
-                output,
-                usage,
-                est_tokens,
-                summary_of,
-                est_tokens_in,
-                tier,
-                resume_turn,
-            );
-            return;
-        }
-
         self.append(Record::ModelOutput {
             op,
             output: output.clone(),
@@ -282,15 +194,7 @@ impl Brain {
             // way (the model output is durable) but defer `Done` until idle.
             self.checkpoint();
             if !self.background_running() {
-                if self.state.pending_resume() {
-                    // An interrupt's `Cancel` lost the race to this normal
-                    // completion (ARCHITECTURE §4.6): the interrupting input is
-                    // already logged, so consume the latch and start the fresh
-                    // turn it asked for instead of ending.
-                    self.start_model_turn();
-                } else {
-                    self.done(DoneReason::EndTurn);
-                }
+                self.done(DoneReason::EndTurn);
             }
         } else {
             // The model wants tools: turn each call into an op. The brain routes;
@@ -316,46 +220,25 @@ impl Brain {
         // Mirror `on_model_done`: while a background op is still running the
         // turn is not over (ARCHITECTURE §4.2), so defer the terminal
         // `Done(Error)` until the last op drains rather than emitting commands
-        // after a terminal `Done`. A pending interrupt-resume supersedes the
-        // error: the interrupting input starts a fresh turn once ops drain.
+        // after a terminal `Done`.
         if self.background_running() {
-            if !self.state.pending_resume() {
-                self.state.set_deferred_error(Some(stringify(&error)));
-            }
-            return;
-        }
-        if self.state.pending_resume() {
-            // An interrupt's `Cancel` lost the race to this error: consume the
-            // latch and start the fresh turn it asked for (ARCHITECTURE §4.6).
-            self.start_model_turn();
+            self.state.set_deferred_error(Some(stringify(&error)));
             return;
         }
         self.done(DoneReason::Error(stringify(&error)));
     }
 
     /// The shared tail of every tool-result-shaped resolution (capability,
-    /// sub-agent, user answer, permission denial): record a version refresh if
-    /// one rode along (ARCHITECTURE §7.3), append the *one* consolidated
-    /// `ToolResult` record (ARCHITECTURE §4.5), end the op, and resume the turn.
-    fn finish_tool_result(
-        &mut self,
-        op: OpId,
-        result: Value,
-        version: Option<VersionRef>,
-        outcome: OpOutcome,
-        est_tokens: u32,
-    ) {
-        if let Some(v) = &version {
-            self.state
-                .record_version(v.object.clone(), v.version.clone());
-        }
+    /// sub-agent, user answer, permission denial): append the *one*
+    /// consolidated `ToolResult` record (ARCHITECTURE §4.5), end the op, and
+    /// resume the turn.
+    fn finish_tool_result(&mut self, op: OpId, result: Value, outcome: OpOutcome, est_tokens: u32) {
         let (name, call_id) = self.tool_ids(op);
         self.append(Record::ToolResult {
             op,
             name,
             call_id,
             result,
-            version,
             est_tokens,
         });
         self.end_op(op, outcome, None);
@@ -368,50 +251,14 @@ impl Brain {
         self.maybe_resume_model_turn();
     }
 
-    fn on_capability_done(
-        &mut self,
-        op: OpId,
-        result: Value,
-        version: Option<VersionRef>,
-        est_tokens: u32,
-    ) {
-        self.finish_tool_result(op, result, version, OpOutcome::Ok, est_tokens);
+    fn on_capability_done(&mut self, op: OpId, result: Value, est_tokens: u32) {
+        self.finish_tool_result(op, result, OpOutcome::Ok, est_tokens);
     }
 
-    fn on_capability_error(
-        &mut self,
-        op: OpId,
-        error: Value,
-        conflict: Option<VersionRef>,
-        est_tokens: u32,
-    ) {
-        // A stale-edit conflict refreshes the read-set so the model's next edit
-        // is stamped correctly; otherwise it is an ordinary error result fed
-        // back to the model (ARCHITECTURE §5.4, §7.3).
-        self.finish_tool_result(
-            op,
-            error.clone(),
-            conflict,
-            OpOutcome::Error(error),
-            est_tokens,
-        );
-    }
-
-    fn on_agent_done(&mut self, op: OpId, result: Value, est_tokens: u32) {
-        // A sub-agent result returns to the parent as a tool-result-shaped value
-        // the next model turn consumes (ARCHITECTURE §13.1/§14.3): the child's
-        // digest flows back as *one* value; forks diverge, results flow back.
-        self.finish_tool_result(op, result, None, OpOutcome::Ok, est_tokens);
-    }
-
-    fn on_agent_error(&mut self, op: OpId, error: Value, est_tokens: u32) {
-        self.finish_tool_result(op, error.clone(), None, OpOutcome::Error(error), est_tokens);
-    }
-
-    fn on_user_answer(&mut self, op: OpId, answer: Value, est_tokens: u32) {
-        // The answer to an `AskUser` becomes a tool-result-shaped value the next
-        // model turn consumes.
-        self.finish_tool_result(op, answer, None, OpOutcome::Ok, est_tokens);
+    fn on_capability_error(&mut self, op: OpId, error: Value, est_tokens: u32) {
+        // A semantic tool failure is an ordinary error result fed back to the
+        // model (ARCHITECTURE §5.4).
+        self.finish_tool_result(op, error.clone(), OpOutcome::Error(error), est_tokens);
     }
 
     fn on_permission_decision(&mut self, op: OpId, decision: Decision, est_tokens: u32) {
@@ -455,13 +302,7 @@ impl Brain {
             }
             Decision::Deny { reason } => {
                 let result = json!({ "error": "permission_denied", "reason": reason });
-                self.finish_tool_result(
-                    op,
-                    result.clone(),
-                    None,
-                    OpOutcome::Error(result),
-                    est_tokens,
-                );
+                self.finish_tool_result(op, result.clone(), OpOutcome::Error(result), est_tokens);
             }
         }
     }
@@ -504,7 +345,6 @@ impl Brain {
                 name,
                 call_id,
                 result,
-                version: None,
                 est_tokens: 0,
             });
         }
@@ -517,32 +357,11 @@ impl Brain {
             return;
         }
 
-        if self.state.pending_resume() && !self.state.is_busy() {
-            // An interrupt (steer) is waiting for the in-flight ops to drain:
-            // start the fresh turn now that they have (the partial work is
-            // already logged, so the new turn's projection sees it).
-            self.start_model_turn();
-        } else if !self.state.is_busy() {
+        if !self.state.is_busy() {
             // A host-initiated cancel with nothing to resume and no abort
             // latched: the turn is over, cancelled. Emit the terminal `Done`
             // once the last in-flight op has drained so the front-end sees it.
             self.done(DoneReason::Cancelled);
-        }
-    }
-
-    fn on_compact_context(&mut self) {
-        if self.state.is_busy() {
-            self.emit(OutputEvent::Notice(
-                "compaction skipped: operations are still in flight".to_string(),
-            ));
-            return;
-        }
-        let budget = self.policy.context_budget(&self.state);
-        let plan = self.policy.project_context(self.state.log(), budget);
-        if !self.start_selected_compaction(&plan, false) {
-            self.emit(OutputEvent::Notice(
-                "compaction skipped: no compactable context span".to_string(),
-            ));
         }
     }
 
@@ -553,33 +372,15 @@ impl Brain {
     /// Begin a model turn: ask the policy which model to call and how to project
     /// context, then emit the call.
     fn start_model_turn(&mut self) {
-        // Starting a turn consumes any pending interrupt-resume: the projection
-        // computed below already sees the interrupting input (ARCHITECTURE
-        // §4.6), so the latch never outlives the resume it asked for.
-        self.state.set_pending_resume(false);
         let budget = self.policy.context_budget(&self.state);
         let plan = self.policy.project_context(self.state.log(), budget);
-        if self.should_compact(&plan, budget) && self.start_selected_compaction(&plan, true) {
-            return;
-        }
-
         let op = self.state.alloc_op();
-        let mut inputs =
-            RoutingInputs::from_state(&self.state, &plan, next_routing_phase(self.state.log()));
-        inputs.override_selector = self.state.take_model_override();
-        let selector = self.policy.choose_model(&self.state, &inputs);
-        let routing = RoutingDecision::new(
-            selector.clone(),
-            self.policy
-                .explain_model_choice(&self.state, &inputs, &selector),
-        )
-        .with_inputs(routing_inputs_snapshot(&inputs));
+        let selector = self.policy.choose_model(&self.state);
         let request = plan.to_model_request();
         self.state.mark(
             op,
             OpKind::Model {
                 selector: selector.clone(),
-                routing,
                 text_so_far: String::new(),
             },
         );
@@ -588,133 +389,6 @@ impl Brain {
             model: selector,
             request,
         });
-    }
-
-    /// Start a policy-selected compaction from a projection `plan` the caller
-    /// already computed (turn-start reuses its own; manual compaction computes
-    /// one) — avoids projecting the same log twice per decision.
-    fn start_selected_compaction(&mut self, plan: &ContextPlan, resume_turn: bool) -> bool {
-        let Some(target) = self.policy.select_compaction_span(self.state.log(), plan) else {
-            return false;
-        };
-        self.start_compaction_turn(target.summary_of, target.est_tokens_in, resume_turn, plan);
-        true
-    }
-
-    fn should_compact(
-        &self,
-        plan: &crate::model::ContextPlan,
-        budget: crate::model::TokenBudget,
-    ) -> bool {
-        self.policy
-            .compaction_high_water(&self.state, budget)
-            .is_some_and(|high_water| plan.totals.used_tokens > high_water)
-    }
-
-    fn start_compaction_turn(
-        &mut self,
-        summary_of: SeqRange,
-        est_tokens_in: u32,
-        resume_turn: bool,
-        plan: &ContextPlan,
-    ) {
-        let op = self.state.alloc_op();
-        // Route the compaction model through the policy (ARCHITECTURE §2.5): the
-        // reducer must not hardcode a tier. A tiered policy can pick a cheap
-        // model for the `Compaction` phase; a single-model policy falls back to
-        // its default rather than erroring on a missing "small" model. The
-        // per-turn model override is deliberately *not* consumed here — it
-        // belongs to the real turn that resumes after compaction.
-        let inputs = RoutingInputs::from_state(&self.state, plan, RoutingPhase::Compaction);
-        let selector = self.policy.choose_model(&self.state, &inputs);
-        let mut reasons = self
-            .policy
-            .explain_model_choice(&self.state, &inputs, &selector);
-        reasons.push(
-            if resume_turn {
-                "automatic compaction pass"
-            } else {
-                "manual compaction pass"
-            }
-            .to_string(),
-        );
-        let routing = RoutingDecision::new(selector.clone(), reasons)
-            .with_inputs(routing_inputs_snapshot(&inputs));
-        let request = self.policy.compaction_request(self.state.log(), summary_of);
-        let kind = if resume_turn {
-            OpKind::Compaction {
-                selector: selector.clone(),
-                routing,
-                summary_of,
-                est_tokens_in,
-                text_so_far: String::new(),
-            }
-        } else {
-            OpKind::ManualCompaction {
-                selector: selector.clone(),
-                routing,
-                summary_of,
-                est_tokens_in,
-                text_so_far: String::new(),
-            }
-        };
-        self.state.mark(op, kind);
-        self.state.push_command(Command::StartModelCall {
-            op,
-            model: selector,
-            request,
-        });
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn on_compaction_done(
-        &mut self,
-        op: OpId,
-        output: ModelOutput,
-        usage: Usage,
-        est_tokens_out: u32,
-        summary_of: SeqRange,
-        est_tokens_in: u32,
-        tier: ModelSelector,
-        resume_turn: bool,
-    ) {
-        self.append(Record::Summary {
-            op,
-            text: summary_text(&output),
-            summary_of,
-            coverage: SummaryCoverage::Complete,
-            tier,
-            est_tokens_in,
-            est_tokens_out,
-        });
-        self.end_op(op, OpOutcome::Ok, Some(usage));
-        self.checkpoint();
-        // A latched abort raced this compaction's completion: fold the summary
-        // but do not resume — end the turn `Cancelled` once drained (§4.3).
-        if self.resolve_abort_if_drained() {
-            return;
-        }
-        if resume_turn {
-            self.start_model_turn();
-        }
-    }
-
-    fn compaction_op(&self, op: OpId) -> Option<(SeqRange, u32, ModelSelector, bool)> {
-        match self.state.get_op(op).map(|entry| &entry.kind) {
-            Some(OpKind::Compaction {
-                selector,
-                summary_of,
-                est_tokens_in,
-                ..
-            }) => Some((*summary_of, *est_tokens_in, selector.clone(), true)),
-            Some(OpKind::ManualCompaction {
-                selector,
-                summary_of,
-                est_tokens_in,
-                ..
-            }) => Some((*summary_of, *est_tokens_in, selector.clone(), false)),
-            _ => None,
-        }
     }
 
     /// After a tool/agent op resolves, resume the model turn once nothing the
@@ -748,58 +422,6 @@ impl Brain {
     /// start it immediately.
     fn begin_tool_call(&mut self, call: ToolCall) {
         let op = self.state.alloc_op();
-        if let Some(skill) = self.policy.activate_skill(&call.name) {
-            let name = call.name;
-            let call_id = call.id;
-            self.append(Record::SkillActivated {
-                id: skill.id.clone(),
-                title: skill.title.clone(),
-                summary: skill.summary.clone(),
-                instructions: skill.instructions.clone(),
-                est_tokens: skill.est_tokens,
-            });
-            self.append(Record::ToolResult {
-                op,
-                name,
-                call_id,
-                result: json!({
-                    "skill_id": skill.id,
-                    "active": true,
-                }),
-                version: None,
-                est_tokens: 0,
-            });
-            self.end_op(op, OpOutcome::Ok, None);
-            return;
-        }
-        // A policy-designated sub-agent (ARCHITECTURE §13/§14): fork the log
-        // prefix per the seed strategy and hand it to the host as a child brain.
-        // The brain owns the log, so resolving the fork is a pure operation here.
-        if let Some(seed) = self.policy.agent_seed(&call.name) {
-            let seed_log = self.resolve_seed(seed);
-            let mut config = call.args;
-            if let Some(object) = config.as_object_mut() {
-                object
-                    .entry("agent")
-                    .or_insert_with(|| Value::String(call.name.clone()));
-                object
-                    .entry("max_depth")
-                    .or_insert_with(|| Value::Number(1_u64.into()));
-            }
-            self.state.mark(
-                op,
-                OpKind::Agent {
-                    name: call.name,
-                    call_id: call.id,
-                },
-            );
-            self.state.push_command(Command::StartAgent {
-                op,
-                config,
-                seed: seed_log,
-            });
-            return;
-        }
         if self.policy.needs_permission(&call.name) {
             self.state.mark(
                 op,
@@ -826,15 +448,10 @@ impl Brain {
         &mut self,
         op: OpId,
         name: String,
-        mut args: Value,
+        args: Value,
         call_id: String,
         background: bool,
     ) {
-        // Optimistic-concurrency stamping (ARCHITECTURE §7.3): declarative
-        // schema metadata says which arg is the object key and where a mutating
-        // call expects the last-seen version. The brain never hardcodes tool
-        // names or parses paths; it only does opaque equality/table lookup.
-        self.stamp_expected_version(&name, &mut args);
         self.state.mark(
             op,
             OpKind::Capability {
@@ -845,45 +462,6 @@ impl Brain {
         );
         self.state
             .push_command(Command::StartCapability { op, name, args });
-    }
-
-    fn stamp_expected_version(&self, name: &str, args: &mut Value) {
-        let Some(versioning) = self.policy.capability_versioning(name) else {
-            return;
-        };
-        let Some(expected_arg) = versioning.expected_version_arg else {
-            return;
-        };
-        let Some(object) = args
-            .get(&versioning.object_arg)
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-        else {
-            return;
-        };
-        let Some(version) = self.state.versions().get(&object) else {
-            return;
-        };
-        if let Some(map) = args.as_object_mut() {
-            map.insert(expected_arg, Value::String(version.clone()));
-        }
-    }
-
-    /// Resolve a sub-agent [`AgentSeed`] into the actual log prefix to fork
-    /// (ARCHITECTURE §14). Pure: the brain owns the log. Copy-on-write is a host
-    /// optimization; the contract is just "the child starts from these entries."
-    fn resolve_seed(&self, seed: AgentSeed) -> Vec<LogEntry> {
-        match seed {
-            AgentSeed::Fresh => Vec::new(),
-            AgentSeed::ForkFull => self.state.log().to_vec(),
-            AgentSeed::ForkAt { seq } => self
-                .state
-                .log()
-                .iter()
-                .filter(|e| e.seq.0 <= seq)
-                .cloned()
-                .collect(),
-        }
     }
 
     fn cancel_all_inflight(&mut self) {
@@ -952,7 +530,6 @@ impl Brain {
             name: call.name,
             call_id: call.id,
             result: json!({ "cancelled": true }),
-            version: None,
             est_tokens: 0,
         });
         self.end_op(
@@ -971,27 +548,22 @@ impl Brain {
     fn append(&mut self, record: Record) {
         let seq = crate::primitives::Seq(self.state.alloc_seq());
         let at = self.state.now();
-        self.state.push_log(LogEntry { seq, at, record });
+        self.state.push_log(LogEntry::new(seq, at, record));
     }
 
     /// End an op: build its [`OpMeta`] from the in-flight entry, remove it, and
     /// append an `OpEnded` record so latency/cost are queryable from the trace.
     fn end_op(&mut self, op: OpId, outcome: OpOutcome, usage: Option<Usage>) {
         let now = self.state.now();
-        let (started_at, model, routing) = match self.state.get_op(op) {
-            Some(entry) => (
-                entry.started_at,
-                entry.kind.selector(),
-                entry.kind.routing(),
-            ),
-            None => (now, None, None),
+        let (started_at, model) = match self.state.get_op(op) {
+            Some(entry) => (entry.started_at, entry.kind.selector()),
+            None => (now, None),
         };
         self.state.remove_op(op);
         let meta = OpMeta {
             started_at,
             ended_at: now,
             model,
-            routing,
             usage,
             extra: json!(null),
         };
@@ -1014,12 +586,6 @@ impl Brain {
     fn partial_of(&self, op: OpId) -> Value {
         match self.state.get_op(op).map(|o| &o.kind) {
             Some(OpKind::Model { text_so_far, .. }) if !text_so_far.is_empty() => {
-                Value::String(text_so_far.clone())
-            }
-            Some(OpKind::Compaction { text_so_far, .. }) if !text_so_far.is_empty() => {
-                Value::String(text_so_far.clone())
-            }
-            Some(OpKind::ManualCompaction { text_so_far, .. }) if !text_so_far.is_empty() => {
                 Value::String(text_so_far.clone())
             }
             _ => Value::Null,
@@ -1046,37 +612,4 @@ fn stringify(content: &Value) -> String {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     }
-}
-
-fn summary_text(output: &ModelOutput) -> String {
-    if !output.text.is_empty() {
-        return output.text.clone();
-    }
-    if output.tool_calls.is_empty() {
-        String::new()
-    } else {
-        serde_json::to_string(&output.tool_calls).unwrap_or_default()
-    }
-}
-
-fn next_routing_phase(log: &[LogEntry]) -> RoutingPhase {
-    match log
-        .iter()
-        .rev()
-        .find(|entry| !matches!(entry.record, Record::OpEnded { .. }))
-        .map(|entry| &entry.record)
-    {
-        Some(Record::ToolResult { .. }) => RoutingPhase::ToolFollowup,
-        _ => RoutingPhase::Normal,
-    }
-}
-
-fn routing_inputs_snapshot(inputs: &RoutingInputs) -> Value {
-    json!({
-        "phase": format!("{:?}", inputs.phase),
-        "tool_risk": format!("{:?}", inputs.tool_risk),
-        "context_pressure": format!("{:.6}", inputs.context_pressure),
-        "recent_failures": inputs.recent_failures,
-        "override_selector": inputs.override_selector,
-    })
 }

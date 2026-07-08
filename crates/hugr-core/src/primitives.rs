@@ -33,11 +33,6 @@ pub struct Seq(pub u64);
 pub struct Timestamp(pub u64);
 
 /// An opaque payload the brain stores and forwards but **never interprets**
-/// (the narrow-waist rule, ARCHITECTURE §2.4): capability args/results, plugin
+/// (the narrow-waist rule, ARCHITECTURE §2.4): capability args/results, tool
 /// payloads, provider-specific knobs, prompts, answers.
 pub type Value = serde_json::Value;
-
-/// Host-canonicalised identity of an externally mutable object for optimistic
-/// concurrency (ARCHITECTURE §7.3) — e.g. an absolute path or `"pr:org/repo#42"`.
-/// Opaque to the brain: compared only by equality, never parsed.
-pub type ObjectKey = String;

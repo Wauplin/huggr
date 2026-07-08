@@ -9,9 +9,9 @@ use std::ffi::OsString;
 use std::process::Stdio;
 use std::sync::Arc;
 
+use crate::framing::{self, FramingError};
 use async_trait::async_trait;
 use hugr_core::{ToolSchema, Value};
-use hugr_plugin_abi::framing::{self, FramingError};
 use serde_json::json;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, BufReader, Lines};
@@ -69,9 +69,6 @@ impl From<FramingError> for McpError {
         match err {
             FramingError::Io(e) => McpError::Io(e),
             FramingError::Json(e) => McpError::Json(e),
-            // `FramingError` is #[non_exhaustive]; treat unknown kinds as
-            // protocol-level failures.
-            other => McpError::Protocol(other.to_string()),
         }
     }
 }

@@ -30,11 +30,9 @@
 //! This started as the Phase 0 deliverable (see `docs/ROADMAP.md`): the turn loop
 //! (`user → model → tool → model → done`), the op table, a trivial pass-through
 //! [`projection`](TurnPolicy::project_context), and deterministic replay. Later
-//! phases added, still sans-IO: cancellation & background ops (Phase 2),
-//! **sub-agents & forks** (Phase 6 — [`Command::StartAgent`], [`AgentSeed`],
-//! [`Brain::from_log`]), and lossless summary-backed compaction (Roadmap 2
-//! Phase A). Blob stores remain host-side; resume lives in the host
-//! (`hugr-replay`).
+//! phases added, still sans-IO: cancellation & background ops, and **forks**
+//! ([`Brain::from_log`]). Blob stores remain host-side; resume lives in the
+//! host (`hugr-replay`).
 
 #![forbid(unsafe_code)]
 // `hugr-core` aspires to be `#![no_std]`-friendly (ARCHITECTURE §10/§11). It is
@@ -51,20 +49,14 @@ mod record;
 mod state;
 
 pub use brain::Brain;
-pub use command::{Command, DoneReason, OutputEvent, PermissionRequest, UserPrompt};
-pub use event::{Decision, Event, HookPhase, SteerMode, Version, VersionRef};
+pub use command::{Command, DoneReason, OutputEvent, PermissionRequest};
+pub use event::{Decision, Event};
 pub use model::{
-    ContentPart, ContextBlock, ContextBudgetTotals, ContextCacheHint, ContextDisposition,
-    ContextPlan, ContextPlanEntry, ContextSource, ModelDelta, ModelOutput, ModelRequest,
-    ModelSelector, Role, SamplingParams, StopReason, TokenBudget, ToolCall, ToolSchema,
-    ToolVersioning, Usage,
+    ContentPart, ContextBlock, ContextBudgetTotals, ContextDisposition, ContextPlan,
+    ContextPlanEntry, ContextSource, ModelDelta, ModelOutput, ModelRequest, ModelSelector, Role,
+    SamplingParams, TokenBudget, ToolCall, ToolSchema, Usage,
 };
-pub use policy::{
-    AgentSeed, CompactionTarget, RoutingInputs, RoutingPhase, RoutingPolicy, SkillDescriptor,
-    StaticPolicy, ToolRisk, TurnPolicy, decode_policy,
-};
-pub use primitives::{ObjectKey, OpId, Seq, Timestamp, Value};
-pub use record::{
-    LogEntry, OpMeta, OpOutcome, Record, RoutingDecision, SeqRange, SummaryCoverage, TodoItem,
-};
+pub use policy::{StaticPolicy, TurnPolicy, decode_policy};
+pub use primitives::{OpId, Seq, Timestamp, Value};
+pub use record::{LogEntry, OpMeta, OpOutcome, Record};
 pub use state::{BrainState, InflightOp, OpKind};

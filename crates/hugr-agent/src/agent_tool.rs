@@ -36,7 +36,6 @@ pub type AgentToolResolver =
 /// Declares one agent-as-tool grant (`[tools.agent.<name>]`): the capability
 /// name (`agent_<name>`), a human description (from the child's `AgentCard`),
 /// and the resolver that runs it.
-#[non_exhaustive]
 pub struct AgentToolSpec {
     pub name: String,
     pub description: String,

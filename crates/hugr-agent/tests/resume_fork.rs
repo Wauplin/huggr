@@ -171,13 +171,6 @@ async fn pricing_cost_is_folded_from_only_the_new_trace_slice() {
         assert_eq!(answer.metadata.tokens_in, 7);
         assert_eq!(answer.metadata.tokens_out, 3);
         assert_eq!(answer.metadata.model_calls, 1);
-        assert_eq!(answer.metadata.per_tier.len(), 1);
-        let tier = &answer.metadata.per_tier[0];
-        assert_eq!(tier.selector, "medium");
-        assert_eq!(tier.cost_micro_usd, 29);
-        assert_eq!(tier.model_calls, 1);
-        assert_eq!(tier.tokens_in, 7);
-        assert_eq!(tier.tokens_out, 3);
     }
 }
 

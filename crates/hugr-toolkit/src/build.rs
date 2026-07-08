@@ -32,7 +32,6 @@ pub struct BuildOptions {
 
 /// The result of a successful build.
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub struct BuildOutcome {
     /// The generated shim crate directory.
     pub crate_dir: PathBuf,
@@ -42,7 +41,6 @@ pub struct BuildOutcome {
 
 /// Failure to build a surface.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum BuildError {
     #[error("definition has no source folder to bundle")]
     NoSourceDir,

@@ -8,7 +8,7 @@
 //!    Rust types (property sets match what serde actually emits).
 
 use hugr_agent::{
-    Answer, AnswerMeta, Ask, BlobHandle, BlobRef, STATUS_ERROR, STATUS_SUCCESS, TierSpend, TraceId,
+    Answer, AnswerMeta, Ask, BlobHandle, BlobRef, STATUS_ERROR, STATUS_SUCCESS, TraceId,
 };
 use serde_json::{Value, json};
 
@@ -37,25 +37,14 @@ fn full_ask() -> Ask {
 }
 
 fn full_answer() -> Answer {
-    let mut metadata = AnswerMeta {
+    let metadata = AnswerMeta {
         duration_ms: 1234,
+        cost_micro_usd: 43,
+        tokens_in: 1700,
+        tokens_out: 350,
+        model_calls: 3,
         tool_calls: 3,
-        ..AnswerMeta::default()
     };
-    metadata.add_tier(TierSpend {
-        selector: "medium".into(),
-        model_calls: 2,
-        tokens_in: 1500,
-        tokens_out: 300,
-        cost_micro_usd: 42,
-    });
-    metadata.add_tier(TierSpend {
-        selector: "small".into(),
-        model_calls: 1,
-        tokens_in: 200,
-        tokens_out: 50,
-        cost_micro_usd: 1,
-    });
     Answer {
         status: STATUS_SUCCESS.to_string(),
         message: "Two expenses exceed the hotel cap.".into(),
@@ -139,11 +128,7 @@ fn full_wire_snapshots_are_pinned() {
                 "tokens_in": 1700,
                 "tokens_out": 350,
                 "model_calls": 3,
-                "tool_calls": 3,
-                "per_tier": [
-                    {"selector": "medium", "model_calls": 2, "tokens_in": 1500, "tokens_out": 300, "cost_micro_usd": 42},
-                    {"selector": "small", "model_calls": 1, "tokens_in": 200, "tokens_out": 50, "cost_micro_usd": 1}
-                ]
+                "tool_calls": 3
             },
             "extra": {"related_documents": ["travel.md"]}
         })
@@ -162,7 +147,6 @@ fn errors_are_answers_with_mandatory_zeroed_meta() {
     let wire = serde_json::to_value(&answer).unwrap();
     assert_eq!(wire["status"], "error");
     assert_eq!(wire["metadata"]["cost_micro_usd"], 0);
-    assert_eq!(wire["metadata"]["per_tier"], json!([]));
 }
 
 #[test]
@@ -181,7 +165,7 @@ fn old_wire_forms_keep_loading() {
         }
     }))
     .unwrap();
-    assert!(answer.blobs.is_empty() && answer.metadata.per_tier.is_empty());
+    assert!(answer.blobs.is_empty());
 }
 
 // --- schema pinning -------------------------------------------------------
@@ -226,10 +210,6 @@ fn committed_schemas_match_the_rust_types() {
     assert_eq!(
         property_names(&answer_schema["$defs"]["answer_meta"]),
         sorted_keys(&full_answer_wire["metadata"])
-    );
-    assert_eq!(
-        property_names(&answer_schema["$defs"]["tier_spend"]),
-        sorted_keys(&full_answer_wire["metadata"]["per_tier"][0])
     );
     assert_eq!(
         property_names(&ask_schema["$defs"]["blob_handle"]),

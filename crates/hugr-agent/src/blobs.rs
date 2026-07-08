@@ -42,7 +42,6 @@ pub(crate) const OUT_DIRNAME: &str = "out";
 /// object, an IO error) — surfaced as [`AskError`](crate::AskError), which
 /// surfaces convert to error answers at their boundary (§18.1).
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum BlobError {
     /// A `Bytes` blob's payload was not valid base64.
     #[error("inbound blob `{name}` has invalid base64: {source}")]

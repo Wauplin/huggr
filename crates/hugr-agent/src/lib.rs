@@ -27,17 +27,13 @@ mod store;
 
 pub use agent::{
     Agent, AgentCard, AgentLimits, AskError, ModelTierCard, Pricing, TierPrice, ToolCard,
-    ToolPrivilege,
 };
 pub use agent_tool::{AgentToolResolver, AgentToolSpec, depth_exceeded_resolver};
 pub use blobs::BlobError;
 pub use contract::{
-    Answer, AnswerMeta, Ask, BlobHandle, BlobRef, STATUS_ERROR, STATUS_SUCCESS, TierSpend, TraceId,
+    Answer, AnswerMeta, Ask, BlobHandle, BlobRef, STATUS_ERROR, STATUS_SUCCESS, TraceId,
 };
-pub use limits::LimitKind;
-pub use store::{
-    PrunePolicy, PruneReport, StoreError, StoreSize, TraceHead, TraceHeader, TraceStore,
-};
+pub use store::{StoreError, TraceHead, TraceHeader, TraceStore};
 
 /// The content-addressed blob store outbound blobs land in (ARCHITECTURE
 /// §18.3), re-exported from `hugr-replay` so orchestrators can resolve an

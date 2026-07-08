@@ -1,7 +1,7 @@
 //! The predefined tool library (ROADMAP T1.2, ARCHITECTURE §20.2).
 //!
 //! Vetted, parameterized [`Capability`] families selectable by a manifest grant
-//! (`[tools.<name>]`). Each documents a [`PrivilegeClass`] so the manifest is
+//! (`[tools.<name>]`). Each documents a privilege label so the manifest is
 //! the audit surface: reviewing an agent's blast radius = reading which library
 //! tools it grants. A grant that is not present registers no capability, and an
 //! unregistered capability cannot be invoked (sandbox-by-registration, §7.1).
@@ -28,33 +28,16 @@ pub use sqlite_query::SqliteQuery;
 
 use crate::manifest::{ToolGrant, ToolKind};
 
-/// The privilege class of a library tool — the coarse audit signal surfaced in
-/// the manifest and in `AgentCard`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum PrivilegeClass {
-    /// Reads only; no mutation, no network. The jail is the boundary.
-    ReadOnly,
-    /// Reads/writes the agent's own scratchpad only (§19.3).
-    Scratchpad,
-    /// Performs network egress (host/method-allowlisted).
-    Network,
-    /// Mutates state outside the scratchpad.
-    Mutating,
-    /// Executes code (the planned `code_exec`, §20.2 / T5.6).
-    Exec,
-}
-
-/// One predefined-library tool id, its privilege class, and the concrete tool
-/// names it registers. This is the catalog `--describe`/docs enumerate.
+/// One predefined-library tool id, its privilege label (an open string set —
+/// `read_only` / `scratchpad` / `network` / … — nothing branches on it), and
+/// the concrete tool names it registers. This is the catalog
+/// `--describe`/docs enumerate.
 #[derive(Clone, Copy, Debug)]
-#[non_exhaustive]
 pub struct LibraryToolSpec {
     /// The manifest grant key (`fs_read`, `http_fetch`, …).
     pub id: &'static str,
     /// Privilege class for the audit surface.
-    pub privilege: PrivilegeClass,
+    pub privilege: &'static str,
     /// The capability names this grant registers.
     pub tools: &'static [&'static str],
     /// One-line description.
@@ -65,7 +48,7 @@ pub struct LibraryToolSpec {
 pub const CATALOG: &[LibraryToolSpec] = &[
     LibraryToolSpec {
         id: "fs_read",
-        privilege: PrivilegeClass::ReadOnly,
+        privilege: "read_only",
         tools: &[
             "fs_list",
             "fs_search",
@@ -78,7 +61,7 @@ pub const CATALOG: &[LibraryToolSpec] = &[
     },
     LibraryToolSpec {
         id: "scratchpad",
-        privilege: PrivilegeClass::Scratchpad,
+        privilege: "scratchpad",
         // Provided by the agent runtime itself (T0.4); the grant is an audit
         // marker, not a capability constructed here.
         tools: &["scratch_read", "scratch_write", "scratch_list"],
@@ -86,13 +69,13 @@ pub const CATALOG: &[LibraryToolSpec] = &[
     },
     LibraryToolSpec {
         id: "http_fetch",
-        privilege: PrivilegeClass::Network,
+        privilege: "network",
         tools: &["http_fetch"],
         summary: "Host/method-allowlisted HTTP fetch (GET-only by default).",
     },
     LibraryToolSpec {
         id: "sqlite_query",
-        privilege: PrivilegeClass::ReadOnly,
+        privilege: "read_only",
         tools: &["sqlite_query"],
         summary: "Read-only, file-scoped SQLite query.",
     },
@@ -105,7 +88,6 @@ pub fn spec(id: &str) -> Option<&'static LibraryToolSpec> {
 
 /// Failure to construct a granted library tool.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum ToolError {
     /// The grant names a tool not in the library.
     #[error("unknown library tool `{0}` (not in the predefined tool library)")]
@@ -209,10 +191,7 @@ mod tests {
         let caps = build_library_grant(&grant("scratchpad", json!({})), Path::new(".")).unwrap();
         assert!(caps.is_empty());
         // But it is a recognized, audited grant.
-        assert_eq!(
-            spec("scratchpad").unwrap().privilege,
-            PrivilegeClass::Scratchpad
-        );
+        assert_eq!(spec("scratchpad").unwrap().privilege, "scratchpad");
     }
 
     #[test]
@@ -225,9 +204,6 @@ mod tests {
         assert_eq!(caps.len(), 1);
         assert_eq!(caps[0].name(), "http_fetch");
         assert!(!caps[0].requires_permission());
-        assert_eq!(
-            spec("http_fetch").unwrap().privilege,
-            PrivilegeClass::Network
-        );
+        assert_eq!(spec("http_fetch").unwrap().privilege, "network");
     }
 }

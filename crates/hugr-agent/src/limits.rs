@@ -5,8 +5,8 @@
 //! about limits, so the sans-IO brain and its deterministic replay are
 //! untouched. Two mechanisms cover the declared [`AgentLimits`](crate::AgentLimits):
 //!
-//! - **Counting / cost limits** (`max_model_calls`, `max_turns`,
-//!   `max_cost_micro_usd`) are enforced by wrapping every registered model
+//! - **Counting / cost limits** (`max_model_calls`, `max_cost_micro_usd`)
+//!   are enforced by wrapping every registered model
 //!   adapter in a [`LimitedAdapter`]. Before each model call it checks the
 //!   shared [`LimitState`]; once a bound is crossed it refuses the call and
 //!   returns an error, which the brain folds into `ModelError` → `Done(Error)`
@@ -33,67 +33,28 @@ use serde_json::{Value, json};
 
 use crate::agent::{AgentLimits, Pricing};
 
-/// Which declared limit stopped an ask.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum LimitKind {
-    /// `[limits].max_model_calls` — total model calls in the ask.
-    MaxModelCalls,
-    /// `[limits].max_turns` — model round-trips (turn steps) in the ask.
-    MaxTurns,
-    /// `[limits].max_cost_micro_usd` — accumulated cost across model calls.
-    MaxCostMicroUsd,
-    /// `[limits].timeout_s` — wall-clock duration of the ask.
-    Timeout,
-}
-
-impl LimitKind {
-    /// The stable machine-readable key used in `Answer.extra`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LimitKind::MaxModelCalls => "max_model_calls",
-            LimitKind::MaxTurns => "max_turns",
-            LimitKind::MaxCostMicroUsd => "max_cost_micro_usd",
-            LimitKind::Timeout => "timeout_ms",
-        }
-    }
-}
-
-/// A recorded limit trip: which bound was crossed and the numeric value it was
-/// set to. Produced by [`LimitState`] and consumed by the ask path to shape the
-/// error [`Answer`](crate::Answer).
+/// A recorded limit trip: which bound was crossed (a stable string key —
+/// `max_model_calls` / `max_cost_micro_usd` / `timeout_ms`, an open set
+/// nothing branches on) and the numeric value it was set to. Produced by
+/// [`LimitState`] and consumed by the ask path to shape the error
+/// [`Answer`](crate::Answer).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LimitTrip {
-    pub kind: LimitKind,
+    pub reason: &'static str,
     pub limit: u64,
 }
 
 impl LimitTrip {
     /// The human-readable message for the error answer.
     pub(crate) fn message(&self) -> String {
-        match self.kind {
-            LimitKind::MaxModelCalls => {
-                format!(
-                    "limit exceeded: max_model_calls ({} model calls)",
-                    self.limit
-                )
-            }
-            LimitKind::MaxTurns => format!("limit exceeded: max_turns ({} turns)", self.limit),
-            LimitKind::MaxCostMicroUsd => {
-                format!(
-                    "limit exceeded: max_cost_micro_usd ({} micro-USD)",
-                    self.limit
-                )
-            }
-            LimitKind::Timeout => format!("limit exceeded: timeout ({} ms)", self.limit),
-        }
+        format!("limit exceeded: {} ({})", self.reason, self.limit)
     }
 
     /// The typed, machine-readable reason placed on `Answer.extra`.
     pub(crate) fn extra(&self) -> Value {
         json!({
             "limit_exceeded": {
-                "limit": self.kind.as_str(),
+                "limit": self.reason,
                 "value": self.limit,
             }
         })
@@ -132,22 +93,20 @@ impl LimitState {
     /// True when a counting/cost limit is set, so the ask must wrap its model
     /// adapters. A timeout-only limit set doesn't need adapter wrapping.
     pub(crate) fn needs_adapter_wrap(&self) -> bool {
-        self.limits.max_model_calls.is_some()
-            || self.limits.max_turns.is_some()
-            || self.limits.max_cost_micro_usd.is_some()
+        self.limits.max_model_calls.is_some() || self.limits.max_cost_micro_usd.is_some()
     }
 
     /// Record the first limit trip observed.
-    fn record_trip(&self, kind: LimitKind, limit: u64) {
+    fn record_trip(&self, reason: &'static str, limit: u64) {
         let mut guard = self.trip.lock().unwrap();
         if guard.is_none() {
-            *guard = Some(LimitTrip { kind, limit });
+            *guard = Some(LimitTrip { reason, limit });
         }
     }
 
     /// Record a wall-clock timeout trip from the ask path.
     pub(crate) fn record_timeout(&self, timeout_ms: u64) {
-        self.record_trip(LimitKind::Timeout, timeout_ms);
+        self.record_trip("timeout_ms", timeout_ms);
     }
 
     /// The trip that stopped this ask, if any.
@@ -161,14 +120,8 @@ impl LimitState {
         let call_no = self.model_calls.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(max) = self.limits.max_model_calls {
             if call_no > max as u64 {
-                self.record_trip(LimitKind::MaxModelCalls, max as u64);
-                return Some(refusal(LimitKind::MaxModelCalls, max as u64));
-            }
-        }
-        if let Some(max) = self.limits.max_turns {
-            if call_no > max as u64 {
-                self.record_trip(LimitKind::MaxTurns, max as u64);
-                return Some(refusal(LimitKind::MaxTurns, max as u64));
+                self.record_trip("max_model_calls", max as u64);
+                return Some(refusal("max_model_calls", max as u64));
             }
         }
         if let Some(max) = self.limits.max_cost_micro_usd {
@@ -176,8 +129,8 @@ impl LimitState {
             // call's cost until it returns usage, so a bound is enforced by
             // refusing the *next* call once the running total has crossed it.
             if self.cost_micro_usd.load(Ordering::SeqCst) >= max {
-                self.record_trip(LimitKind::MaxCostMicroUsd, max);
-                return Some(refusal(LimitKind::MaxCostMicroUsd, max));
+                self.record_trip("max_cost_micro_usd", max);
+                return Some(refusal("max_cost_micro_usd", max));
             }
         }
         None
@@ -194,8 +147,8 @@ impl LimitState {
     }
 }
 
-fn refusal(kind: LimitKind, limit: u64) -> anyhow::Error {
-    anyhow::anyhow!(LimitTrip { kind, limit }.message())
+fn refusal(reason: &'static str, limit: u64) -> anyhow::Error {
+    anyhow::anyhow!(LimitTrip { reason, limit }.message())
 }
 
 /// A [`ModelAdapter`] that enforces the ask's counting/cost limits around a

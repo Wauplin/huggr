@@ -33,7 +33,6 @@ const TOOL_NAMESPACES: &[(&str, ToolKind)] = &[("mcp", ToolKind::Mcp), ("agent",
 /// string). Every optional section carries defaults, so a minimal manifest —
 /// `[agent]` + one `[models.<tier>]` — parses.
 #[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
 pub struct AgentDefinition {
     /// Identity block (`[agent]`): name (required), version, description.
     pub agent: AgentMeta,
@@ -60,7 +59,6 @@ pub struct AgentDefinition {
 /// The `[agent]` identity block.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[non_exhaustive]
 pub struct AgentMeta {
     // `default` so a missing name surfaces our located "name is required"
     // diagnostic rather than serde's generic "missing field" error.
@@ -75,7 +73,6 @@ pub struct AgentMeta {
 /// The `[models]` block: shared provider settings plus one nested table per
 /// logical tier (`[models.small]`, `[models.medium]`, `[models.big]`, §5.3).
 #[derive(Clone, Debug, Default, PartialEq)]
-#[non_exhaustive]
 pub struct ModelsConfig {
     /// Provider base URL shared by every tier (`base_url`).
     pub base_url: Option<String>,
@@ -92,7 +89,6 @@ pub struct ModelsConfig {
 /// One `[models.<tier>]` entry.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[non_exhaustive]
 pub struct TierConfig {
     /// Provider model id (required per tier).
     pub model: String,
@@ -108,7 +104,6 @@ pub struct TierConfig {
 
 /// A single granted tool (`[tools.<name>]` or `[tools.<ns>.<instance>]`).
 #[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
 pub struct ToolGrant {
     /// Tool name — a library tool id (`fs_read`) or, for namespaced grants, the
     /// instance name (`docs` in `[tools.mcp.docs]`).
@@ -123,7 +118,6 @@ pub struct ToolGrant {
 /// How a granted tool is provided (ARCHITECTURE §20.3), in order of weight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum ToolKind {
     /// A vetted predefined-library capability (`[tools.fs_read]`, §20.2).
     Library,
@@ -136,10 +130,7 @@ pub enum ToolKind {
 /// The `[limits]` block. Enforcement is ROADMAP T3.1; T1.1 only parses it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[non_exhaustive]
 pub struct LimitsConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_turns: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_model_calls: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -151,7 +142,6 @@ pub struct LimitsConfig {
 /// The `[scratchpad]` block (ARCHITECTURE §19.3).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[non_exhaustive]
 pub struct ScratchpadConfig {
     /// Override the per-lineage scratch root; defaults to a hidden subtree of
     /// the trace store.
@@ -162,7 +152,6 @@ pub struct ScratchpadConfig {
 /// The `[traces]` block (ARCHITECTURE §19.1).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[non_exhaustive]
 pub struct TracesConfig {
     /// Directory the immutable trace store lives in; defaults per surface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,7 +161,6 @@ pub struct TracesConfig {
 /// Failure to load or parse a definition. Run failures are *answers* (§18.1);
 /// these are strictly load-time problems.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum ManifestError {
     /// No `hugr.toml` in the folder.
     #[error("no {MANIFEST_FILE} found in {dir}")]

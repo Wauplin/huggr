@@ -50,7 +50,6 @@ pub fn trace_store_for(def: &AgentDefinition) -> TraceStore {
 /// Failure to assemble a runtime from a definition. (Run failures are
 /// *answers*, §18.1 — this is strictly build-time.)
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum RuntimeError {
     /// The definition declares no model tier.
     #[error("definition has no [models] tier to run")]
@@ -190,9 +189,6 @@ pub async fn build_agent(def: &AgentDefinition) -> Result<(Agent, Vec<String>), 
 
     // Declared limits, enforced host-side per ask by `hugr-agent` (T3.1).
     let mut limits = AgentLimits::new();
-    if let Some(v) = def.limits.max_turns {
-        limits = limits.with_max_turns(v);
-    }
     if let Some(v) = def.limits.max_model_calls {
         limits = limits.with_max_model_calls(v);
     }

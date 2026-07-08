@@ -3,8 +3,8 @@
 //! Drives the real tokio [`Engine`] through [`Agent::ask`] with a scripted
 //! mock model and a no-op tool, so each declared limit is exercised through the
 //! real engine and asserts the exit criteria:
-//! - each limit (`max_model_calls`, `max_turns`, `max_cost_micro_usd`,
-//!   `timeout_ms`) triggers cleanly as an error answer with a typed
+//! - each limit (`max_model_calls`, `max_cost_micro_usd`, `timeout_ms`)
+//!   triggers cleanly as an error answer with a typed
 //!   `Answer.extra` reason and a persisted `trace_id`;
 //! - the partial trace still replays bit-for-bit (`hugr_replay::verify`);
 //! - with no limits set, behavior is unchanged (a normal success answer).
@@ -146,20 +146,6 @@ async fn max_model_calls_trips_cleanly_and_the_partial_trace_replays() {
 
     let head = store.head(&answer.trace_id).unwrap();
     assert_eq!(head.status, "error");
-    hugr_replay::verify(&store.get(&answer.trace_id).unwrap()).unwrap();
-}
-
-#[tokio::test]
-async fn max_turns_trips_cleanly() {
-    let dir = tempdir();
-    let store = TraceStore::new(dir.path());
-    let agent = looping_agent(store.clone(), AgentLimits::new().with_max_turns(1));
-
-    let answer = agent.ask(Ask::new("go")).await.unwrap();
-
-    assert_eq!(answer.status, STATUS_ERROR);
-    assert_eq!(limit_reason(&answer), ("max_turns".to_string(), 1));
-    assert_eq!(answer.metadata.model_calls, 1);
     hugr_replay::verify(&store.get(&answer.trace_id).unwrap()).unwrap();
 }
 

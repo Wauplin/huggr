@@ -248,7 +248,6 @@ fn media_type_for(path: &Path) -> &'static str {
 /// An assembled agent plus the non-fatal build warnings collected on the way.
 /// Returned by [`load_agent`] — the shared entry point behind the CLI surface
 /// and the generated Rust-crate surface (T2.2).
-#[non_exhaustive]
 pub struct LoadedAgent {
     /// The ready-to-ask agent.
     pub agent: Agent,
@@ -259,7 +258,6 @@ pub struct LoadedAgent {
 /// Failure to turn an embedded bundle into a runnable agent. Every variant is a
 /// build-time / infrastructure problem — run failures are `Answer`s, not this.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum LoadError {
     #[error("preparing agent home: {0}")]
     Home(std::io::Error),

@@ -40,8 +40,7 @@
         "tokens_in",
         "tokens_out",
         "model_calls",
-        "tool_calls",
-        "per_tier"
+        "tool_calls"
       ],
       "properties": {
         "duration_ms": { "type": "integer", "minimum": 0 },
@@ -53,31 +52,7 @@
         "tokens_in": { "type": "integer", "minimum": 0 },
         "tokens_out": { "type": "integer", "minimum": 0 },
         "model_calls": { "type": "integer", "minimum": 0 },
-        "tool_calls": { "type": "integer", "minimum": 0 },
-        "per_tier": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/tier_spend" }
-        }
-      }
-    },
-    "tier_spend": {
-      "type": "object",
-      "required": [
-        "selector",
-        "model_calls",
-        "tokens_in",
-        "tokens_out",
-        "cost_micro_usd"
-      ],
-      "properties": {
-        "selector": {
-          "type": "string",
-          "description": "The tier this line aggregates (small / medium / big)."
-        },
-        "model_calls": { "type": "integer", "minimum": 0 },
-        "tokens_in": { "type": "integer", "minimum": 0 },
-        "tokens_out": { "type": "integer", "minimum": 0 },
-        "cost_micro_usd": { "type": "integer", "minimum": 0 }
+        "tool_calls": { "type": "integer", "minimum": 0 }
       }
     }
   }

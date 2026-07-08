@@ -105,21 +105,6 @@ pub const STATUS_SUCCESS: &str = "success";
 /// still a full [`Answer`], exit code 0 on a CLI.
 pub const STATUS_ERROR: &str = "error";
 
-/// Per-tier spend line inside [`AnswerMeta`] (ARCHITECTURE §18.4).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TierSpend {
-    /// The tier selector this line aggregates (`small` / `medium` / `big`).
-    pub selector: String,
-    /// Model calls made on this tier.
-    pub model_calls: u32,
-    /// Prompt tokens consumed on this tier.
-    pub tokens_in: u64,
-    /// Completion tokens produced on this tier.
-    pub tokens_out: u64,
-    /// Cost of this tier's usage, in micro-USD.
-    pub cost_micro_usd: u64,
-}
-
 /// Mandatory accounting on every [`Answer`] (ARCHITECTURE §18.4). Derivable
 /// from the persisted trace alone — `OpMeta` usage × per-tier pricing —
 /// including sub-agent children.
@@ -137,46 +122,19 @@ pub struct AnswerMeta {
     pub model_calls: u32,
     /// Number of tool invocations made.
     pub tool_calls: u32,
-    /// Per-tier breakdown; sums to the totals above.
-    #[serde(default)]
-    pub per_tier: Vec<TierSpend>,
 }
 
 impl AnswerMeta {
-    /// Append one tier's spend line and fold it into the totals.
-    pub fn add_tier(&mut self, tier: TierSpend) {
-        self.cost_micro_usd += tier.cost_micro_usd;
-        self.tokens_in += tier.tokens_in;
-        self.tokens_out += tier.tokens_out;
-        self.model_calls += tier.model_calls;
-        self.per_tier.push(tier);
-    }
-
     /// Fold a delegated child agent's accounting into this meta (ARCHITECTURE
     /// §18.4/§20.5): the child's tokens/cost/calls roll up so the caller's cost
-    /// line stays complete. Per-tier lines merge by selector (child tiers are
-    /// added to a matching parent line, else appended). Duration is *not* added
-    /// — the parent's wall-clock already spans the child's synchronous call.
+    /// line stays complete. Duration is *not* added — the parent's wall-clock
+    /// already spans the child's synchronous call.
     pub fn merge_child(&mut self, child: &AnswerMeta) {
         self.cost_micro_usd += child.cost_micro_usd;
         self.tokens_in += child.tokens_in;
         self.tokens_out += child.tokens_out;
         self.model_calls += child.model_calls;
         self.tool_calls += child.tool_calls;
-        for tier in &child.per_tier {
-            if let Some(existing) = self
-                .per_tier
-                .iter_mut()
-                .find(|t| t.selector == tier.selector)
-            {
-                existing.model_calls += tier.model_calls;
-                existing.tokens_in += tier.tokens_in;
-                existing.tokens_out += tier.tokens_out;
-                existing.cost_micro_usd += tier.cost_micro_usd;
-            } else {
-                self.per_tier.push(tier.clone());
-            }
-        }
     }
 }
 

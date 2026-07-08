@@ -39,9 +39,7 @@ use crate::blobs::{self, BlobError};
 use crate::contract::{Answer, AnswerMeta, Ask, STATUS_ERROR, STATUS_SUCCESS, TraceId};
 use crate::limits::{LimitState, LimitedAdapter};
 use crate::scratch::{ScratchDir, copy_tree, scratch_tool_schemas};
-use crate::store::{
-    PrunePolicy, PruneReport, StoreError, StoreSize, TraceHead, TraceHeader, TraceStore,
-};
+use crate::store::{StoreError, TraceHead, TraceHeader, TraceStore};
 
 /// Default name of the scratch subtree directory, placed next to the trace
 /// files inside the store root. Hidden and non-`.json`, so `TraceStore::list`
@@ -142,7 +140,7 @@ impl Agent {
             .map(|schema| ToolCard {
                 name: schema.name.clone(),
                 description: schema.description.clone(),
-                privilege: ToolPrivilege::Scratchpad,
+                privilege: "scratchpad".to_string(),
                 runs_in_background: false,
                 schema,
                 scope: json!({ "root": self.scratch_root.display().to_string() }),
@@ -155,7 +153,7 @@ impl Agent {
             ToolCard {
                 name: schema.name.clone(),
                 description: schema.description.clone(),
-                privilege: ToolPrivilege::Agent,
+                privilege: "agent".to_string(),
                 runs_in_background: false,
                 schema,
                 scope: Value::Null,
@@ -167,9 +165,9 @@ impl Agent {
                 name: schema.name.clone(),
                 description: schema.description.clone(),
                 privilege: if capability.requires_permission() {
-                    ToolPrivilege::Gated
+                    "gated".to_string()
                 } else {
-                    ToolPrivilege::ReadOnly
+                    "read_only".to_string()
                 },
                 runs_in_background: capability.runs_in_background(),
                 schema,
@@ -192,27 +190,6 @@ impl Agent {
     /// header-only read as [`TraceStore::list`].
     pub fn traces(&self) -> Result<Vec<TraceHead>, StoreError> {
         self.store.list()
-    }
-
-    /// Prune stored traces under `policy` and delete the pruned traces'
-    /// per-lineage scratch subtrees so scratch state does not outlive its trace
-    /// (ROADMAP T3.3). Lineage closure is enforced by the store, so a surviving
-    /// trace's `depends_on` chain always still resolves. Blob-store GC is a
-    /// separate concern (blobs are content-addressed and shared across traces).
-    pub fn prune(&self, policy: &PrunePolicy) -> Result<PruneReport, StoreError> {
-        let report = self.store.prune(policy)?;
-        for id in &report.pruned {
-            let scratch = self.scratch_root.join(id.as_str());
-            if scratch.exists() {
-                std::fs::remove_dir_all(&scratch)?;
-            }
-        }
-        Ok(report)
-    }
-
-    /// The store's on-disk size (trace count + bytes), for lifecycle reporting.
-    pub fn store_size(&self) -> Result<StoreSize, StoreError> {
-        self.store.size()
     }
 
     /// Run one ask to completion (ARCHITECTURE §18.1/§19.2). See the module
@@ -442,7 +419,6 @@ impl Agent {
 
 /// Public description returned by [`Agent::describe`] (ROADMAP T0.7).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct AgentCard {
     pub name: String,
     pub version: String,
@@ -454,33 +430,20 @@ pub struct AgentCard {
 
 /// One advertised tool plus the privilege metadata surfaces need.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct ToolCard {
     pub name: String,
     pub description: String,
-    pub privilege: ToolPrivilege,
+    /// Coarse privilege label (`read_only` / `scratchpad` / `gated` / `agent`)
+    /// — an open string set nothing branches on (§14).
+    pub privilege: String,
     pub runs_in_background: bool,
     pub schema: ToolSchema,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub scope: Value,
 }
 
-/// Coarse privilege class. T1's manifest tool library will refine scopes; this
-/// T0 layer reports what the registered capability can tell us today.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[non_exhaustive]
-pub enum ToolPrivilege {
-    ReadOnly,
-    Scratchpad,
-    Gated,
-    /// A granted child agent exposed as a tool (§20.5, T3.8).
-    Agent,
-}
-
 /// One logical model tier exposed in the agent card.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct ModelTierCard {
     pub selector: String,
     pub default: bool,
@@ -491,10 +454,7 @@ pub struct ModelTierCard {
 /// Declared runtime limits, enforced host-side on every ask (ROADMAP T3.1) and
 /// exposed on the T0.7 introspection card. Each `None` field is unbounded.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct AgentLimits {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_turns: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_model_calls: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -506,11 +466,6 @@ pub struct AgentLimits {
 impl AgentLimits {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn with_max_turns(mut self, max_turns: u32) -> Self {
-        self.max_turns = Some(max_turns);
-        self
     }
 
     pub fn with_max_model_calls(mut self, max_model_calls: u32) -> Self {
@@ -533,7 +488,6 @@ impl AgentLimits {
 /// Values are USD per million tokens, matching provider price sheets. The
 /// computed answer cost is rounded to the nearest micro-USD.
 #[derive(Clone, Debug, Default, PartialEq)]
-#[non_exhaustive]
 pub struct Pricing {
     tiers: BTreeMap<String, TierPrice>,
 }
@@ -579,7 +533,6 @@ impl Pricing {
 
 /// One tier's input/output prices in USD per million tokens.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct TierPrice {
     pub input_usd_per_m_tokens: f64,
     pub output_usd_per_m_tokens: f64,
@@ -598,7 +551,6 @@ impl TierPrice {
 /// Infrastructure failures of an ask — everything that prevents a trace from
 /// being persisted at all. Run failures are *answers*, not errors (§18.1).
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum AskError {
     /// The parent trace could not be loaded, or the new trace could not be
     /// persisted.
@@ -663,93 +615,37 @@ fn missing_final_answer_message(log: &[LogEntry]) -> String {
 }
 
 /// Accounting for this ask, folded from the *new* slice of the trace log (a
-/// resumed ask never re-bills its ancestry). Recorded child traces tied to new
-/// agent ops are folded recursively, so sub-agent cost rolls up when present.
+/// resumed ask never re-bills its ancestry): totals only, priced per model
+/// call from the per-tier price sheet.
 fn meta_from_trace(
     trace: &Trace,
     baseline: usize,
     duration_ms: u64,
     pricing: &Pricing,
 ) -> AnswerMeta {
-    let new_entries = &trace.log[baseline..];
-    let mut aggregate = SpendAggregate::default();
-    aggregate_log(new_entries, pricing, &mut aggregate);
-
-    aggregate.into_meta(duration_ms)
-}
-
-fn aggregate_log(new_entries: &[LogEntry], pricing: &Pricing, aggregate: &mut SpendAggregate) {
-    let mut tool_calls = 0u32;
-    for entry in new_entries {
-        let Record::OpEnded { meta, .. } = &entry.record else {
+    let mut meta = AnswerMeta {
+        duration_ms,
+        ..AnswerMeta::default()
+    };
+    for entry in &trace.log[baseline..] {
+        let Record::OpEnded { meta: op, .. } = &entry.record else {
             continue;
         };
-        if let (Some(selector), Some(usage)) = (&meta.model, &meta.usage) {
-            let selector = selector_name(selector);
-            let tier = aggregate
-                .tiers
-                .entry(selector.clone())
-                .or_insert_with(|| TierAccumulator::new(selector));
-            tier.model_calls += 1;
-            tier.tokens_in += usage.input_tokens;
-            tier.tokens_out += usage.output_tokens;
-            tier.cost_micro_usd +=
-                pricing.cost_micro_usd(&tier.selector, usage.input_tokens, usage.output_tokens);
-        } else if meta.model.is_none() {
-            tool_calls += 1;
+        if let (Some(selector), Some(usage)) = (&op.model, &op.usage) {
+            meta.model_calls += 1;
+            meta.tokens_in += usage.input_tokens;
+            meta.tokens_out += usage.output_tokens;
+            meta.cost_micro_usd +=
+                pricing.cost_micro_usd(&selector.0, usage.input_tokens, usage.output_tokens);
+        } else if op.model.is_none() {
+            meta.tool_calls += 1;
         }
     }
-    aggregate.tool_calls += tool_calls;
+    meta
 }
 
 fn selector_name(selector: &ModelSelector) -> String {
     selector.0.clone()
-}
-
-#[derive(Default)]
-struct SpendAggregate {
-    tiers: BTreeMap<String, TierAccumulator>,
-    tool_calls: u32,
-}
-
-impl SpendAggregate {
-    fn into_meta(self, duration_ms: u64) -> AnswerMeta {
-        let mut meta = AnswerMeta {
-            duration_ms,
-            tool_calls: self.tool_calls,
-            ..AnswerMeta::default()
-        };
-        for tier in self.tiers.into_values() {
-            meta.add_tier(crate::contract::TierSpend {
-                selector: tier.selector,
-                model_calls: tier.model_calls,
-                tokens_in: tier.tokens_in,
-                tokens_out: tier.tokens_out,
-                cost_micro_usd: tier.cost_micro_usd,
-            });
-        }
-        meta
-    }
-}
-
-struct TierAccumulator {
-    selector: String,
-    model_calls: u32,
-    tokens_in: u64,
-    tokens_out: u64,
-    cost_micro_usd: u64,
-}
-
-impl TierAccumulator {
-    fn new(selector: String) -> Self {
-        Self {
-            selector,
-            model_calls: 0,
-            tokens_in: 0,
-            tokens_out: 0,
-            cost_micro_usd: 0,
-        }
-    }
 }
 
 /// A no-op front-end: a subagent's product is its `Answer` + trace, not a

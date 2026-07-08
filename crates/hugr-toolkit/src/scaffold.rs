@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 
 /// A starting template selectable with `hugr new --template`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Template {
     /// A docs-Q&A agent: `fs_read` jailed to a `docs/` folder.
     Docs,
@@ -52,7 +51,6 @@ pub struct ScaffoldFile {
 
 /// Failure to scaffold.
 #[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
 pub enum ScaffoldError {
     /// The target folder already exists (never overwrite).
     #[error("target folder already exists: {0}")]

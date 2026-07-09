@@ -83,20 +83,13 @@ Four separations most harnesses conflate — durable state (event log) vs model 
 
 ```
 crates/
-  hugr-core/          # the sans-IO brain — log, projection, op table, reducer.
-                      #   NO tokio, NO reqwest, NO fs.
-  hugr-host/          # native tokio host: engine driver loop, capability/model
-                      #   registries, MCP stdio client, JSON-line framing.
+  hugr-core/          # the sans-IO brain — log, projection, op table, reducer. NO tokio, NO reqwest, NO fs.
+  hugr-host/          # native tokio host: engine driver loop, capability/model registries, MCP stdio client, JSON-line framing.
   hugr-providers/     # OpenAI-compatible streaming adapter (retries inside).
-  hugr-replay/        # trace format + content-addressed blob store +
-                      #   replay/verify/inspect.
-  hugr-agent/         # the subagent runtime: Ask/Answer, trace store with
-                      #   trace_id/depends_on + fork, scratchpad, blobs, limits,
-                      #   cost accounting, agent-as-tool (subprocess).
-  hugr-toolkit/       # agent manifests (hugr.toml + SYSTEM.md), the tool library,
-                      #   and the `hugr` CLI: new/run/build/traces/replay/verify.
-  hugr-docs/          # the reference subagent crate (docs Q&A): manifest,
-                      #   prompt, and typed response contract.
+  hugr-replay/        # trace format + content-addressed blob store + replay/verify/inspect.
+  hugr-agent/         # the subagent runtime: Ask/Answer, trace store with trace_id/depends_on + fork, scratchpad, blobs, limits, cost accounting, agent-as-tool (subprocess).
+  hugr-toolkit/       # agent manifests (hugr.toml + SYSTEM.md), the tool library, and the `hugr` CLI: new/run/build/traces/replay/verify.
+  hugr-docs/          # the reference subagent crate (docs Q&A): manifest, prompt, and typed response contract.
 ```
 
 ## The reference subagent: `hugr-docs`

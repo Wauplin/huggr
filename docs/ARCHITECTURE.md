@@ -226,12 +226,12 @@ The brain never does IO. It consumes one ordered event stream and produces comma
 
 Most harness pain traces back to conflating four things that should be separate:
 
-| Concern           | The trap (what harnesses do)               | What Hugr does                                              |
-| ----------------- | ------------------------------------------ | ----------------------------------------------------------- |
-| **Durable state** | The flat `messages[]` list *is* the state  | Append-only **event log** is the source of truth            |
-| **Model context** | Same `messages[]` is sent to the model     | Context is a **projection** rendered from the log per turn  |
-| **IO**            | The loop owns tokio, sockets, fs           | **Sans-IO** core emits commands; the **host** does IO       |
-| **Permissions**   | `if dangerous { prompt() }` in the loop    | Sandbox is **what the host registers**, decided from config |
+| Concern           | The trap (what harnesses do)              | What Hugr does                                              |
+| ----------------- | ----------------------------------------- | ----------------------------------------------------------- |
+| **Durable state** | The flat `messages[]` list *is* the state | Append-only **event log** is the source of truth            |
+| **Model context** | Same `messages[]` is sent to the model    | Context is a **projection** rendered from the log per turn  |
+| **IO**            | The loop owns tokio, sockets, fs          | **Sans-IO** core emits commands; the **host** does IO       |
+| **Permissions**   | `if dangerous { prompt() }` in the loop   | Sandbox is **what the host registers**, decided from config |
 
 Every headline feature is a direct payoff of these separations:
 
@@ -358,13 +358,13 @@ pub struct Trace {
 
 ### 20. Risks & mitigations
 
-| Risk                                                       | Mitigation                                                              |
-| ---------------------------------------------------------- | ----------------------------------------------------------------------- |
-| Interface over-/under-engineered                           | Narrow waist: type only what the brain branches on (§14)                 |
-| Traces balloon from per-token deltas                       | Deltas are transport-only; persist consolidated records + blobs (§17)   |
-| Sans-IO makes the simple case painful                      | `hugr run` on an agent crate folder is the ten-second loop              |
-| Canonical model type too thin to use providers well        | First-class streaming/tool-call fields + opaque `extra`                 |
-| Feature creep back toward a platform                       | One artifact, one escape hatch (MCP), no enum without a branch          |
+| Risk                                                | Mitigation                                                            |
+| --------------------------------------------------- | --------------------------------------------------------------------- |
+| Interface over-/under-engineered                    | Narrow waist: type only what the brain branches on (§14)              |
+| Traces balloon from per-token deltas                | Deltas are transport-only; persist consolidated records + blobs (§17) |
+| Sans-IO makes the simple case painful               | `hugr run` on an agent crate folder is the ten-second loop            |
+| Canonical model type too thin to use providers well | First-class streaming/tool-call fields + opaque `extra`               |
+| Feature creep back toward a platform                | One artifact, one escape hatch (MCP), no enum without a branch        |
 
 ## Part IV — Security & threat model
 

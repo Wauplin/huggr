@@ -10,7 +10,7 @@
 //!     host.poll()         ◀──  drains the commands the brain wants performed
 //! ```
 //!
-//! See `docs/DESIGN.md` and `docs/ARCHITECTURE.md` for the full rationale. The
+//! See `ARCHITECTURE.md` for the full rationale. The
 //! short version of the contract:
 //!
 //! - **Durable state is an append-only [`log`](state::BrainState::log).** The
@@ -24,15 +24,6 @@
 //! This crate has **no environmental dependencies** (only `serde`/`serde_json`,
 //! which are pure data). That is what lets the same brain compile to WASM, link
 //! into a Python/JS binding, or run on a server — only the host differs.
-//!
-//! ## Phase 0 scope
-//!
-//! This started as the Phase 0 deliverable (see `docs/ROADMAP.md`): the turn loop
-//! (`user → model → tool → model → done`), the op table, a trivial pass-through
-//! [`projection`](TurnPolicy::project_context), and deterministic replay. Later
-//! phases added, still sans-IO: cancellation & background ops, and **forks**
-//! ([`Brain::from_log`]). Blob stores remain host-side; resume lives in the
-//! host (`hugr-replay`).
 
 #![forbid(unsafe_code)]
 // `hugr-core` aspires to be `#![no_std]`-friendly (ARCHITECTURE §10/§11). It is

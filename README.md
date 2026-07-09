@@ -12,7 +12,7 @@ A **subagent** is, at its essence, a small Rust crate plus a system prompt and a
 
 The reference agent, [`hugr-docs`](crates/hugr-docs/), is a checked-in docs-Q&A agent crate: `hugr.toml` + `SYSTEM.md` live beside the Rust response contract. `hugr-toolkit` does not depend on it. The generic `hugr run` path still works for typed agents by compiling a cached dev shim that links the current agent crate.
 
-There are exactly two docs: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (design, architecture, threat model — the spec) and [`docs/ROADMAP.md`](docs/ROADMAP.md) (progress log + work plan).
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) (design, architecture, threat model — the spec) for more details.
 
 ## Quickstart
 
@@ -106,7 +106,7 @@ cargo run -p hugr-toolkit --bin hugr -- run crates/hugr-docs ./docs "What is the
   "status": "success",
   "response": {
     "response": "The narrow-waist rule is ...",
-    "related_documents": ["docs/ARCHITECTURE.md"]
+    "related_documents": ["ARCHITECTURE.md"]
   },
   "trace_id": "1e4f7d0a9b2c3d44",
   "metadata": { "duration_ms": 1234, "tokens_in": 1000, "tokens_out": 200, "cost_micro_usd": 1300, "model_calls": 2, "tool_calls": 3 }

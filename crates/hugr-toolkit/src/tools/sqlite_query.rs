@@ -24,9 +24,6 @@
 //!   is bound to that one resolved file for its lifetime).
 //! - **Read-only engine.** The file is opened `SQLITE_OPEN_READ_ONLY`, so
 //!   writes/DDL fail at the engine regardless of the SQL text.
-//!
-//! See `docs/THREAT_MODEL.md`. (This module is behind the `sqlite` cargo
-//! feature; the guard is exercised by the unit tests below when it is enabled.)
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

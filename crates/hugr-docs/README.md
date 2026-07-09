@@ -25,7 +25,7 @@ The output is the standard Hugr `Answer` JSON:
   "status": "success",
   "response": {
     "response": "...",
-    "related_documents": ["docs/ARCHITECTURE.md"]
+    "related_documents": ["ARCHITECTURE.md"]
   },
   "trace_id": "1e4f7d0a9b2c3d44",
   "blobs": [],

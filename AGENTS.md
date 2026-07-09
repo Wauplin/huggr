@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Guidance for working in the Hugr repository.
 
@@ -6,7 +6,7 @@ Guidance for working in the Hugr repository.
 
 Hugr is a **toolkit for building tiny, self-contained, domain-specific subagents** — "build your subagent, ship it anywhere" — on a runtime-free, sans-IO Rust core. A subagent is a small Rust crate plus a system prompt and a set of tools with declared privileges; Hugr turns that agent crate folder into one standalone binary exposing the ask/answer contract (and an MCP server via `--mcp-serve`), with traces, forking, a scratchpad, blob exchange, and cost accounting built in.
 
-There are exactly two docs, keep both in sync with reality: `docs/ARCHITECTURE.md` (design + architecture + threat model — **the spec**; read it before non-trivial changes) and `docs/ROADMAP.md` (progress log + work plan). **The repo is mid-trim:** `docs/ROADMAP.md` §2 is the authoritative phase-by-phase plan cutting the code down to the ARCHITECTURE.md state — when code and ARCHITECTURE.md disagree, the roadmap phases are the bridge.
+There is exactly one doc, keep it in sync with reality: `ARCHITECTURE.md` (design + architecture + threat model — **the spec**; read it before non-trivial changes).
 
 ## The one rule that matters most
 
@@ -84,11 +84,11 @@ cargo tree -p hugr-core    # audit: must stay free of tokio/reqwest/fs
 
 ## Conventions
 
-- **Keep the docs in sync — it's part of "done".** After completing a task, update `docs/ROADMAP.md` (progress/trim log) and, if behavior changed, `docs/ARCHITECTURE.md`. A task isn't finished until the docs match reality.
+- **Keep the docs in sync — it's part of "done".** After completing a task update `ARCHITECTURE.md` if behavior changed. A task isn't finished until the docs match reality.
 - **Prefer deletion over abstraction.** One way to do each thing; if two mechanisms do the same job, keep the one the live stack uses and delete the other.
 - **Markdown is single-line.** One physical line per paragraph or bullet — never hard-wrap prose; rely on soft-wrap. (Fenced code blocks and table rows are exempt.)
 - Reference design sections in comments as `ARCHITECTURE §X` so code stays traceable to the rationale.
 - Keep event handlers O(1)-ish (append to a buffer); no heavy work in the reducer (ARCHITECTURE §17).
 - When you add a `Command`/`Event`/`Record` variant: update the reducer's match and add a scripted test that pins the resulting command sequence.
 - Determinism is testable: any new control-flow path should have a replay test asserting identical commands on a re-fed event stream; `verify()` is the release gate.
-- Drop short raw ideas into `new_ideas.md`; promote them to `docs/ROADMAP.md` §4 only when they become real candidates.
+- Drop short raw ideas into `new_ideas.md`.

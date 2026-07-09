@@ -24,7 +24,7 @@
 //! call whose target is re-checked against the allowlist. Only `http`/`https`
 //! schemes are accepted (no `file:`/`ftp:`), and userinfo tricks
 //! (`https://allowed@evil.com`) resolve to the real host, which is what the
-//! allowlist checks. See `docs/THREAT_MODEL.md`.
+//! allowlist checks.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;

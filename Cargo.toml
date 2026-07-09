@@ -10,7 +10,7 @@ members = [
     "crates/hugr-docs",
 ]
 
-# Crate layout (see docs/ARCHITECTURE.md §10): `hugr-core` is the pure, sans-IO
+# Crate layout (see ARCHITECTURE.md §10): `hugr-core` is the pure, sans-IO
 # brain; every other crate is a host layer and may touch IO — never `hugr-core`.
 
 [workspace.package]

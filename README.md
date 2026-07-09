@@ -129,4 +129,4 @@ Notable tests: `hugr-core/tests` (scripted sessions + deterministic replay), `hu
 
 ## License
 
-Licensed under either of Apache-2.0 or MIT at your option.
+Licensed under Apache-2.0.

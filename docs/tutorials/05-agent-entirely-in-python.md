@@ -2,7 +2,7 @@
 
 This tutorial defines a Hugr subagent from scratch in pure Python. The system prompt is a string, model config is a dict, and tools are ordinary callables. The agent runs on the same Rust runtime as every other surface.
 
-The tutorial covers the `hugr-agents` package end to end. Topics include the `@hugr.tool` decorator for sync and async tools, the `Agent` constructor and its manifest-shaped config, `agent.ask()` for blocking runs, and `async for event in agent.run(...)` for streaming. It also covers `agent.feedback()`, `agent.stats()`, and Rust CLI verification of traces stored under `~/.hugr/<name>/`.
+The tutorial covers the `hugr-agents` package end to end. Topics include the `@hugr.tool` decorator for sync and async tools, the `Agent` constructor and its manifest-shaped config, `agent.ask()` for blocking runs, and `async for event in agent.run(...)` for streaming. It also covers generating tool and response JSON Schemas from Pydantic dataclasses, `agent.feedback()`, `agent.stats()`, and Rust CLI verification of traces stored under `~/.hugr/<name>/`.
 
 Prerequisite: [tutorial 01](01-first-agent-cli.md) for the ask/answer/trace vocabulary. For the design rationale behind runtime embedding and its distinction from `hugr build --surface python`, see [the language surfaces documentation](../agents.md#language-surfaces).
 
@@ -261,61 +261,145 @@ hugr replay ~/.hugr/policy-helper <trace_id> --step
 
 This works because capability results (your Python tools' return values) are recorded as events in the trace; the replayed brain re-folds them without calling Python. The brain is sans-IO and pure, so its output is a pure function of the recorded input log. (See [tutorial 08](08-traces-replay-debugging.md) for the full replay/verify workflow.)
 
-## A complete runnable example
+## A practical data-analysis agent
 
-Here is the full agent from this tutorial, runnable end to end. Set `POLICY_API_KEY` to an OpenAI-compatible key (e.g., an `hf_...` token for `router.huggingface.co`) before running:
+Python runtime embedding is especially useful when the capabilities the agent needs already live in a Python SDK or data stack. This example gives a subscription-retention agent controlled access to a pandas `DataFrame`: pandas does the deterministic filtering and arithmetic, while the model explains the result and recommends follow-up actions. The same pattern works with a warehouse client, analytics SDK, notebook library, or an internal Python package without putting those implementation details into Hugr core.
+
+Pydantic dataclasses are a convenient source of JSON Schema for this boundary. `TypeAdapter.json_schema()` produces the explicit schema that Hugr advertises to the model, and `TypeAdapter.validate_python()` validates the decoded tool arguments before the callable uses them. Hugr does not depend on Pydantic or infer schemas from Python annotations; this is application code choosing Pydantic as its schema generator.
+
+Install the two application dependencies next to `hugr-agents`:
+
+```bash
+pip install pandas "pydantic>=2"
+```
+
+Save the following as `run.py`. Set `RETENTION_API_KEY` to a key for the configured OpenAI-compatible endpoint before running it:
 
 ```python
+from typing import Literal
+
 import hugr_agents as hugr
+import pandas as pd
+from pydantic import Field, TypeAdapter
+from pydantic.dataclasses import dataclass
 
-POLICY_TEXT = "Train tickets within the EU are expensable up to 200 EUR with a receipt."
+ACCOUNTS = pd.DataFrame.from_records(
+    [
+        {"account_id": "acme", "segment": "growth", "monthly_revenue_usd": 2400.0, "failed_payments": 2, "weekly_logins": 1},
+        {"account_id": "beacon", "segment": "startup", "monthly_revenue_usd": 450.0, "failed_payments": 0, "weekly_logins": 7},
+        {"account_id": "cygnus", "segment": "enterprise", "monthly_revenue_usd": 9100.0, "failed_payments": 1, "weekly_logins": 2},
+        {"account_id": "delta", "segment": "growth", "monthly_revenue_usd": 1800.0, "failed_payments": 3, "weekly_logins": 0},
+    ]
+)
 
-def search_policy_text(query):
-    return [POLICY_TEXT] if "train" in query.lower() else []
+
+@dataclass
+class RiskQuery:
+    segment: Literal["all", "startup", "growth", "enterprise"] = "all"
+    min_failed_payments: int = Field(default=1, ge=0)
+    max_weekly_logins: int = Field(default=2, ge=0)
+
+
+@dataclass
+class RiskAccount:
+    account_id: str
+    reason: str
+    monthly_revenue_usd: float
+
+
+@dataclass
+class RetentionReport:
+    summary: str
+    accounts: list[RiskAccount]
+    monthly_revenue_at_risk_usd: float
+    recommended_actions: list[str]
+
+
+risk_query = TypeAdapter(RiskQuery)
+retention_report = TypeAdapter(RetentionReport)
+
 
 @hugr.tool(
-    name="lookup_policy",
-    description="Search policy text by keyword.",
-    schema={
-        "type": "object",
-        "properties": {"query": {"type": "string"}},
-        "required": ["query"],
-    },
+    name="find_at_risk_accounts",
+    description="Find subscription accounts with both payment failures and low product usage.",
+    schema=risk_query.json_schema(),
 )
-def lookup_policy(args):
-    return {"matches": search_policy_text(args["query"])}
+def find_at_risk_accounts(args):
+    query = risk_query.validate_python(args)
+    matches = ACCOUNTS[
+        (ACCOUNTS["failed_payments"] >= query.min_failed_payments)
+        & (ACCOUNTS["weekly_logins"] <= query.max_weekly_logins)
+    ]
+    if query.segment != "all":
+        matches = matches[matches["segment"] == query.segment]
+
+    accounts = [
+        {
+            "account_id": str(row.account_id),
+            "segment": str(row.segment),
+            "monthly_revenue_usd": float(row.monthly_revenue_usd),
+            "failed_payments": int(row.failed_payments),
+            "weekly_logins": int(row.weekly_logins),
+        }
+        for row in matches.itertuples(index=False)
+    ]
+    return {
+        "accounts": accounts,
+        "monthly_revenue_at_risk_usd": sum(
+            account["monthly_revenue_usd"] for account in accounts
+        ),
+    }
 
 agent = hugr.Agent(
-    name="policy-helper",
-    system="Answer from the policy tools. Return JSON with an 'answer' field.",
+    name="retention-analyst",
+    system="""You investigate subscription churn risk.
+Always call find_at_risk_accounts before answering.
+Base every account and revenue figure on the tool result.
+Return a RetentionReport JSON object and no additional fields.
+""",
     models={
         "default": "medium",
         "base_url": "https://router.huggingface.co/v1",
-        "api_key_env": "POLICY_API_KEY",
+        "api_key_env": "RETENTION_API_KEY",
         "medium": {
             "model": "moonshotai/Kimi-K2-Instruct",
             "input_usd_per_m_tokens": 1.0,
             "output_usd_per_m_tokens": 1.5,
         },
     },
-    tools=[lookup_policy],
-    limits={"max_model_calls": 10, "timeout_s": 60},
+    tools=[find_at_risk_accounts],
+    limits={"max_model_calls": 4, "max_cost_micro_usd": 20_000, "timeout_s": 60},
+    response_schema=retention_report.json_schema(),
 )
 
-answer = agent.ask("Can I expense a train ticket?")
-print(answer.status, answer.response, answer.trace_id)
-print(answer.metadata.model_calls, answer.metadata.tool_calls, answer.metadata.cost_micro_usd)
+answer = agent.ask(
+    "Find growth accounts at risk using the default thresholds. "
+    "Explain why each account qualifies and recommend the next action."
+)
+if not answer.ok:
+    raise RuntimeError(answer.response["error"])
+
+# Hugr validates the final JSON against the Pydantic-generated schema. Parse it
+# into the same application type for typed downstream use.
+report = retention_report.validate_python(answer.response)
+print(report.summary)
+for account in report.accounts:
+    print(account.account_id, account.monthly_revenue_usd, account.reason)
+print("MRR at risk:", report.monthly_revenue_at_risk_usd)
+print("trace:", answer.trace_id)
 
 # Inspect what landed on disk.
 for head in agent.traces():
     print(head.trace_id, head.depends_on, head.status)
 ```
 
-Save it as `run.py` and execute it. The first run writes a trace to `~/.hugr/policy-helper/traces/`. Verify it without Python:
+Run it with `python run.py`. The first run writes a trace to `~/.hugr/retention-analyst/traces/`. Verify it without Python:
 
 ```bash
-hugr verify ~/.hugr/policy-helper <trace_id_from_stdout>
+hugr verify ~/.hugr/retention-analyst <trace_id_from_stdout>
 ```
+
+There are two distinct validation points. Pydantic validates each tool call inside `find_at_risk_accounts`; an invalid threshold raises an exception, which Hugr returns to the model as a semantic tool error it can correct. Hugr validates the model's final object against `response_schema`; after a successful answer, `retention_report.validate_python(answer.response)` turns the opaque JSON payload into the application's typed dataclass graph.
 
 ### Resume and fork
 

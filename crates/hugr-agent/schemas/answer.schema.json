@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hugr.dev/schemas/answer.schema.json",
   "title": "Answer",
-  "description": "The uniform result of one ask to a Hugr subagent (ARCHITECTURE §18.1). The wire form of hugr_agent::Answer. Errors are answers: status \"error\" still yields this shape (and exit code 0 on a CLI).",
+  "description": "The uniform result of one ask to a Hugr subagent. The wire form of hugr_agent::Answer. Errors are answers: status \"error\" still yields this shape (and exit code 0 on a CLI).",
   "type": "object",
   "required": ["status", "response", "trace_id", "metadata"],
   "properties": {

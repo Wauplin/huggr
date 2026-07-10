@@ -1,10 +1,10 @@
-//! Agents as tools (ARCHITECTURE §20.5, ROADMAP T3.8).
+//! Agents as tools.
 //!
 //! A parent agent grants a child agent as an ordinary `agent_child` tool. The
 //! parent's model delegates a sub-question; the child answers; and we assert:
 //! - the child's `Answer` is the tool result and the parent reaches its own
 //!   final answer;
-//! - the child's cost/tokens/calls fold into the parent's `AnswerMeta` (§18.4);
+//! - the child's cost/tokens/calls fold into the parent's `AnswerMeta`;
 //! - a follow-up via the child's returned `trace_id` resumes the child thread;
 //! - the recorded parent trace replays bit-for-bit (`verify()`).
 
@@ -172,8 +172,6 @@ async fn parent_delegates_to_child_and_folds_cost() {
     let parent_trace = parent.store().get(&answer.trace_id).unwrap();
     hugr_replay::verify(&parent_trace).unwrap();
 }
-
-// --- tiny tempdir helper -------------------------------------------------
 
 struct TempDir {
     path: std::path::PathBuf,

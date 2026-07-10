@@ -1,6 +1,6 @@
-//! Trace-store tests (ROADMAP T0.2): persist a trace, list lineage via
-//! `depends_on`, read headers without loading events, and keep pre-store
-//! `hugr-replay` traces loading (and serializing) unchanged.
+//! Trace-store tests: persist a trace, list lineage via `depends_on`, read
+//! headers without loading events, and keep pre-store `hugr-replay` traces
+//! loading unchanged.
 
 use hugr_agent::{StoreError, TraceHeader, TraceId, TraceStore};
 use hugr_replay::Trace;

@@ -1,4 +1,4 @@
-//! Blob exchange end-to-end (ROADMAP T0.5, ARCHITECTURE §18.3).
+//! Blob exchange end-to-end.
 //!
 //! Drives the real tokio [`Engine`] through [`Agent::ask`] with a scripted mock
 //! model (same pattern as `scratchpad.rs`/`resume_fork.rs`), exercising the full
@@ -211,8 +211,6 @@ async fn identical_outbound_blobs_dedupe_by_hash() {
     let count = std::fs::read_dir(&blobs_dir).unwrap().count();
     assert_eq!(count, 2, "two distinct objects for three files (dedup)");
 }
-
-// --- helpers ----------------------------------------------------------------
 
 /// All tool results recorded under `name` in the trace stored at `id`.
 fn tool_results(

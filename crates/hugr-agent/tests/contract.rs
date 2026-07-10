@@ -1,4 +1,4 @@
-//! Pins the `Ask`/`Answer` wire contract (ROADMAP T0.1).
+//! Pins the `Ask`/`Answer` wire contract.
 //!
 //! Three layers of pinning:
 //! 1. serde round-trips for minimal and fully-populated values;
@@ -178,8 +178,6 @@ fn sparse_wire_forms_keep_loading() {
     .unwrap();
     assert!(answer.blobs.is_empty());
 }
-
-// --- schema pinning -------------------------------------------------------
 
 const ASK_SCHEMA: &str = include_str!("../schemas/ask.schema.json");
 const ANSWER_SCHEMA: &str = include_str!("../schemas/answer.schema.json");

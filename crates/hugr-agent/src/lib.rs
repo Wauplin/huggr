@@ -1,4 +1,4 @@
-//! `hugr-agent` — the common subagent runtime (ARCHITECTURE §18–19).
+//! `hugr-agent` — the common subagent runtime.
 //!
 //! This crate turns "an engine + a trace dir + a config" into a callable
 //! subagent with a uniform contract: [`Ask`] in, [`Answer`] out. It is an
@@ -8,7 +8,7 @@
 //! contract and `--mcp-serve`. The Rust API here is the shared implementation
 //! those surfaces serialize, not a user-facing entry point.
 //!
-//! Contract design rules (ARCHITECTURE §18.1):
+//! Contract design rules:
 //!
 //! - [`AnswerMeta`] is **mandatory** — an orchestrator can always account for
 //!   a call.
@@ -37,7 +37,7 @@ pub use contract::{
 };
 pub use store::{StoreError, TraceHead, TraceHeader, TraceStore};
 
-/// The content-addressed blob store outbound blobs land in (ARCHITECTURE
-/// §18.3), re-exported from `hugr-replay` so orchestrators can resolve an
+/// The content-addressed blob store outbound blobs land in, re-exported from
+/// `hugr-replay` so orchestrators can resolve an
 /// [`Answer`] blob's `sha256` ref via [`Agent::blob_store`].
 pub use hugr_replay::BlobStore;

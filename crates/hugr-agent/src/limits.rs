@@ -1,5 +1,4 @@
-//! Host-side enforcement of the manifest `[limits]` (ROADMAP T3.1,
-//! ARCHITECTURE §18/§20.1).
+//! Host-side enforcement of the manifest `[limits]`.
 //!
 //! Enforcement lives entirely in the host layer — `hugr-core` never learns
 //! about limits, so the sans-IO brain and its deterministic replay are
@@ -20,7 +19,7 @@
 //! Either way the ask returns a normal [`Answer`](crate::Answer) with
 //! `status: Error`, a typed reason in `Answer.extra` (`{"limit_exceeded": …}`),
 //! and a persisted `trace_id` — exceeding a limit is an *answer*, not an
-//! `AskError` (§18.1).
+//! `AskError`.
 
 use std::sync::Arc;
 use std::sync::Mutex;

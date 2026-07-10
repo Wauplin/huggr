@@ -1,5 +1,5 @@
-//! Introspection API (ROADMAP T0.7): describe/traces expose the same stable
-//! data every surface will print.
+//! Introspection API: describe/traces expose the same stable data every surface
+//! will print.
 
 use std::sync::Arc;
 

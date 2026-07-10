@@ -1,11 +1,11 @@
-//! Blob exchange (ARCHITECTURE §18.3, ROADMAP T0.5).
+//! Blob exchange.
 //!
 //! An orchestrator hands files **in** on [`Ask::blobs`] and gets produced files
 //! **out** on [`Answer::blobs`]. The mechanism is deliberately file-shaped so a
 //! subagent's tools deal in plain files inside their jail, never in wire types:
 //!
 //! - **Inbound.** Before the turn starts, each [`BlobHandle`] on the ask is
-//!   materialized into the ask's scratch working directory (§19.3) as a plain
+//!   materialized into the ask's scratch working directory as a plain
 //!   file, so `scratch_read`/`scratch_list` see it like any other note. All three
 //!   [`BlobRef`] kinds are supported: `Bytes` (base64-decoded), `Path` (read
 //!   from an orchestrator-local file), and `Sha256` (loaded from the
@@ -40,7 +40,7 @@ pub(crate) const OUT_DIRNAME: &str = "out";
 /// Failures preparing inbound blobs or sweeping outbound ones. These are
 /// *infrastructure* failures of an ask (a malformed hand-in, a missing store
 /// object, an IO error) — surfaced as [`AskError`](crate::AskError), which
-/// surfaces convert to error answers at their boundary (§18.1).
+/// surfaces convert to error answers at their boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum BlobError {
     /// A `Bytes` blob's payload was not valid base64.
@@ -66,7 +66,7 @@ pub enum BlobError {
 }
 
 /// Materialize every inbound blob into `working` (the ask's scratch working
-/// directory) before the turn starts (§18.3).
+/// directory) before the turn starts.
 pub(crate) fn materialize_inbound(
     working: &Path,
     blobs: &[BlobHandle],
@@ -107,7 +107,7 @@ pub(crate) fn sweep_outbound(
     for path in files {
         let bytes = std::fs::read(&path)?;
         let media = guess_media(&path);
-        // Content-addressed put — dedup by hash lives in the store (§3.3).
+        // Content-addressed put — dedup by hash lives in the store.
         let stored = store.put(&bytes, media.clone())?;
         let rel = rel_name(&out_root, &path);
         handles.push(BlobHandle {
@@ -156,7 +156,7 @@ fn inbound_name(handle: &BlobHandle, index: usize, bytes: &[u8]) -> Result<Strin
 }
 
 /// Accept only a clean single path segment (a bare file name): no traversal, no
-/// separators, no absolute/prefix components — the jail discipline of §19.3.
+/// separators, no absolute/prefix components.
 fn sanitize_name(hint: &str) -> Result<String, BlobError> {
     let bad = || BlobError::BadName {
         name: hint.to_string(),

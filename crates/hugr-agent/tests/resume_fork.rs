@@ -1,4 +1,4 @@
-//! Resume & fork semantics end-to-end (ROADMAP T0.3).
+//! Resume & fork semantics end-to-end.
 //!
 //! Drives the real tokio [`Engine`] through [`Agent::ask`] with a scripted
 //! mock model (no network) and asserts:
@@ -386,8 +386,6 @@ async fn missing_parent_is_an_infrastructure_error() {
 
     assert!(err.missing_trace().is_some(), "unknown parent → AskError");
 }
-
-// --- tiny tempdir helper (no external dev-dep) ---------------------------
 
 struct TempDir {
     path: std::path::PathBuf,

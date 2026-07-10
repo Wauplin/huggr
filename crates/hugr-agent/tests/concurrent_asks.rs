@@ -1,4 +1,4 @@
-//! Concurrent asks (ROADMAP T3.2).
+//! Concurrent asks.
 //!
 //! Each [`Agent::ask`] is an independent session: it assembles its own engine,
 //! prepares its own `.pending` scratch subtree (named by a monotonic per-agent
@@ -141,8 +141,6 @@ async fn n_parallel_asks_mixed_fresh_and_forked_produce_n_valid_traces() {
     let parent_head = store.head(&root.trace_id).unwrap();
     assert_eq!(parent_head.depends_on, None);
 }
-
-// --- tiny tempdir helper (no external dev-dep) ---------------------------
 
 struct TempDir {
     path: std::path::PathBuf,

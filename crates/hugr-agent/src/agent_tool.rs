@@ -1,11 +1,11 @@
-//! Agents as tools (ARCHITECTURE §20.5, ROADMAP T3.8).
+//! Agents as tools.
 //!
 //! A Hugr agent *is* a tool: because every agent speaks the same [`Ask`] →
 //! [`Answer`] contract, granting one agent to another is one ordinary
 //! capability. [`AgentTool`] wraps a **resolver** — an async closure the host
 //! (the toolkit's `build_agent`) supplies that runs the child as a subprocess
-//! artifact speaking the CLI JSON contract (§21.1). To the
-//! calling model it looks like any tool: its args are an `Ask` (question +
+//! artifact speaking the CLI JSON contract. To the calling model it looks like
+//! any tool: its args are an `Ask` (question +
 //! optional `trace_id` for follow-ups/forks + blob handles), its result is the
 //! child's full `Answer` — so the caller can resume the child's thread across
 //! its own turns.
@@ -13,7 +13,7 @@
 //! **Cost folds upward.** Each invocation pushes the child's [`AnswerMeta`] into
 //! a shared sink the parent's [`Agent::ask`](crate::Agent::ask) drains after the
 //! turn, so the child's tokens/cost/calls roll into the parent's reported
-//! `AnswerMeta` (§18.4) — the orchestrator's cost line stays complete.
+//! `AnswerMeta` — the orchestrator's cost line stays complete.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -123,7 +123,6 @@ impl Capability for AgentTool {
             .map_err(|e| json!({ "error": format!("invalid ask for agent tool: {e}") }))?;
         match (self.resolver)(ask).await {
             Ok(answer) => {
-                // Fold the child's spend into the parent (§18.4).
                 self.spend.lock().unwrap().push(answer.metadata.clone());
                 Ok(serde_json::to_value(&answer).unwrap_or(Value::Null))
             }
@@ -133,7 +132,7 @@ impl Capability for AgentTool {
 }
 
 /// A resolver that always reports `agent_depth_exceeded` — the cycle/recursion
-/// cut when `max_agent_depth` is reached (§20.5). No child is ever run.
+/// cut when `max_agent_depth` is reached. No child is ever run.
 pub fn depth_exceeded_resolver(child: String) -> AgentToolResolver {
     Arc::new(move |_ask: Ask| {
         let child = child.clone();

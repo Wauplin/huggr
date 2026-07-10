@@ -1,6 +1,6 @@
 [package]
 name = "hugr-agent"
-description = "The common subagent runtime API: the Ask/Answer contract, trace store, scratchpad, blob exchange, and cost accounting (ARCHITECTURE §18–19)."
+description = "The common subagent runtime API: the Ask/Answer contract, trace store, scratchpad, blob exchange, and cost accounting."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,31 +10,24 @@ rust-version.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-# The trace store (ROADMAP T0.2) persists immutable traces via hugr-replay —
-# the host-side persistence crate. hugr-agent is a host-layer crate, so
-# std::fs is fine here; hugr-core stays sans-IO (it is reached only as pure
-# data through hugr-replay's serde types).
+# The trace store persists immutable traces via hugr-replay. hugr-agent is a
+# host-layer crate, so std::fs is fine here; hugr-core stays sans-IO.
 hugr-replay = { workspace = true }
-# The ask path (ROADMAP T0.3) assembles a fresh engine per ask on the native
-# host. hugr-agent stacks strictly on hugr-host + hugr-replay and uses
-# hugr-core as pure data only — it never reaches into core internals.
+# The ask path assembles a fresh engine per ask on the native host.
 hugr-core = { workspace = true }
 hugr-host = { workspace = true }
 thiserror = { workspace = true }
-# The scratchpad capabilities (ROADMAP T0.4) implement the host `Capability`
-# trait, which is `#[async_trait]`.
+# The scratchpad capabilities implement the host `Capability` trait, which is
+# `#[async_trait]`.
 async-trait = { workspace = true }
 # trace_id generation: content hash of the serialized trace — deterministic,
 # no RNG and no clock (see store.rs).
 sha2 = { workspace = true }
-# Blob exchange (ROADMAP T0.5): inbound `Bytes` blobs arrive base64-encoded on
-# the Ask; decoded and materialized into the scratchpad before the turn.
+# Inbound `Bytes` blobs arrive base64-encoded on the Ask; decoded and
+# materialized into the scratchpad before the turn.
 base64 = { workspace = true }
-# Limits enforcement (ROADMAP T3.1): the wall-clock `timeout_ms` limit wraps the
-# turn in `tokio::time::timeout`; the counting/cost limits wrap each model
-# adapter in a `ModelAdapter` whose `call` returns `anyhow::Result`. hugr-agent
-# is a host-layer crate on the tokio engine, so these deps are consistent
-# (hugr-core stays sans-IO).
+# Limits enforcement wraps turns in `tokio::time::timeout` and model adapters
+# in a `ModelAdapter` whose `call` returns `anyhow::Result`.
 tokio = { workspace = true }
 anyhow = { workspace = true }
 # Typed response contracts generate provider JSON Schema at the host boundary;
@@ -42,9 +35,8 @@ anyhow = { workspace = true }
 schemars = { workspace = true }
 
 [dev-dependencies]
-# The resume/fork tests (T0.3) drive the real tokio engine with a scripted
-# mock model adapter (no network) and verify persisted traces replay
-# bit-for-bit.
+# The resume/fork tests drive the real tokio engine with a scripted mock model
+# adapter and verify persisted traces replay bit-for-bit.
 tokio = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }

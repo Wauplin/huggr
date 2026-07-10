@@ -1,4 +1,4 @@
-//! Limits enforcement end-to-end (ROADMAP T3.1).
+//! Limits enforcement end-to-end.
 //!
 //! Drives the real tokio [`Engine`] through [`Agent::ask`] with a scripted
 //! mock model and a no-op tool, so each declared limit is exercised through the
@@ -221,8 +221,6 @@ async fn no_limits_leaves_behavior_unchanged() {
     assert_eq!(answer.metadata.model_calls, 1);
     hugr_replay::verify(&store.get(&answer.trace_id).unwrap()).unwrap();
 }
-
-// --- tiny tempdir helper (no external dev-dep) ---------------------------
 
 struct TempDir {
     path: std::path::PathBuf,

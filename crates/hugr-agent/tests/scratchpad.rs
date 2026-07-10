@@ -1,4 +1,4 @@
-//! The per-lineage scratchpad end-to-end (ROADMAP T0.4, ARCHITECTURE §19.3).
+//! The per-lineage scratchpad end-to-end.
 //!
 //! Drives the real tokio [`Engine`] through [`Agent::ask`] with a scripted
 //! mock model that emits `scratch_write` / `scratch_read` tool calls, so the
@@ -230,8 +230,6 @@ async fn fork_writes_do_not_leak_into_the_sibling() {
     let reads_b = tool_results(&store, &read_b.trace_id, "scratch_read");
     assert_eq!(reads_b[0]["content"], json!("from-B"));
 }
-
-// --- tiny tempdir helper (mirrors resume_fork.rs; no external dev-dep) -------
 
 struct TempDir {
     path: std::path::PathBuf,

@@ -1,26 +1,13 @@
-//! The first real `Agent::ask` path — resume & fork semantics
-//! (ARCHITECTURE §19.2, ROADMAP T0.3).
+//! `Agent::ask` — resume & fork semantics.
 //!
-//! An [`Agent`] is a reusable configuration (system prompt, model adapters,
-//! capabilities, permission policy) plus a [`TraceStore`]. Each
-//! [`ask`](Agent::ask) builds a **fresh** engine:
+//! An [`Agent`] is a reusable configuration (system prompt, model adapters, capabilities, permission policy) plus a [`TraceStore`]. Each [`ask`](Agent::ask) builds a **fresh** engine:
 //!
-//! - `trace_id: None` → a fresh brain runs the turn and the session persists
-//!   as a new **root** trace.
-//! - `trace_id: Some(parent)` → the parent trace is loaded from the store and
-//!   **re-folded** into the fresh brain via [`EngineBuilder::resume`] — zero IO
-//!   beyond the one file read, no model/tool re-calls (ARCHITECTURE §15.1) —
-//!   then the new question runs as a live turn and the whole session (old +
-//!   new events) persists as a **new** trace with `depends_on = parent`.
+//! - `trace_id: None` → a fresh brain runs the turn and the session persists as a new **root** trace.
+//! - `trace_id: Some(parent)` → the parent trace is loaded from the store and **re-folded** into the fresh brain — no model/tool re-calls — then the new question runs as a live turn and the whole session persists as a **new** trace with `depends_on = parent`.
 //!
-//! The parent file is never touched, so forking is just asking the same
-//! parent twice: the two children are sibling traces in the store's DAG.
+//! The parent file is never touched, so forking is just asking the same parent twice: the two children are sibling traces in the store's DAG.
 //!
-//! Error discipline (§18.1): *run* failures — the model erroring, no final
-//! answer — are **answers** (`status: Error`) with a persisted trace, so the
-//! caller still gets a `trace_id` to inspect. Only *infrastructure* failures
-//! (an unknown parent id, a store write error) return [`AskError`]; surfaces
-//! convert those to error answers at their own boundary (T0.8).
+//! Error discipline: *run* failures — the model erroring, no final answer — are **answers** (`status: Error`) with a persisted trace, so the caller still gets a `trace_id` to inspect. Only *infrastructure* failures (an unknown parent id, a store write error) return [`AskError`]; surfaces convert those to error answers at their own boundary.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -42,20 +29,13 @@ use crate::limits::{LimitState, LimitedAdapter};
 use crate::scratch::{ScratchDir, copy_tree, scratch_tool_schemas};
 use crate::store::{StoreError, TraceHead, TraceHeader, TraceStore};
 
-/// Default name of the scratch subtree directory, placed next to the trace
-/// files inside the store root. Hidden and non-`.json`, so `TraceStore::list`
-/// skips it.
+/// Default scratch subtree directory inside the store root. Hidden and non-`.json`, so `TraceStore::list` skips it.
 const DEFAULT_SCRATCH_DIRNAME: &str = ".scratch";
 
-/// Working subtrees (one per in-flight ask) live under this child of the
-/// scratch root until the ask's trace is persisted and the copy is finalized to
-/// its own `<trace_id>` subtree.
+/// Working subtrees (one per in-flight ask) live under this child of the scratch root until the ask's trace is persisted and the copy is finalized to its own `<trace_id>` subtree.
 const PENDING_DIRNAME: &str = ".pending";
 
-/// Default name of the content-addressed blob store directory, placed next to
-/// the trace files inside the store root (ROADMAP T0.5). Hidden and
-/// non-`.json`, so `TraceStore::list` skips it — a store dir carries its
-/// agents' outbound blobs alongside their traces.
+/// Default blob store directory inside the store root. Hidden and non-`.json`, so `TraceStore::list` skips it.
 const DEFAULT_BLOBS_DIRNAME: &str = ".blobs";
 
 /// A configured subagent: ask it questions, get [`Answer`]s, resume or fork
@@ -75,38 +55,26 @@ pub struct Agent {
     pub capabilities: Vec<Arc<dyn Capability>>,
     pub sampling: Option<SamplingParams>,
     pub clock: Option<Clock>,
-    /// Root of the per-lineage scratchpad subtree (ARCHITECTURE §19.3).
+    /// Root of the per-lineage scratchpad subtree.
     pub scratch_root: PathBuf,
-    /// Content-addressed store outbound blobs land in (ARCHITECTURE §18.3).
+    /// Content-addressed store outbound blobs land in.
     pub blob_store: BlobStore,
-    /// Per-tier pricing used to derive `AnswerMeta.cost_micro_usd` from
-    /// trace-recorded usage (ARCHITECTURE §18.4). Missing tiers price at zero.
+    /// Per-tier pricing used to derive `AnswerMeta.cost_micro_usd` from trace-recorded usage. Missing tiers price at zero.
     pub pricing: Pricing,
     pub limits: AgentLimits,
-    /// Optional typed response contract. When set, the generated JSON Schema is
-    /// passed to the model provider and the final JSON is cast into the Rust
-    /// type before it becomes `Answer.response`.
+    /// Optional typed response contract. When set, the generated JSON Schema is passed to the model provider and the final JSON is cast into the Rust type before it becomes `Answer.response`.
     pub response_contract: Option<ResponseContract>,
-    /// Compile-time registered host-side hooks. These run outside `hugr-core`
-    /// so the reducer stays pure; they are deterministic Rust wiring owned by
-    /// the agent crate, not manifest/runtime policy.
+    /// Compile-time registered host-side hooks: deterministic Rust wiring owned by the agent crate, not manifest/runtime policy; they run outside `hugr-core` so the reducer stays pure.
     pub ask_hooks: Vec<AskHook>,
     pub answer_hooks: Vec<AnswerHook>,
-    /// Granted child agents exposed as ordinary `agent_<name>` capabilities
-    /// (ARCHITECTURE §20.5, ROADMAP T3.8). Registered fresh per ask so each
-    /// invocation's child cost folds into this ask's `AnswerMeta`.
+    /// Granted child agents exposed as ordinary `agent_<name>` capabilities. Registered fresh per ask so each invocation's child cost folds into this ask's `AnswerMeta`.
     pub agent_tools: Vec<AgentToolSpec>,
-    /// Monotonic counter naming each ask's pending working directory — the one
-    /// piece of host-side nondeterminism, kept off the trace (scratch content
-    /// never enters the log; results carry only relative paths).
+    /// Monotonic counter naming each ask's pending working directory — the one piece of host-side nondeterminism, kept off the trace (scratch content never enters the log; results carry only relative paths).
     next_scratch: Arc<AtomicU64>,
 }
 
 impl Agent {
-    /// A fresh agent with defaults. `name`/`version` are stamped into every
-    /// trace header; `store` is where the immutable traces live. The scratch
-    /// and blob roots default to hidden subtrees inside the store root; set
-    /// the public fields to override anything.
+    /// A fresh agent with defaults. `name`/`version` are stamped into every trace header; `store` is where the immutable traces live. The scratch and blob roots default to hidden subtrees inside the store root; set the public fields to override anything.
     pub fn new(name: impl Into<String>, version: impl Into<String>, store: TraceStore) -> Agent {
         let scratch_root = store.root().join(DEFAULT_SCRATCH_DIRNAME);
         let blob_store = BlobStore::new(store.root().join(DEFAULT_BLOBS_DIRNAME));
@@ -138,15 +106,12 @@ impl Agent {
         &self.store
     }
 
-    /// The content-addressed blob store this agent's outbound blobs land in
-    /// (ARCHITECTURE §18.3). An orchestrator resolves an [`Answer`] blob's
-    /// `sha256` ref through here.
+    /// The content-addressed blob store this agent's outbound blobs land in. An orchestrator resolves an [`Answer`] blob's `sha256` ref through here.
     pub fn blob_store(&self) -> &BlobStore {
         &self.blob_store
     }
 
-    /// Describe this agent's public card: identity, tools + privileges, model
-    /// tiers, pricing, and declared limits (ARCHITECTURE §18.2).
+    /// Describe this agent's public card: identity, tools + privileges, model tiers, pricing, and declared limits.
     pub fn describe(&self) -> AgentCard {
         let mut tools: Vec<ToolCard> = scratch_tool_schemas()
             .into_iter()
@@ -159,8 +124,7 @@ impl Agent {
                 scope: json!({ "root": self.scratch_root.display().to_string() }),
             })
             .collect();
-        // Granted child agents (§20.5) show as `agent_<name>` tools; they are
-        // registered per-ask but are part of the agent's advertised surface.
+        // Granted child agents show as `agent_<name>` tools; they are registered per-ask but are part of the agent's advertised surface.
         tools.extend(self.agent_tools.iter().map(|spec| {
             let schema = spec.schema();
             ToolCard {
@@ -199,14 +163,12 @@ impl Agent {
         }
     }
 
-    /// List stored trace headers for this agent. This is the same cheap
-    /// header-only read as [`TraceStore::list`].
+    /// List stored trace headers for this agent — the same cheap header-only read as [`TraceStore::list`].
     pub fn traces(&self) -> Result<Vec<TraceHead>, StoreError> {
         self.store.list()
     }
 
-    /// Run one ask to completion (ARCHITECTURE §18.1/§19.2). See the module
-    /// docs for the fresh-vs-resume split and the error discipline.
+    /// Run one ask to completion. See the module docs for the fresh-vs-resume split and the error discipline.
     pub async fn ask(&self, mut ask: Ask) -> Result<Answer, AskError> {
         let started = Instant::now();
         for hook in &self.ask_hooks {
@@ -214,15 +176,11 @@ impl Agent {
         }
         let parent = ask.trace_id.clone();
 
-        // Assemble a fresh engine per ask. Recording is always on: the trace
-        // *is* the product here.
+        // Recording is always on: the trace *is* the product here.
         let mut builder = Engine::builder()
             .record(true)
             .frontend(Box::new(SilentFrontend));
-        // Limits enforcement (§18/§20.1, ROADMAP T3.1): the counting/cost limits
-        // wrap each model adapter so a call over budget is refused (and folded
-        // as an ordinary `ModelError`); the wall-clock timeout wraps the turn
-        // below. Both surface as an error *answer* with a persisted trace.
+        // Counting/cost limits wrap each model adapter so a call over budget is refused (and folded as an ordinary `ModelError`); the wall-clock timeout wraps the turn below. Both surface as an error *answer* with a persisted trace.
         let limit_state = LimitState::new(self.limits.clone(), self.pricing.clone());
         let wrap = limit_state.needs_adapter_wrap();
         for (selector, adapter) in &self.models {
@@ -260,38 +218,29 @@ impl Agent {
             None => None,
         };
 
-        // Agent-as-tool grants (§20.5, T3.8): register each granted child agent
-        // as an `agent_<name>` capability with a per-ask spend sink, so its cost
-        // folds into *this* ask's meta after the turn.
+        // Register each granted child agent as an `agent_<name>` capability with a per-ask spend sink, so its cost folds into *this* ask's meta after the turn.
         let child_spend: Arc<Mutex<Vec<AnswerMeta>>> = Arc::new(Mutex::new(Vec::new()));
         for spec in &self.agent_tools {
             builder = builder.capability(Arc::new(AgentTool::new(spec, child_spend.clone())));
         }
 
         if let Some(trace) = parent_trace {
-            // Re-fold the parent's recorded events into the fresh brain — no
-            // model or tool is ever re-run for work that already happened
-            // (§15.1); `resume` only rebuilds state.
+            // Re-fold the parent's recorded events into the fresh brain — no model or tool is ever re-run for work that already happened; `resume` only rebuilds state.
             builder = builder.resume(trace);
         }
 
-        // Per-lineage scratchpad (§19.3): a fresh working subtree, seeded by
-        // copying the parent's finalized subtree on resume/fork — so this ask
-        // sees the ancestor's notes but never a sibling's writes.
+        // A fresh working scratch subtree, seeded by copying the parent's finalized subtree on resume/fork — so this ask sees the ancestor's notes but never a sibling's writes.
         let (scratch, working_dir) = self.prepare_scratch(parent.as_ref())?;
         for capability in scratch.capabilities() {
             builder = builder.capability(capability);
         }
 
-        // Materialize inbound blobs into the working scratch dir *before* the
-        // turn, with declared perms, so tools see plain files in the jail
-        // (§18.3). Malformed hand-ins are infra errors (AskError), not answers.
+        // Materialize inbound blobs into the working scratch dir *before* the turn, so tools see plain files in the jail. Malformed hand-ins are infra errors (AskError), not answers.
         blobs::materialize_inbound(&working_dir, &ask.blobs, &self.blob_store)?;
 
         let mut engine = builder.build();
 
-        // Accounting baseline: on resume the brain's log already holds the
-        // parent's entries; this ask's meta must cover only the new turn.
+        // Accounting baseline: on resume the brain's log already holds the parent's entries; this ask's meta must cover only the new turn (resume never re-bills ancestry).
         let baseline = engine.brain().state().log().len();
 
         let max_response_attempts = self
@@ -307,10 +256,7 @@ impl Agent {
             } else {
                 response_retry_prompt(response_result.as_ref().unwrap())
             };
-            // Drive the turn, bounded by the wall-clock timeout when one is set.
-            // On elapse the turn future is dropped mid-flight; the recorded
-            // event prefix is self-consistent, so the persisted (partial) trace
-            // still replays. `session_end` later flushes the final checkpoint.
+            // On timeout the turn future is dropped mid-flight; the recorded event prefix is self-consistent, so the persisted (partial) trace still replays. `session_end` later flushes the final checkpoint.
             match self.limits.timeout_ms {
                 Some(ms) if ms > 0 => {
                     if tokio::time::timeout(
@@ -340,9 +286,7 @@ impl Agent {
         }
         engine.session_end();
 
-        // A limit trip supersedes the log-derived answer: it is an error answer
-        // with a typed reason on `extra` (ROADMAP T3.1). Otherwise the final
-        // model output is the answer (§18.1).
+        // A limit trip supersedes the log-derived answer: it is an error answer with a typed reason on `extra`. Otherwise the final model output is the answer.
         let trip = limit_state.trip();
         let (status, response, extra) = match &trip {
             Some(trip) => (
@@ -361,8 +305,7 @@ impl Agent {
             }
         };
 
-        // Persist old + new as one NEW immutable trace; the parent file is
-        // never mutated — lineage lives in `depends_on` (§19.2).
+        // Persist old + new as one NEW immutable trace; the parent file is never mutated — lineage lives in `depends_on`.
         let trace = engine
             .trace()
             .expect("recording is always enabled on an agent engine");
@@ -372,7 +315,7 @@ impl Agent {
             started.elapsed().as_millis() as u64,
             &self.pricing,
         );
-        // Fold each delegated child agent's spend into this ask's meta (§20.5).
+        // Fold each delegated child agent's spend into this ask's meta.
         for child_meta in child_spend.lock().unwrap().iter() {
             metadata.merge_child(child_meta);
         }
@@ -382,15 +325,10 @@ impl Agent {
         }
         let trace_id = self.store.put(trace, header)?;
 
-        // Sweep produced files (the `out/` scratch subtree) into the
-        // content-addressed store and return them as outbound blobs (§18.3).
-        // Done before finalize while the working subtree is still in place;
-        // dedup by hash lives in the store.
+        // Sweep the `out/` scratch subtree into the content-addressed store and return the files as outbound blobs. Done before finalize while the working subtree is still in place.
         let out_blobs = blobs::sweep_outbound(&working_dir, &self.blob_store)?;
 
-        // Finalize the working subtree under the new trace's id so a later
-        // resume/fork of *this* trace can seed from it (§19.3). Scratch is
-        // never recorded, so this move happens after the trace is persisted.
+        // Finalize the working subtree under the new trace's id so a later resume/fork of *this* trace can seed from it. Scratch is never recorded, so this move happens after the trace is persisted.
         self.finalize_scratch(&working_dir, &trace_id)?;
 
         let mut answer = Answer {
@@ -407,10 +345,7 @@ impl Agent {
         Ok(answer)
     }
 
-    /// Create this ask's working scratch directory (a fresh `.pending/<n>`
-    /// subtree) and, when resuming a parent, seed it with a copy of the
-    /// parent's finalized subtree (copy-on-fork, §19.3). Returns the jailed
-    /// [`ScratchDir`] for the tools plus the working path for finalization.
+    /// Create this ask's working scratch directory (a fresh `.pending/<n>` subtree) and, when resuming a parent, seed it with a copy of the parent's finalized subtree (copy-on-fork). Returns the jailed [`ScratchDir`] for the tools plus the working path for finalization.
     fn prepare_scratch(&self, parent: Option<&TraceId>) -> Result<(ScratchDir, PathBuf), AskError> {
         let n = self.next_scratch.fetch_add(1, Ordering::SeqCst);
         let working = self
@@ -435,10 +370,7 @@ impl Agent {
         Ok((scratch, working))
     }
 
-    /// Move this ask's working subtree to its final `<trace_id>` home so the
-    /// lineage persists. A same-filesystem rename (both are under the scratch
-    /// root); trace ids are unique, but any pre-existing target is cleared
-    /// first so the move can't fail on a stray directory.
+    /// Move this ask's working subtree to its final `<trace_id>` home so the lineage persists. A same-filesystem rename (both are under the scratch root); trace ids are unique, but any pre-existing target is cleared first so the move can't fail on a stray directory.
     fn finalize_scratch(&self, working: &PathBuf, trace_id: &TraceId) -> Result<(), AskError> {
         let final_dir = self.scratch_root.join(trace_id.as_str());
         if final_dir.exists() {
@@ -474,8 +406,7 @@ impl Agent {
     }
 }
 
-/// A compile-time registered hook that can adjust an [`Ask`] before the agent
-/// builds the turn. Hooks live in the host layer, never in `hugr-core`.
+/// A compile-time registered hook that can adjust an [`Ask`] before the agent builds the turn. Hooks live in the host layer, never in `hugr-core`.
 #[derive(Clone)]
 pub struct AskHook {
     name: String,
@@ -507,9 +438,7 @@ impl AskHook {
     }
 }
 
-/// A compile-time registered hook that can adjust the final [`Answer`] at the
-/// very end of an ask, after the trace/scratch/blob work is complete and just
-/// before the surface returns to the caller.
+/// A compile-time registered hook that can adjust the final [`Answer`] at the very end of an ask, after the trace/scratch/blob work is complete and just before the surface returns to the caller.
 #[derive(Clone)]
 pub struct AnswerHook {
     name: String,
@@ -544,7 +473,7 @@ impl AnswerHook {
     }
 }
 
-/// Public description returned by [`Agent::describe`] (ROADMAP T0.7).
+/// Public description returned by [`Agent::describe`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentCard {
     pub name: String,
@@ -560,8 +489,7 @@ pub struct AgentCard {
 pub struct ToolCard {
     pub name: String,
     pub description: String,
-    /// Coarse privilege label (`read_only` / `scratchpad` / `gated` / `agent`)
-    /// — an open string set nothing branches on (§14).
+    /// Coarse privilege label (`read_only` / `scratchpad` / `gated` / `agent`) — an open string set nothing branches on.
     pub privilege: String,
     pub runs_in_background: bool,
     pub schema: ToolSchema,
@@ -578,8 +506,7 @@ pub struct ModelTierCard {
     pub pricing: Option<TierPrice>,
 }
 
-/// Declared runtime limits, enforced host-side on every ask (ROADMAP T3.1) and
-/// exposed on the T0.7 introspection card. Each `None` field is unbounded.
+/// Declared runtime limits, enforced host-side on every ask and exposed on the introspection card. Each `None` field is unbounded.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -611,10 +538,7 @@ impl AgentLimits {
     }
 }
 
-/// Typed response contract for one agent. The schema is sent to model
-/// providers as an opaque request knob; the parser only casts returned JSON
-/// into the declared Rust type, it does not perform independent JSON Schema
-/// validation.
+/// Typed response contract for one agent. The schema is sent to model providers as an opaque request knob; the parser only casts returned JSON into the declared Rust type, it does not perform independent JSON Schema validation.
 #[derive(Clone)]
 pub struct ResponseContract {
     pub name: String,
@@ -706,9 +630,7 @@ impl ResponseContract {
     }
 }
 
-/// Per-tier token prices used by [`Agent`] cost accounting (ROADMAP T0.6).
-/// Values are USD per million tokens, matching provider price sheets. The
-/// computed answer cost is rounded to the nearest micro-USD.
+/// Per-tier token prices used by [`Agent`] cost accounting. Values are USD per million tokens, matching provider price sheets. The computed answer cost is rounded to the nearest micro-USD.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pricing {
     tiers: BTreeMap<String, TierPrice>,
@@ -770,28 +692,23 @@ impl TierPrice {
     }
 }
 
-/// Infrastructure failures of an ask — everything that prevents a trace from
-/// being persisted at all. Run failures are *answers*, not errors (§18.1).
+/// Infrastructure failures of an ask — everything that prevents a trace from being persisted at all. Run failures are *answers*, not errors.
 #[derive(Debug, thiserror::Error)]
 pub enum AskError {
-    /// The parent trace could not be loaded, or the new trace could not be
-    /// persisted.
+    /// The parent trace could not be loaded, or the new trace could not be persisted.
     #[error(transparent)]
     Store(#[from] StoreError),
 
-    /// The per-lineage scratchpad subtree (§19.3) could not be prepared,
-    /// seeded, or finalized on disk.
+    /// The per-lineage scratchpad subtree could not be prepared, seeded, or finalized on disk.
     #[error("scratchpad IO error: {0}")]
     Scratch(#[from] std::io::Error),
 
-    /// An inbound blob could not be materialized, or an outbound blob could not
-    /// be swept into the content-addressed store (§18.3).
+    /// An inbound blob could not be materialized, or an outbound blob could not be swept into the content-addressed store.
     #[error("blob exchange error: {0}")]
     Blob(#[from] BlobError),
 }
 
-/// The parent id an [`AskError::Store`] not-found refers to, if any — a small
-/// convenience for surfaces mapping infra errors to error answers.
+/// The parent id an [`AskError::Store`] not-found refers to, if any — a small convenience for surfaces mapping infra errors to error answers.
 impl AskError {
     pub fn missing_trace(&self) -> Option<&TraceId> {
         match self {

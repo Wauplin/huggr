@@ -1,6 +1,5 @@
-//! The per-lineage scratchpad — `scratch_read` / `scratch_write` /
-//! `scratch_list` capabilities plus the copy-on-fork directory management
-//! (ARCHITECTURE §19.3, ROADMAP T0.4).
+//! The per-lineage scratchpad: `scratch_read` / `scratch_write` /
+//! `scratch_list` capabilities plus the copy-on-fork directory management.
 //!
 //! Each ask runs against a private scratch directory. The three capabilities
 //! are **ungated** (`requires_permission = false`) — the scratch root is a
@@ -17,7 +16,7 @@
 //! its working directory by copying the parent's subtree, so it sees the
 //! ancestor's notes. Because the copy is per-ask, two asks that fork the same
 //! parent get independent working copies — a divergence-safe copy-on-fork:
-//! sibling branches can never observe each other's writes (§19.3). The working
+//! sibling branches can never observe each other's writes. The working
 //! copy is finalized to its own `<trace_id>` subtree only after the ask's trace
 //! is persisted (the id is content-derived, so it is not known until then).
 
@@ -147,7 +146,7 @@ impl ScratchDir {
 
 /// Recursively copy `from` into `to` (used to seed a fork/resume from its
 /// parent's finalized subtree). `to` is created if absent; only regular files
-/// and directories are copied (scratchpads are small by construction, §19.3).
+/// and directories are copied.
 pub(crate) fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     fs::create_dir_all(to)?;
     for entry in fs::read_dir(from)? {
@@ -166,8 +165,8 @@ pub(crate) fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Write text to a file inside the scratch root. Ungated (§19.3): the jail is
-/// the boundary, so no permission round-trip.
+/// Write text to a file inside the scratch root. Ungated: the jail is the
+/// boundary, so no permission round-trip.
 struct ScratchWrite {
     dir: ScratchDir,
 }

@@ -336,8 +336,7 @@ async fn run(args: RunArgs) {
 
 /// Generic `hugr run` cannot link arbitrary agent crates into the already-built
 /// toolkit binary. For typed response agents, run the same generated shim
-/// as `hugr build` and point its home at the source agent folder so dev traces
-/// stay in the expected folder.
+/// as `hugr build`.
 fn run_typed_definition(
     agent_dir: &Path,
     def: &AgentDefinition,
@@ -357,12 +356,8 @@ fn run_typed_definition(
             return;
         }
     };
-    let home = agent_dir
-        .canonicalize()
-        .unwrap_or_else(|_| agent_dir.to_path_buf());
     let status = std::process::Command::new(&outcome.binary)
         .args(argv)
-        .env("HUGR_AGENT_HOME", home)
         .status();
     if let Err(err) = status {
         print_answer(

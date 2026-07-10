@@ -60,11 +60,12 @@ max_model_calls = 20
 max_cost_micro_usd = 50000
 timeout_s = 120
 
-# [scratchpad] — per-lineage scratch directory. Optional; defaults to a hidden
-# subtree of the trace store.
+# [scratchpad] — per-lineage scratch directory. Optional; defaults to
+# ~/.hugr/<agent>/scratch.
 [scratchpad]
-# root = "./.scratch"
+# root = "./scratch"
 
-# [traces] — immutable trace store location. Optional; defaults per surface.
+# [traces] — immutable trace store location. Optional; defaults to
+# ~/.hugr/<agent>/traces.
 [traces]
 # store = "./.traces"

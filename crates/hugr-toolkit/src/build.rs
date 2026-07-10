@@ -13,11 +13,7 @@ use std::process::Command;
 
 use crate::bundle;
 use crate::manifest::AgentDefinition;
-use crate::runtime::DEFAULT_TRACE_DIRNAME;
-
-/// Default scratchpad dir name (mirrors `hugr-agent`'s default) — excluded from
-/// the embedded bundle so a build never ships prior-run scratch state.
-const DEFAULT_SCRATCH_DIRNAME: &str = ".scratch";
+use crate::runtime::{DEFAULT_SCRATCH_DIRNAME, DEFAULT_TRACE_DIRNAME};
 
 /// Options controlling a build.
 #[derive(Clone, Debug)]
@@ -445,7 +441,8 @@ root = "work"
 "#;
         let def = AgentDefinition::parse(src, "hugr.toml").unwrap();
         let ex = bundle_excludes(&def);
-        assert!(ex.contains(&".hugr-traces".to_string()));
+        assert!(ex.contains(&"traces".to_string()));
+        assert!(ex.contains(&"scratch".to_string()));
         assert!(ex.contains(&"state".to_string()));
         assert!(ex.contains(&"work".to_string()));
         assert!(ex.contains(&"target".to_string()));

@@ -34,7 +34,7 @@ fn scaffold_bundle(name: &str, template: Template) -> (Vec<u8>, PathBuf) {
         };
         std::fs::write(path, contents).unwrap();
     }
-    let bytes = bundle::pack(&src, &[".hugr-traces", ".scratch"]).unwrap();
+    let bytes = bundle::pack(&src, &["traces", "scratch"]).unwrap();
     (bytes, src)
 }
 

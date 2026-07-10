@@ -29,8 +29,8 @@ use crate::limits::{LimitState, LimitedAdapter};
 use crate::scratch::{ScratchDir, copy_tree, scratch_tool_schemas};
 use crate::store::{StoreError, TraceHead, TraceHeader, TraceStore};
 
-/// Default scratch subtree directory inside the store root. Hidden and non-`.json`, so `TraceStore::list` skips it.
-const DEFAULT_SCRATCH_DIRNAME: &str = ".scratch";
+/// Default scratch subtree directory for direct `Agent::new` users.
+const DEFAULT_SCRATCH_DIRNAME: &str = "scratch";
 
 /// Working subtrees (one per in-flight ask) live under this child of the scratch root until the ask's trace is persisted and the copy is finalized to its own `<trace_id>` subtree.
 const PENDING_DIRNAME: &str = ".pending";
@@ -74,7 +74,7 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// A fresh agent with defaults. `name`/`version` are stamped into every trace header; `store` is where the immutable traces live. The scratch and blob roots default to hidden subtrees inside the store root; set the public fields to override anything.
+    /// A fresh agent with defaults. `name`/`version` are stamped into every trace header; `store` is where the immutable traces live. The scratch and blob roots can be overridden through public fields.
     pub fn new(name: impl Into<String>, version: impl Into<String>, store: TraceStore) -> Agent {
         let scratch_root = store.root().join(DEFAULT_SCRATCH_DIRNAME);
         let blob_store = BlobStore::new(store.root().join(DEFAULT_BLOBS_DIRNAME));

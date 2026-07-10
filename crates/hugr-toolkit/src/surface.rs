@@ -25,7 +25,9 @@ use serde_json::json;
 
 use crate::bundle;
 use crate::manifest::AgentDefinition;
-use crate::runtime::{RuntimeOptions, build_agent_with_options};
+use crate::runtime::{
+    RuntimeOptions, agent_home_dir, build_agent_with_options, sanitize_agent_name,
+};
 use crate::runtime_args::{RuntimeArgError, RuntimeValues, apply_runtime_values};
 
 /// The file inside a bundle that carries the manifest (used to resolve the
@@ -544,16 +546,16 @@ pub fn prepare_home(bundle_bytes: &[u8]) -> std::io::Result<PathBuf> {
     let manifest = bundle::get(bundle_bytes, MANIFEST_NAME)?.ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "bundle has no hugr.toml")
     })?;
-    let (name, version) = manifest_identity(&manifest);
-    let home = agent_home_dir(&name, &version);
+    let name = manifest_identity(&manifest);
+    let home = agent_home_dir(&name);
     std::fs::create_dir_all(&home)?;
     bundle::unpack(bundle_bytes, &home)?;
     Ok(home)
 }
 
-/// Pull `name`/`version` out of the manifest bytes with a forgiving parse — we
-/// only need them to name the home dir, so a parse miss falls back to defaults.
-fn manifest_identity(manifest: &[u8]) -> (String, String) {
+/// Pull `name` out of the manifest bytes with a forgiving parse — we only need
+/// it to name the home dir, so a parse miss falls back to a default.
+fn manifest_identity(manifest: &[u8]) -> String {
     let text = String::from_utf8_lossy(manifest);
     let value: toml::Value = text
         .parse()
@@ -564,47 +566,7 @@ fn manifest_identity(manifest: &[u8]) -> (String, String) {
         .and_then(|v| v.as_str())
         .unwrap_or("agent")
         .to_string();
-    let version = agent
-        .and_then(|a| a.get("version"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("0.0.0")
-        .to_string();
-    (sanitize_segment(&name), sanitize_segment(&version))
-}
-
-/// The per-agent home: `$HUGR_AGENT_HOME` if set, else `<data>/hugr/<name>@<version>`
-/// where `<data>` follows XDG (`$XDG_DATA_HOME`, else `$HOME/.local/share`, else
-/// the temp dir). Stable across invocations so traces persist.
-fn agent_home_dir(name: &str, version: &str) -> PathBuf {
-    if let Ok(explicit) = std::env::var("HUGR_AGENT_HOME") {
-        if !explicit.is_empty() {
-            return PathBuf::from(explicit);
-        }
-    }
-    let data = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(std::env::temp_dir);
-    data.join("hugr").join(format!("{name}@{version}"))
-}
-
-/// Reduce a manifest string to a single safe path segment.
-fn sanitize_segment(s: &str) -> String {
-    let cleaned: String = s
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if cleaned.is_empty() {
-        "agent".to_string()
-    } else {
-        cleaned
-    }
+    sanitize_agent_name(&name)
 }
 
 /// For an audit view, a preparation failure is a stderr error + non-zero exit;
@@ -674,7 +636,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, file.contents).unwrap();
         }
-        let bytes = bundle::pack(&root, &[".hugr-traces", ".scratch"]).unwrap();
+        let bytes = bundle::pack(&root, &["traces", "scratch"]).unwrap();
         (bytes, root)
     }
 
@@ -740,13 +702,11 @@ required = true
 
     #[test]
     fn manifest_identity_reads_name_and_version() {
-        let (id_name, id_version) =
-            manifest_identity(b"[agent]\nname='my agent'\nversion='1.2.3'\n");
+        let id_name = manifest_identity(b"[agent]\nname='my agent'\nversion='1.2.3'\n");
         assert_eq!(id_name, "my_agent");
-        assert_eq!(id_version, "1.2.3");
         // Missing fields fall back.
-        let (n, v) = manifest_identity(b"garbage = ");
-        assert_eq!((n.as_str(), v.as_str()), ("agent", "0.0.0"));
+        let n = manifest_identity(b"garbage = ");
+        assert_eq!(n.as_str(), "agent");
     }
 
     #[tokio::test]

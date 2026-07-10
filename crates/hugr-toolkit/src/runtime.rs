@@ -4,6 +4,7 @@
 //!
 //! `[tools.mcp.<name>]` grants connect their external process and register the discovered tools. Agent-as-tool grants (`[tools.agent.<name>]`) are subprocess-only: `artifact` names a built agent binary spoken to over the CLI JSON contract.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,13 +24,15 @@ use crate::tools::{self, ToolError};
 
 pub use hugr_agent::ResponseContract;
 
-/// Default trace-store directory when the manifest omits `[traces].store`.
-pub const DEFAULT_TRACE_DIRNAME: &str = ".hugr-traces";
+/// Default trace-store directory under the per-agent home.
+pub const DEFAULT_TRACE_DIRNAME: &str = "traces";
+
+/// Default scratchpad directory under the per-agent home.
+pub const DEFAULT_SCRATCH_DIRNAME: &str = "scratch";
 
 /// The trace store a definition reads/writes, resolved the same way
-/// [`build_agent`] resolves it (`[traces].store` against the agent crate folder,
-/// else `.hugr-traces`). Trace tooling (`hugr traces`/`replay`/`verify`) points
-/// at this store.
+/// [`build_agent`] resolves it. Trace tooling (`hugr traces`/`replay`/`verify`)
+/// points at this store.
 pub fn trace_store_for(def: &AgentDefinition) -> TraceStore {
     let base_dir = def.source_dir.clone().unwrap_or_else(|| PathBuf::from("."));
     let dir = def
@@ -37,8 +40,60 @@ pub fn trace_store_for(def: &AgentDefinition) -> TraceStore {
         .store
         .as_deref()
         .map(|s| resolve(&base_dir, s))
-        .unwrap_or_else(|| base_dir.join(DEFAULT_TRACE_DIRNAME));
+        .unwrap_or_else(|| agent_home_for_def(def).join(DEFAULT_TRACE_DIRNAME));
     TraceStore::new(dir)
+}
+
+/// The per-agent home directory. Resolution order:
+/// `HUGR_AGENT_HOME`, then `HUGR_HOME/<agent>`, then `$HOME/.hugr/<agent>`,
+/// then a temp-dir fallback.
+pub fn agent_home_dir(agent_name: &str) -> PathBuf {
+    agent_home_dir_from(agent_name, |key| std::env::var_os(key), std::env::temp_dir())
+}
+
+fn agent_home_dir_from(
+    agent_name: &str,
+    env: impl Fn(&str) -> Option<OsString>,
+    temp_dir: PathBuf,
+) -> PathBuf {
+    if let Some(explicit) = env("HUGR_AGENT_HOME")
+        && !explicit.is_empty()
+    {
+        return PathBuf::from(explicit);
+    }
+    let name = sanitize_agent_name(agent_name);
+    if let Some(base) = env("HUGR_HOME")
+        && !base.is_empty()
+    {
+        return PathBuf::from(base).join(name);
+    }
+    if let Some(home) = env("HOME") {
+        return PathBuf::from(home).join(".hugr").join(name);
+    }
+    temp_dir.join(".hugr").join(name)
+}
+
+pub fn agent_home_for_def(def: &AgentDefinition) -> PathBuf {
+    agent_home_dir(&def.agent.name)
+}
+
+/// Reduce an agent name to a single safe path segment.
+pub fn sanitize_agent_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "agent".to_string()
+    } else {
+        cleaned
+    }
 }
 
 /// Failure to assemble a runtime from a definition. (Run failures are
@@ -178,8 +233,8 @@ pub async fn build_agent_with_options(
         return Err(RuntimeError::NoModel);
     }
 
-    // Trace store: [traces].store, resolved against the agent crate folder.
     let store = trace_store_for(def);
+    let home = agent_home_for_def(def);
 
     let version = if def.agent.version.trim().is_empty() {
         "0.0.0"
@@ -281,9 +336,12 @@ pub async fn build_agent_with_options(
     }
     agent.limits = limits;
 
-    if let Some(root) = &def.scratchpad.root {
-        agent.scratch_root = resolve(&base_dir, root);
-    }
+    agent.scratch_root = def
+        .scratchpad
+        .root
+        .as_deref()
+        .map(|root| resolve(&base_dir, root))
+        .unwrap_or_else(|| home.join(DEFAULT_SCRATCH_DIRNAME));
 
     Ok((agent, warnings))
 }
@@ -513,6 +571,45 @@ root = "."
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(18_993), (2022, 1, 1));
         assert_eq!(civil_from_days(-1), (1969, 12, 31));
+    }
+
+    #[test]
+    fn agent_home_resolution_precedence_and_sanitization() {
+        let temp = PathBuf::from("/tmp/fallback");
+        let env = |pairs: &[(&str, &str)], key: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| OsString::from(v))
+        };
+        assert_eq!(
+            agent_home_dir_from(
+                "my agent!",
+                |key| env(&[("HUGR_AGENT_HOME", "/override")], key),
+                temp.clone()
+            ),
+            PathBuf::from("/override")
+        );
+        assert_eq!(
+            agent_home_dir_from(
+                "my agent!",
+                |key| env(&[("HUGR_HOME", "/hugr-home"), ("HOME", "/home/me")], key),
+                temp.clone()
+            ),
+            PathBuf::from("/hugr-home/my_agent_")
+        );
+        assert_eq!(
+            agent_home_dir_from(
+                "my agent!",
+                |key| env(&[("HOME", "/home/me")], key),
+                temp.clone()
+            ),
+            PathBuf::from("/home/me/.hugr/my_agent_")
+        );
+        assert_eq!(
+            agent_home_dir_from("my agent!", |_| None, temp),
+            PathBuf::from("/tmp/fallback/.hugr/my_agent_")
+        );
     }
 
     #[tokio::test]

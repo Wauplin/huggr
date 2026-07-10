@@ -99,7 +99,7 @@ Do these first: they move files around, and every later phase touches the moved 
 
 These change defaults and introduce the seams that Phase 2/3 build on. Order: 1.1 and 1.3 and 1.4 are independent; 1.2 before 1.5.
 
-### 1.1 `[ ]` Default agent home `~/.hugr/<agent-name>/` (idea 17) — M
+### 1.1 `[x]` Default agent home `~/.hugr/<agent-name>/` (idea 17) — M
 
 - Why: traces should land in one predictable per-agent place (`~/.hugr/hugr-docs/traces`) with zero per-agent configuration; today the default is `<source_dir>/.hugr-traces` in dev (`hugr-toolkit/src/runtime.rs:37-52`) and `$XDG_DATA_HOME/hugr/<name>@<version>/.hugr-traces` for built binaries (`surface.rs:agent_home_dir:580-591`), and `hugr-docs` even sets a custom `[traces] store` — three shapes for one thing.
 - Design: one agent home for every surface, dev and built alike: `~/.hugr/<sanitized-name>/` containing `traces/`, `scratch/`, `memory/` (2.2), `feedback/` (2.3). No version segment (idea 17's example has none; traces carry `agent_version` in their meta already). Resolution order: `$HUGR_AGENT_HOME` (full home override, kept) → `$HUGR_HOME/<name>` (new, overrides the `~/.hugr` base) → `$HOME/.hugr/<name>` → temp dir fallback. `[traces] store` and `[scratchpad] root` remain as explicit overrides but disappear from every example, doc, and template.

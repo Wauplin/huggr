@@ -224,12 +224,12 @@ mod tests {
         write(&src, "docs/a.md", b"alpha");
         write(&src, "docs/sub/b.md", b"beta");
         // Runtime dirs that must be excluded.
-        write(&src, ".hugr-traces/t.json", b"{}");
+        write(&src, "traces/t.json", b"{}");
         write(&src, "target/junk", b"x");
 
-        let bytes = pack(&src, &[".hugr-traces", "target"]).unwrap();
+        let bytes = pack(&src, &["traces", "target"]).unwrap();
         // Determinism: a second pack of the same tree is byte-identical.
-        assert_eq!(bytes, pack(&src, &[".hugr-traces", "target"]).unwrap());
+        assert_eq!(bytes, pack(&src, &["traces", "target"]).unwrap());
 
         let dest = std::env::temp_dir().join(format!("hugr-bundle-dst-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dest);
@@ -241,10 +241,7 @@ mod tests {
         );
         assert_eq!(fs::read(dest.join("docs/a.md")).unwrap(), b"alpha");
         assert_eq!(fs::read(dest.join("docs/sub/b.md")).unwrap(), b"beta");
-        assert!(
-            !dest.join(".hugr-traces").exists(),
-            "excluded dir not packed"
-        );
+        assert!(!dest.join("traces").exists(), "excluded dir not packed");
         assert!(!dest.join("target").exists(), "excluded dir not packed");
 
         // `get` pulls one file in memory.

@@ -373,7 +373,8 @@ pub struct Trace {
 
 - **The log is the truth, not state.** `BrainState` is never stored — always rederivable.
 - **`verify()`** re-folds the events into a fresh brain and asserts the reconstructed log **and** command sequence equal the recorded ones, bit-for-bit. This is the release gate: any new control-flow path ships with a replay test.
-- **The `TraceStore`** (a directory under the agent's data dir) holds immutable traces keyed by content-derived `trace_id`, with `depends_on` lineage in the header; `head()` reads metadata without folding events; file creation is atomic (`create_new`) so parallel asks are collision-free.
+- **The `TraceStore`** (`<agent-home>/traces` by default) holds immutable traces keyed by content-derived `trace_id`, with `depends_on` lineage in the header; `head()` reads metadata without folding events; file creation is atomic (`create_new`) so parallel asks are collision-free.
+- **Agent home** resolves the same for dev and built surfaces: `HUGR_AGENT_HOME` as a full override, else `HUGR_HOME/<agent-name>`, else `$HOME/.hugr/<agent-name>`, else a temp-dir fallback. The default scratch root is `<agent-home>/scratch`; `[traces].store` and `[scratchpad].root` remain explicit manifest overrides.
 - **Resume after crash** is the same machinery: fold the persisted log, append `OpCancelled` for ops that were in flight, continue live.
 
 ### 20. Risks & mitigations

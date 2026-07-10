@@ -117,7 +117,7 @@ fn describe_is_serde_stable() {
                             "additionalProperties": false
                         }
                     },
-                    "scope": { "root": dir.path().join(".scratch").display().to_string() }
+                    "scope": { "root": dir.path().join("scratch").display().to_string() }
                 },
                 {
                     "name": "scratch_read",
@@ -136,7 +136,7 @@ fn describe_is_serde_stable() {
                             "additionalProperties": false
                         }
                     },
-                    "scope": { "root": dir.path().join(".scratch").display().to_string() }
+                    "scope": { "root": dir.path().join("scratch").display().to_string() }
                 },
                 {
                     "name": "scratch_write",
@@ -156,7 +156,7 @@ fn describe_is_serde_stable() {
                             "additionalProperties": false
                         }
                     },
-                    "scope": { "root": dir.path().join(".scratch").display().to_string() }
+                    "scope": { "root": dir.path().join("scratch").display().to_string() }
                 }
             ],
             "model_tiers": [

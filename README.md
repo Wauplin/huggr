@@ -26,6 +26,8 @@ cargo run -p hugr-toolkit --bin hugr -- build my-agent          # ship it: one s
 
 Every built binary self-describes: `--describe` (tools, privileges, tiers, pricing, limits), `--config` (the parsed manifest, secrets redacted), `--traces` (stored lineage).
 
+By default, both `hugr run` and built binaries store agent state under `~/.hugr/<agent-name>/`: immutable traces in `traces/` and per-lineage scratch state in `scratch/`. Override the full home with `HUGR_AGENT_HOME`, or the base with `HUGR_HOME`.
+
 ## What An Agent Crate Looks Like
 
 ```
@@ -120,6 +122,8 @@ cargo run -p hugr-toolkit --bin hugr -- run examples/hugr-docs ./docs "What is t
 ```
 
 The docs root is runtime config, not a compiled-in scope: `hugr run examples/hugr-docs ./docs "..."` and `hugr run examples/hugr-docs ./other-docs "..."` use the same agent crate with different read jails. Because `hugr-docs` exposes `RESPONSE_RUST_TYPE` and a typed Rust response contract, generic `hugr run` compiles and reuses a cached dev shim under the temp dir so `hugr-toolkit` still does not depend on `hugr-docs`. Build it with `hugr build examples/hugr-docs`; the generated standalone shim links the current agent crate inferred from `Cargo.toml`, then Python and other languages consume the built binary via subprocess or `--mcp-serve`.
+
+Runs for this reference agent land in `~/.hugr/hugr-docs/traces` unless `HUGR_AGENT_HOME`, `HUGR_HOME`, or an explicit `[traces].store` override is set.
 
 ## Building & testing
 

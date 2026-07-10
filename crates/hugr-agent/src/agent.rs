@@ -301,6 +301,11 @@ impl Agent {
             description: self.description.clone(),
             tools,
             model_tiers: self.model_tiers(),
+            context: self
+                .context_policy
+                .as_ref()
+                .and_then(|policy| serde_json::to_value(policy).ok())
+                .unwrap_or(Value::Null),
             limits: self.limits.clone(),
         }
     }
@@ -628,6 +633,8 @@ pub struct AgentCard {
     pub description: String,
     pub tools: Vec<ToolCard>,
     pub model_tiers: Vec<ModelTierCard>,
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub context: Value,
     pub limits: AgentLimits,
 }
 

@@ -792,13 +792,14 @@ page_snapshot = 1
         let def = AgentDefinition::parse(src, "hugr.toml").unwrap();
         let (agent, warnings) = build_agent(&def).await.unwrap();
         assert!(warnings.is_empty(), "{warnings:?}");
-        let policy = agent.context_policy.expect("budget policy");
+        let policy = agent.context_policy.as_ref().expect("budget policy");
         let value = serde_json::to_value(policy).unwrap();
         assert_eq!(value["kind"], "budget");
         assert_eq!(value["budget_tokens"], 64);
         assert_eq!(value["trigger_tokens"], 48);
         assert_eq!(value["summary_selector"], "small");
         assert_eq!(value["keep_last_per_tool"]["page_snapshot"], 1);
+        assert_eq!(agent.describe().context["kind"], "budget");
     }
 
     /// Write a minimal agent crate folder and return its path.

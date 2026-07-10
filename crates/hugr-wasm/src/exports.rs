@@ -1,8 +1,8 @@
 use wasm_bindgen::prelude::*;
 
 use hugr_core::{
-    Brain, Command, Decision, Event, ModelOutput, ModelSelector, OpId, StaticPolicy, Timestamp,
-    Usage,
+    Brain, BudgetPolicy, Command, Decision, Event, ModelOutput, ModelSelector, OpId, StaticPolicy,
+    Timestamp, TurnPolicy, Usage,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -26,15 +26,37 @@ impl HugrWasm {
                 .map_err(|err| JsValue::from_str(&format!("invalid config json: {err}")))?,
             _ => BrowserAgentConfig::default(),
         };
-        let mut policy = StaticPolicy::new()
+        let mut static_policy = StaticPolicy::new()
             .with_model(ModelSelector::named("default"))
             .with_tools(browser_tool_schemas());
         if !config.system_prompt.is_empty() {
-            policy = policy.with_system_prompt(config.system_prompt.clone());
+            static_policy = static_policy.with_system_prompt(config.system_prompt.clone());
         }
+        let policy: Box<dyn TurnPolicy> = match config.context.compaction.as_str() {
+            "truncate" | "summarize" => {
+                let mut policy = BudgetPolicy::new(config.context.budget_tokens)
+                    .with_trigger_tokens(config.context.trigger_tokens)
+                    .with_keep_recent_tokens(config.context.keep_recent_tokens)
+                    .with_max_block_tokens(config.context.max_block_tokens)
+                    .with_tool_ttl(config.context.tool_ttl.clone())
+                    .with_keep_last_per_tool(config.context.keep_last_per_tool.clone())
+                    .with_base(static_policy);
+                if config.context.compaction == "summarize" {
+                    policy = policy.with_summary_selector(ModelSelector::named(
+                        config
+                            .context
+                            .summary_model
+                            .clone()
+                            .unwrap_or_else(|| "default".to_string()),
+                    ));
+                }
+                Box::new(policy)
+            }
+            _ => Box::new(static_policy),
+        };
         Ok(HugrWasm {
             config,
-            brain: Brain::new(Box::new(policy)),
+            brain: Brain::new(policy),
             events: Vec::new(),
             commands: Vec::new(),
         })

@@ -225,7 +225,7 @@ examples/chrome-extension/ # a concrete browser host: chrome.* capability dispat
                         #   script, side-panel UI, MV3 manifest; vendors the generic JS at build time.
 ```
 
-Dependency rules: **`hugr-core` depends on nothing environmental** (verify with `cargo tree -p hugr-core`). `hugr-replay` may use `std::fs` but consumes `hugr-core` as pure data. The native layers stack strictly: `hugr-agent` on `hugr-host` + `hugr-replay`; `hugr-toolkit` on `hugr-agent`. Browser-specific behavior lives in JS hosts (`bindings/typescript` + `examples/chrome-extension`): Chrome APIs, IndexedDB, extension UI, and browser tool execution never enter the core or native host crates — `crates/hugr-wasm` is only a JSON-in/JSON-out binding around the brain. Nothing reaches into `hugr-core` internals — they are all hosts.
+Dependency rules: **`hugr-core` depends on nothing environmental** (verify with `cargo tree -p hugr-core`). `hugr-replay` may use `std::fs` but consumes `hugr-core` as pure data. The native layers stack strictly: `hugr-agent` on `hugr-host` + `hugr-replay`; `hugr-toolkit` on `hugr-agent`. Browser-specific behavior lives in JS hosts (`bindings/typescript` + `examples/chrome-extension`): Chrome APIs, IndexedDB, extension UI, and browser tool execution never enter the core or native host crates — `crates/hugr-wasm` is only a JSON-in/JSON-out binding around the brain. Browser context management uses the same core `BudgetPolicy`; the OpenAI-compatible JS adapter only translates `ModelRequest` blocks to provider messages. Nothing reaches into `hugr-core` internals — they are all hosts.
 
 ### 10. Standards positioning
 

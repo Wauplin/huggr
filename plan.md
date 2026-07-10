@@ -162,7 +162,7 @@ These change defaults and introduce the seams that Phase 2/3 build on. Order: 1.
 
 ## Phase 2 — Runtime features
 
-### 2.1 `[ ]` Built-in, configurable compaction / forget (idea 9) — XL (split: 2.1a M, 2.1b L, 2.1c M)
+### 2.1 `[x]` Built-in, configurable compaction / forget (idea 9) — XL (split: 2.1a M, 2.1b L, 2.1c M)
 
 - Why: the only compaction in the project is the wasm POC in `bindings` JS (`openai_adapter.js`: stage-1 relevance prune of stale page observations, stage-2 deterministic token-threshold truncate+summarize) — edge-only, invisible to the trace's `ContextPlan`, not reusable. The core already has the right seams: `TurnPolicy::project_context(log, budget) -> ContextPlan` (`policy.rs:51`), `ContextDisposition::{Included, Omitted}` (`model.rs:176`), `TokenBudget` threaded but never enforced (`StaticPolicy` includes everything), `ContextBudgetTotals` built to make truncation visible.
 - **2.1a — Deterministic compaction policy (pure, in `hugr-core`)**:

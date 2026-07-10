@@ -13,7 +13,7 @@ To build a *different* extension (other layout, tools, policies), copy this fold
 - The side panel runs a Hugr turn loop through `hugr-core` compiled to WASM.
 - The extension always runs in YOLO mode: browser capabilities are auto-approved and no permission prompt is shown for tool calls.
 - The browser model adapter calls an OpenAI-compatible streaming `/chat/completions` endpoint with the API key configured in the side panel.
-- The adapter auto-compacts provider requests after approximately 64k tokens and drops stale heavyweight page observations (see `bindings/typescript/openai_adapter.js`; scheduled to be replaced by built-in policy compaction).
+- The WASM brain uses the built-in context policy by default: model-backed summaries trigger near the 64k-token range, and stale heavyweight page observations are dropped via `keep_last_per_tool` rules before the provider request is rendered.
 - Browser capabilities include tab listing/open/close/switch/reload/history, page HTML/text/snapshot, click/type/select/scroll/submit/focus, waits, local downloads, local file listing/metadata/delete, and upload from the extension-local file store into a page file input.
 - Settings, sessions/traces, and downloaded files are stored in browser-local IndexedDB.
 - Sessions are autosaved during the run; the Ask view has an `Interrupt` button.

@@ -110,21 +110,15 @@ async function driveCommands(session, initialCommands, settings, host, hooks, pu
     hooks.onCommand?.(kind, payload);
     switch (kind) {
       case "StartModelCall": {
-        push?.({ type: "model", label: "Model call", detail: { op: payload.op } });
+        const modelSettings = settingsForModel(settings, payload.model);
+        push?.({ type: "model", label: "Model call", detail: { op: payload.op, model: payload.model } });
         try {
-          const result = await callOpenAiCompatible(payload.request, settings, {
+          const result = await callOpenAiCompatible(payload.request, modelSettings, {
             onText: (text) => {
               hooks.onText?.(text);
               persistence?.onText?.(text);
             },
-            signal: hooks.signal,
-            onCompaction: (meta) => {
-              push?.({
-                type: "compaction",
-                label: meta?.kind === "relevance_prune" ? "Dropped stale page context" : "Compacted context",
-                detail: meta
-              });
-            }
+            signal: hooks.signal
           });
           push?.({
             type: result.output.tool_calls?.length ? "model_tools" : "model_answer",
@@ -249,14 +243,37 @@ function tagged(value) {
 
 function toRustConfig(settings, host) {
   const defaults = host.defaults || {};
+  const context = settings.context || defaults.context || {};
   return {
     base_url: settings.baseUrl || defaults.baseUrl || "https://router.huggingface.co/v1",
     model: settings.model || defaults.model || "google/gemma-4-31B-it:cerebras",
     api_key: settings.apiKey || "",
     max_model_calls: Number(settings.maxModelCalls || defaults.maxModelCalls || 20),
     max_cost_micro_usd: Number(settings.maxCostMicroUsd || defaults.maxCostMicroUsd || 50000),
-    system_prompt: host.systemPrompt || ""
+    system_prompt: host.systemPrompt || "",
+    context: {
+      compaction: context.compaction || "summarize",
+      budget_tokens: Number(context.budgetTokens || context.budget_tokens || 64000),
+      trigger_tokens: Number(context.triggerTokens || context.trigger_tokens || 56000),
+      keep_recent_tokens: Number(context.keepRecentTokens || context.keep_recent_tokens || 8000),
+      max_block_tokens: Number(context.maxBlockTokens || context.max_block_tokens || 2000),
+      summary_model: context.summaryModel || context.summary_model || null,
+      tool_ttl: context.toolTtl || context.tool_ttl || {},
+      keep_last_per_tool: context.keepLastPerTool || context.keep_last_per_tool || {
+        page_snapshot: 1,
+        page_read_text: 1,
+        page_read_html: 1
+      }
+    }
   };
+}
+
+function settingsForModel(settings, selector) {
+  const key = typeof selector === "string" ? selector : selector?.[0] || selector;
+  const override = settings.models?.[key];
+  if (!override) return settings;
+  if (typeof override === "string") return { ...settings, model: override };
+  return { ...settings, ...override };
 }
 
 function errorPayload(error) {

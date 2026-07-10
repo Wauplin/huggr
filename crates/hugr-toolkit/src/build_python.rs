@@ -1,5 +1,5 @@
 //! `hugr build --surface python`: generate a PyO3 + maturin project exposing a
-//! strictly-typed `ask()` for a built agent (ARCHITECTURE §21.2).
+//! strictly-typed `ask()` for a built agent.
 //!
 //! The Python surface is a *generated* project, exactly like the CLI shim — the
 //! agent crate stays clean (just its response contract) and the toolkit owns
@@ -18,8 +18,8 @@
 //! ```
 //!
 //! Strict typing without a second validator: Rust already casts model output
-//! into the agent's response type before it reaches `Answer.response` (§18.2),
-//! so `_models.py` only *deserializes* the already-valid JSON into typed
+//! into the agent's response type before it reaches `Answer.response`, so
+//! `_models.py` only *deserializes* the already-valid JSON into typed
 //! dataclasses. The schema those dataclasses mirror is read from the built
 //! artifact's `--config` (the schemars output — one source of truth), so the
 //! Python types can never drift from the Rust ones.
@@ -298,12 +298,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
-# --- response models, generated from the agent's JSON Schema ---
+# Response models, generated from the agent's JSON Schema.
 
 {response_models}
 
 
-# --- stable contract models (mirror crates/hugr-agent/src/contract.rs) ---
+# Stable contract models, mirroring crates/hugr-agent/src/contract.rs.
 
 
 @dataclass

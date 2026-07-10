@@ -1,6 +1,4 @@
-//! The committed reference manifest must parse cleanly with zero warnings —
-//! it is the documented example every `hugr new` template and doc snippet is
-//! measured against (ROADMAP T1.1).
+//! The committed reference manifest must parse cleanly with zero warnings.
 
 use hugr_toolkit::{AgentDefinition, ToolKind};
 

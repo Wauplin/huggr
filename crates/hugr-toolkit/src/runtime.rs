@@ -1,18 +1,8 @@
-//! Interpret a definition: assemble a `hugr-agent` [`Agent`] from a parsed
-//! [`AgentDefinition`] (ROADMAP T1.3, ARCHITECTURE §20.4).
+//! Interpret a definition: assemble a `hugr-agent` [`Agent`] from a parsed [`AgentDefinition`].
 //!
-//! This is the "interpreter mode" every definition gets before any bundling
-//! (`hugr build`, T2): [`build_agent`] wires the model tiers (one
-//! OpenAI-compatible adapter per `[models.<tier>]`), the pricing table, the
-//! granted library tools (sandbox-by-registration — only what the manifest
-//! grants is registered), the system prompt (with a small template-var set),
-//! the declared limits, and the trace/scratch locations. `hugr run` then does
-//! one [`Agent::ask`].
+//! [`build_agent`] wires the model tiers (one OpenAI-compatible adapter per `[models.<tier>]`), the pricing table, the granted library tools (sandbox-by-registration — only what the manifest grants is registered), the system prompt (with a small template-var set), the declared limits, and the trace/scratch locations. `hugr run` then does one [`Agent::ask`].
 //!
-//! `[tools.mcp.<name>]` grants (§20.3) are wired here (ROADMAP T1.5): each
-//! connects its external process and registers the discovered tools.
-//! Agent-as-tool grants (`[tools.agent.<name>]`, §20.5) are subprocess-only:
-//! `artifact` names a built agent binary spoken to over the CLI JSON contract.
+//! `[tools.mcp.<name>]` grants connect their external process and register the discovered tools. Agent-as-tool grants (`[tools.agent.<name>]`) are subprocess-only: `artifact` names a built agent binary spoken to over the CLI JSON contract.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -39,7 +29,7 @@ pub const DEFAULT_TRACE_DIRNAME: &str = ".hugr-traces";
 /// The trace store a definition reads/writes, resolved the same way
 /// [`build_agent`] resolves it (`[traces].store` against the agent crate folder,
 /// else `.hugr-traces`). Trace tooling (`hugr traces`/`replay`/`verify`) points
-/// at this store (ROADMAP T1.7).
+/// at this store.
 pub fn trace_store_for(def: &AgentDefinition) -> TraceStore {
     let base_dir = def.source_dir.clone().unwrap_or_else(|| PathBuf::from("."));
     let dir = def
@@ -52,7 +42,7 @@ pub fn trace_store_for(def: &AgentDefinition) -> TraceStore {
 }
 
 /// Failure to assemble a runtime from a definition. (Run failures are
-/// *answers*, §18.1 — this is strictly build-time.)
+/// *answers* — this is strictly build-time.)
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
     /// The definition declares no model tier.
@@ -81,15 +71,15 @@ pub enum RuntimeError {
     Definition { message: String },
 }
 
-/// Default recursion cap for agent-as-tool delegation (ARCHITECTURE §20.5,
-/// §13): how many nested `agent_<name>` calls a delegation chain may make
-/// before a grant is replaced by an `agent_depth_exceeded` stub. The remaining
-/// budget rides [`AGENT_DEPTH_ENV`] across the subprocess boundary, so cycles
+/// Default recursion cap for agent-as-tool delegation: how many nested
+/// `agent_<name>` calls a delegation chain may make before a grant is replaced
+/// by an `agent_depth_exceeded` stub. The remaining budget rides
+/// [`AGENT_DEPTH_ENV`] across the subprocess boundary, so cycles
 /// (`a` grants `b` grants `a`) terminate.
 pub const DEFAULT_MAX_AGENT_DEPTH: u32 = 3;
 
 /// Env var carrying the remaining agent-as-tool depth budget into a spawned
-/// child artifact (§20.5). Absent = [`DEFAULT_MAX_AGENT_DEPTH`].
+/// child artifact. Absent = [`DEFAULT_MAX_AGENT_DEPTH`].
 pub const AGENT_DEPTH_ENV: &str = "HUGR_AGENT_DEPTH";
 
 /// Runtime wiring supplied by an embedding agent crate or a generated build
@@ -199,7 +189,7 @@ pub async fn build_agent_with_options(
     let mut agent = Agent::new(def.agent.name.clone(), version, store);
     agent.description = def.agent.description.clone();
 
-    // The provider API key rides an env var (§20.1) — never the manifest. When
+    // The provider API key rides an env var — never the manifest. When
     // unset, the adapter gets an empty key and the run fails as an error answer.
     let api_key = def
         .models
@@ -253,9 +243,9 @@ pub async fn build_agent_with_options(
     // minimal default so the agent still runs.
     agent.system_prompt = Some(render_system_prompt(def));
 
-    // Granted tools — sandbox-by-registration (§20.1). Library grants build
-    // in-process; MCP grants (§20.3) connect their external process and
-    // register the discovered tools. Agent-as-tool grants (§20.5) are T3.8.
+    // Granted tools — sandbox-by-registration. Library grants build in-process;
+    // MCP grants connect their external process and register the discovered
+    // tools.
     for grant in &def.tools {
         match grant.kind {
             ToolKind::Library => {
@@ -278,7 +268,7 @@ pub async fn build_agent_with_options(
         }
     }
 
-    // Declared limits, enforced host-side per ask by `hugr-agent` (T3.1).
+    // Declared limits, enforced host-side per ask by `hugr-agent`.
     let mut limits = AgentLimits::new();
     if let Some(v) = def.limits.max_model_calls {
         limits = limits.with_max_model_calls(v);
@@ -331,8 +321,8 @@ fn command_and_args(grant: &ToolGrant) -> Result<(String, Vec<String>), RuntimeE
     Ok((command, args))
 }
 
-/// The remaining agent-as-tool depth budget of *this* process (§20.5): read
-/// from [`AGENT_DEPTH_ENV`] (stamped by the spawning parent), defaulting to
+/// The remaining agent-as-tool depth budget of *this* process: read from
+/// [`AGENT_DEPTH_ENV`] (stamped by the spawning parent), defaulting to
 /// [`DEFAULT_MAX_AGENT_DEPTH`] at the root of a delegation chain.
 fn remaining_agent_depth() -> u32 {
     std::env::var(AGENT_DEPTH_ENV)
@@ -341,11 +331,11 @@ fn remaining_agent_depth() -> u32 {
         .unwrap_or(DEFAULT_MAX_AGENT_DEPTH)
 }
 
-/// Wire one `[tools.agent.<name>]` grant into an `agent_<name>` tool spec
-/// (ARCHITECTURE §20.5, ROADMAP T3.8). Subprocess-only: `artifact` names a
-/// built agent binary, spawned per call over the CLI JSON contract (§21.1).
-/// At zero remaining depth the grant becomes an `agent_depth_exceeded` stub
-/// (the cycle cut); otherwise the child is spawned with one less budget.
+/// Wire one `[tools.agent.<name>]` grant into an `agent_<name>` tool spec.
+/// Subprocess-only: `artifact` names a built agent binary, spawned per call
+/// over the CLI JSON contract. At zero remaining depth the grant becomes an
+/// `agent_depth_exceeded` stub (the cycle cut); otherwise the child is spawned
+/// with one less budget.
 fn build_agent_tool(grant: &ToolGrant, base_dir: &Path) -> Result<AgentToolSpec, RuntimeError> {
     let tool_name = format!("agent_{}", grant.name);
     let err = |message: String| RuntimeError::Agent {
@@ -388,8 +378,8 @@ fn build_agent_tool(grant: &ToolGrant, base_dir: &Path) -> Result<AgentToolSpec,
     ))
 }
 
-/// Run a built agent artifact as a subprocess over the CLI JSON contract
-/// (§21.1): `<bin> <question> --json [--trace <id>]`, then parse the `Answer`
+/// Run a built agent artifact as a subprocess over the CLI JSON contract:
+/// `<bin> <question> --json [--trace <id>]`, then parse the `Answer`
 /// from stdout. The child inherits `depth` via [`AGENT_DEPTH_ENV`] so a
 /// delegation cycle terminates. Blob forwarding is a later refinement.
 async fn run_subprocess_agent(bin: &Path, ask: Ask, depth: u32) -> Result<Answer, String> {
@@ -560,7 +550,7 @@ root = "."
 
     #[tokio::test]
     async fn agent_as_tool_artifact_grant_registers_agent_tool() {
-        // A built-artifact grant (§20.5, subprocess-only) registers an
+        // A built-artifact grant (subprocess-only) registers an
         // `agent_<name>` capability on the parent's card.
         let dir = write_def("artifact", "");
         let artifact = dir.join("child-bin");

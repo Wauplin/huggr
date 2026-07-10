@@ -1,15 +1,8 @@
-//! The predefined tool library (ROADMAP T1.2, ARCHITECTURE §20.2).
+//! The predefined tool library.
 //!
-//! Vetted, parameterized [`Capability`] families selectable by a manifest grant
-//! (`[tools.<name>]`). Each documents a privilege label so the manifest is
-//! the audit surface: reviewing an agent's blast radius = reading which library
-//! tools it grants. A grant that is not present registers no capability, and an
-//! unregistered capability cannot be invoked (sandbox-by-registration, §7.1).
+//! Vetted, parameterized [`Capability`] families selectable by a manifest grant (`[tools.<name>]`). Each documents a privilege label so the manifest is the audit surface: a grant that is not present registers no capability, and an unregistered capability cannot be invoked (sandbox-by-registration).
 //!
-//! [`build_library_grant`] turns one `ToolKind::Library` [`ToolGrant`] into the
-//! concrete capabilities it registers, resolving relative scope paths against
-//! the agent crate folder (`base_dir`). External-tool grants (MCP /
-//! agent, §20.3) are handled elsewhere (ROADMAP T1.5 / T3.8).
+//! [`build_library_grant`] turns one `ToolKind::Library` [`ToolGrant`] into the concrete capabilities it registers, resolving relative scope paths against the agent crate folder (`base_dir`). External-tool grants (MCP / agent) are handled elsewhere.
 
 mod fs_read;
 mod web_fetch;
@@ -25,9 +18,8 @@ pub use web_fetch::WebFetch;
 use crate::manifest::{ToolGrant, ToolKind};
 
 /// One predefined-library tool id, its privilege label (an open string set —
-/// `read_only` / `scratchpad` / `network` / … — nothing branches on it), and
-/// the concrete tool names it registers. This is the catalog
-/// `--describe`/docs enumerate.
+/// `read_only` / `scratchpad` / `network` / …), and the concrete tool names it
+/// registers. This is the catalog `--describe`/docs enumerate.
 #[derive(Clone, Copy, Debug)]
 pub struct LibraryToolSpec {
     /// The manifest grant key (`fs_read`, `web_fetch`, …).
@@ -40,7 +32,7 @@ pub struct LibraryToolSpec {
     pub summary: &'static str,
 }
 
-/// The full predefined tool library (ROADMAP T1.2).
+/// The full predefined tool library.
 pub const CATALOG: &[LibraryToolSpec] = &[
     LibraryToolSpec {
         id: "fs_read",
@@ -58,7 +50,7 @@ pub const CATALOG: &[LibraryToolSpec] = &[
     LibraryToolSpec {
         id: "scratchpad",
         privilege: "scratchpad",
-        // Provided by the agent runtime itself (T0.4); the grant is an audit
+        // Provided by the agent runtime itself; the grant is an audit
         // marker, not a capability constructed here.
         tools: &["scratch_read", "scratch_write", "scratch_list"],
         summary: "Per-lineage scratch directory (read/write/list).",
@@ -82,7 +74,7 @@ pub enum ToolError {
     /// The grant names a tool not in the library.
     #[error("unknown library tool `{0}` (not in the predefined tool library)")]
     Unknown(String),
-    /// The grant is for an external tool kind handled elsewhere (§20.3).
+    /// The grant is for an external tool kind handled elsewhere.
     #[error("`{0}` is an external tool grant, not a library tool")]
     NotLibrary(String),
     /// The grant's scope/config is invalid.
@@ -96,8 +88,8 @@ pub enum ToolError {
 
 /// Build the capabilities a single library grant registers. Relative scope
 /// paths resolve against `base_dir` (the agent crate folder). The `scratchpad`
-/// grant returns an empty vec — the agent runtime provides those tools (T0.4);
-/// the grant is recorded for audit only.
+/// grant returns an empty vec — the agent runtime provides those tools; the
+/// grant is recorded for audit only.
 pub fn build_library_grant(
     grant: &ToolGrant,
     base_dir: &Path,
@@ -131,7 +123,7 @@ pub fn build_library_grant(
             let tool = WebFetch::from_config(&grant.config).map_err(cfg)?;
             Ok(vec![Arc::new(tool)])
         }
-        // Provided by the agent runtime (T0.4). Recognized for audit; registers
+        // Provided by the agent runtime. Recognized for audit; registers
         // nothing here.
         "scratchpad" => Ok(Vec::new()),
         other => Err(ToolError::Unknown(other.to_string())),

@@ -1,8 +1,9 @@
-//! T1.5 — external tools declared in the manifest reach a definition-run agent.
+//! External tools declared in the manifest reach a definition-run agent.
 //!
 //! A `[tools.mcp.<name>]` grant must spawn the stdio server, discover its tools,
-//! and register them as ordinary capabilities on the assembled agent. We assert the discovered tool shows up on the agent's `describe()` card —
-//! registration is what makes it callable (sandbox-by-registration, §7.1).
+//! and register them as ordinary capabilities on the assembled agent. We assert
+//! the discovered tool shows up on the agent's `describe()` card — registration
+//! is what makes it callable.
 
 use hugr_toolkit::AgentDefinition;
 use hugr_toolkit::runtime::build_agent;

@@ -1,10 +1,6 @@
-//! `hugr` — the builder/interpreter CLI (ROADMAP T1.3+).
+//! `hugr` — the builder/interpreter CLI.
 //!
-//! `hugr run <agent-dir> "question" [--trace <id>] [--json]` loads an agent
-//! crate folder, assembles the `hugr-agent` runtime, and executes one ask. Per the
-//! universal CLI contract (ARCHITECTURE §21.1): the JSON `Answer` goes to
-//! stdout, diagnostics to stderr, and the process always exits 0 — run failures
-//! (and even a bad manifest) come back as `status: "error"` answers.
+//! `hugr run <agent-dir> "question" [--trace <id>] [--json]` loads an agent crate folder, assembles the `hugr-agent` runtime, and executes one ask. Per the universal CLI contract: the JSON `Answer` goes to stdout, diagnostics to stderr, and the process always exits 0 — run failures (and even a bad manifest) come back as `status: "error"` answers.
 
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -320,7 +316,7 @@ async fn run(args: RunArgs) {
     let started = Instant::now();
     let pretty = !args.args.iter().any(|arg| arg == "--json");
 
-    // A bad manifest is an error answer, not a panic (§21.1) — shared with the
+    // A bad manifest is an error answer, not a panic — shared with the
     // built binary via `surface::error_answer`/`print_answer`.
     let def = match AgentDefinition::load(&args.agent_dir) {
         Ok(def) => def,
@@ -333,8 +329,8 @@ async fn run(args: RunArgs) {
         run_typed_definition(&args.agent_dir, &def, &args.args, started, pretty);
         return;
     }
-    // The same generated surface as the built binary (ARCHITECTURE §21.1),
-    // including agent-specific runtime arguments.
+    // The same generated surface as the built binary, including
+    // agent-specific runtime arguments.
     run_definition_args(def, args.args, started).await;
 }
 

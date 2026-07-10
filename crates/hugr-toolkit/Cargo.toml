@@ -1,6 +1,6 @@
 [package]
 name = "hugr-toolkit"
-description = "Hugr subagent crate manifests: the hugr.toml parser, the predefined tool library, and the `hugr` builder CLI (ARCHITECTURE §20–21)."
+description = "Hugr subagent crate manifests: the hugr.toml parser, the predefined tool library, and the `hugr` builder CLI."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,6 @@ rust-version.workspace = true
 [lib]
 name = "hugr_toolkit"
 
-# The `hugr` builder CLI (ROADMAP T1.3+): `hugr run <agent-dir> "question"`.
 [[bin]]
 name = "hugr"
 path = "src/bin/hugr.rs"
@@ -20,30 +19,25 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
 thiserror = { workspace = true }
-# The manifest is TOML (ARCHITECTURE §20.1). `toml` gives us both a typed
-# `Deserialize` path and byte-offset error spans (`toml::de::Error::span`),
-# which we surface as precise line/column diagnostics (ROADMAP T1.1).
+# `toml` gives us both a typed `Deserialize` path and byte-offset error spans,
+# which we surface as precise line/column diagnostics.
 toml = "0.8"
-# The predefined tool library (ROADMAP T1.2) implements host `Capability`s, so
-# the toolkit stacks on hugr-host + hugr-core (as pure data). These are host
-# concerns; hugr-core stays sans-IO.
+# The predefined tool library implements host `Capability`s, so the toolkit
+# stacks on hugr-host + hugr-core as pure data.
 hugr-core = { workspace = true }
 hugr-host = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 # web_fetch (allowlisted, GET-only) reuses the workspace reqwest client.
 reqwest = { workspace = true }
-# `hugr run` (ROADMAP T1.3) assembles a hugr-agent runtime from an agent manifest and
-# executes one ask over the native engine with the OpenAI-compatible adapter.
+# `hugr run` assembles a hugr-agent runtime from an agent manifest and executes
+# one ask over the native engine with the OpenAI-compatible adapter.
 hugr-agent = { workspace = true }
 hugr-providers = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
-# Trace tooling (ROADMAP T1.7): list/replay/verify over the agent's trace store
-# reuse the versioned replay/inspect machinery.
+# Trace tooling reuses the versioned replay/inspect machinery.
 hugr-replay = { workspace = true }
-# The MCP serve surface (ROADMAP T2.4) reuses the newline-delimited JSON-RPC
-# framing helpers (`write_json_line`/`read_json_line`) come from hugr-host.
 
 [dev-dependencies]
 tokio = { workspace = true }

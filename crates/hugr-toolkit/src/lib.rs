@@ -1,14 +1,6 @@
-//! `hugr-toolkit` — Hugr subagent crate manifests (ARCHITECTURE §20–21,
-//! ROADMAP T1).
+//! `hugr-toolkit` — Hugr subagent crate manifests.
 //!
-//! A subagent is a config folder, not a Rust project: a [`hugr.toml`
-//! manifest][manifest] plus a `SYSTEM.md` system prompt. This crate parses that
-//! folder into a typed [`AgentDefinition`], wires the predefined tool library
-//! (T1.2), and drives the `hugr` builder CLI (`run`/`new`/`build`/`traces`).
-//!
-//! T1.1 lands the manifest parser; later tasks stack the tool library and the
-//! CLI on top. The crate is a *host* layer — it stacks on `hugr-agent` and never
-//! reaches into `hugr-core` internals.
+//! A subagent is a config folder, not a Rust project: a [`hugr.toml` manifest][manifest] plus a `SYSTEM.md` system prompt. This crate parses that folder into a typed [`AgentDefinition`], wires the predefined tool library, and drives the `hugr` builder CLI (`run`/`new`/`build`/`traces`).
 //!
 //! [manifest]: crate::manifest
 

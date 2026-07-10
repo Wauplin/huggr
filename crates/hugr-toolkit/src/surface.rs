@@ -1,5 +1,4 @@
-//! The universal CLI surface every built agent binary wraps (ROADMAP T2.1,
-//! ARCHITECTURE §21.1).
+//! The universal CLI surface every built agent binary wraps.
 //!
 //! A binary produced by `hugr build` embeds its agent bundle as a
 //! [`bundle`] and calls [`run_cli`] from `main`. Every built agent has the same
@@ -313,7 +312,7 @@ fn apply_optional_runtime_values(
 
 /// Run one ask and print its answer. Missing question, blob problems, and infra
 /// `AskError`s all surface as `status: "error"` answers (exit 0). Shared by the
-/// built binary and `hugr run` — the one run path (ARCHITECTURE §21.1).
+/// built binary and `hugr run`.
 pub async fn run_ask(
     agent: &Agent,
     question: Option<String>,
@@ -354,13 +353,12 @@ pub async fn run_ask(
 }
 
 /// Programmatic one-shot ask against an embedded bundle, returning the `Answer`
-/// (errors are answers, §18.1). This is the shared entry point for non-CLI
-/// surfaces — the generated Python extension (T2.3) and any future language
-/// binding — so the whole "bundle → assembled agent → one ask" path stays in
-/// one tested place. The caller supplies primitives (no `Ask`/`clap` types), we
-/// apply required runtime args, assemble with `options`, and run exactly one
-/// ask. Build/runtime failures come back as `status: "error"` answers, never
-/// panics or `Err`.
+/// (errors are answers). This is the shared entry point for non-CLI surfaces,
+/// so the whole "bundle → assembled agent → one ask" path stays in one tested
+/// place. The caller supplies primitives (no `Ask`/`clap` types), we apply
+/// required runtime args, assemble with `options`, and run exactly one ask.
+/// Build/runtime failures come back as `status: "error"` answers, never panics
+/// or `Err`.
 pub async fn ask_bundle_with_options(
     bundle_bytes: &[u8],
     options: &RuntimeOptions,
@@ -461,7 +459,7 @@ fn response_schema_for_config(
 
 /// Build an inbound [`BlobHandle`] from a local path, guessing its media type
 /// from the extension. The name hint is the file's own name. Shared with the
-/// generated Python surface (T2.3).
+/// generated Python surface.
 pub fn blob_handle_from_path(path: &Path) -> Result<BlobHandle, String> {
     let path_str = path
         .to_str()
@@ -499,7 +497,7 @@ fn media_type_for(path: &Path) -> &'static str {
 
 /// An assembled agent plus the non-fatal build warnings collected on the way.
 /// Returned by [`load_agent`] — the shared entry point behind the CLI surface
-/// and the generated Rust-crate surface (T2.2).
+/// and the generated Rust-crate surface.
 pub struct LoadedAgent {
     /// The ready-to-ask agent.
     pub agent: Agent,

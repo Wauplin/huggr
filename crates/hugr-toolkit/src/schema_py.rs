@@ -1,13 +1,11 @@
-//! JSON Schema → typed Python dataclasses (ARCHITECTURE §21.2, the Python
-//! surface).
+//! JSON Schema → typed Python dataclasses.
 //!
 //! Hugr validates model output *once*, on the Rust side: the response contract
 //! casts the model's JSON into the agent's Rust type (`serde` + `schemars`)
 //! before it is ever placed on `Answer.response`. Every language surface should
 //! therefore be a thin, generated **typed-deserialization** layer over that
 //! already-validated JSON — never a second validator. Re-validating per surface
-//! would mean re-implementing the same schema in Python, then Kotlin, then TS…
-//! exactly the duplication the narrow-waist rule (§14) rejects.
+//! would mean re-implementing the same schema in Python, then Kotlin, then TS.
 //!
 //! This module turns the schemars JSON Schema (read from the built artifact's
 //! `--config`, the single source of truth) into stdlib `@dataclass` types plus a

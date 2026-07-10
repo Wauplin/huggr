@@ -1,6 +1,5 @@
 //! `hugr build`: compile an agent crate folder into one self-contained CLI
-//! binary (ARCHITECTURE §21). The binary speaks the ask/answer JSON contract
-//! and serves `--mcp-serve`.
+//! binary speaking the ask/answer JSON contract and serving `--mcp-serve`.
 //!
 //! The approach: generate a small shim crate that embeds the agent files as a
 //! [`bundle`] and wraps the shared [`crate::surface::run_cli`] path, then

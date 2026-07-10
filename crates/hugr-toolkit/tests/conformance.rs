@@ -1,11 +1,10 @@
-//! T2.5 — surface conformance suite.
+//! Surface conformance suite.
 //!
 //! One scripted scenario — **ask → follow-up → fork → describe** — run against
-//! every surface of the *same* definition, asserting identical behavior modulo
-//! transport (ARCHITECTURE §21). Because every surface is a thin serialization
-//! of the one `hugr-agent` API, they must agree on: the agent card (name +
-//! tool set), the status of each ask, and the trace-lineage relationships
-//! (a follow-up and a fork each write fresh, distinct trace ids).
+//! every surface of the same definition, asserting identical behavior modulo
+//! transport. Because every surface is a thin serialization of the one
+//! `hugr-agent` API, they must agree on the agent card, ask statuses, and
+//! trace-lineage relationships.
 //!
 //! The whole suite is `#[ignore]`d: it compiles a real cli/mcp binary, which
 //! is slow. Run it with `cargo test -p hugr-toolkit --test conformance --
@@ -182,8 +181,6 @@ fn mcp_result(binary: &Path, home: &Path) -> Normalized {
     result.describe_name = name; // also assert the serverInfo name matches
     result
 }
-
-// --- helpers ---
 
 fn normalized_from(describe: &serde_json::Value, answers: &[&serde_json::Value]) -> Normalized {
     let mut tools: Vec<String> = describe["tools"]

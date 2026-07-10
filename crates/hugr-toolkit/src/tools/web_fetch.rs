@@ -1,6 +1,5 @@
-//! `web_fetch` — a host-allowlisted, GET-only HTTP tool (ROADMAP T1.2,
-//! ARCHITECTURE §20.2). Privilege class: **network**. The scope is the host
-//! allowlist declared in the manifest:
+//! `web_fetch` — a host-allowlisted, GET-only HTTP tool. Privilege class:
+//! **network**. The scope is the host allowlist declared in the manifest:
 //!
 //! ```toml
 //! [tools.web_fetch]
@@ -14,7 +13,7 @@
 //! transport panic. With no `allow_hosts` the tool denies every request, so an
 //! empty grant is fail-closed.
 //!
-//! ## Sandbox hardening (ROADMAP T3.6)
+//! ## Sandbox hardening
 //!
 //! Automatic redirects are **disabled**: `reqwest` otherwise follows up to 10
 //! redirects, and the allowlist is only checked on the *initial* URL — so an
@@ -74,7 +73,7 @@ impl WebFetch {
             .and_then(Value::as_u64)
             .map(|b| b as usize)
             .unwrap_or(DEFAULT_MAX_BYTES);
-        // Disable automatic redirects (T3.6): the allowlist is checked per URL,
+        // Disable automatic redirects: the allowlist is checked per URL,
         // so a redirect to an off-allowlist host must not be followed silently.
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -120,7 +119,7 @@ impl Capability for WebFetch {
     }
 
     fn requires_permission(&self) -> bool {
-        // The allowlist is the sandbox boundary (§20.2), so no per-call gate.
+        // The allowlist is the sandbox boundary, so no per-call gate.
         false
     }
 
@@ -228,8 +227,6 @@ mod tests {
         assert!(!tool.host_allowed("example.com"));
         assert_eq!(tool.allow_methods, vec!["GET".to_string()]);
     }
-
-    // --- T3.6 sandbox-hardening regressions --------------------------------
 
     #[tokio::test]
     async fn userinfo_and_nonhttp_schemes_cannot_bypass_the_allowlist() {

@@ -1,11 +1,6 @@
-//! Trace tooling over an agent's trace store (ROADMAP T1.7): list the lineage
-//! forest, replay a trace step-by-step, and verify one bit-for-bit — the
-//! existing `hugr-replay` machinery pointed at the agent's store
-//! (`hugr_toolkit::runtime::trace_store_for`).
+//! Trace tooling over an agent's trace store: list the lineage forest, replay a trace step-by-step, and verify one bit-for-bit.
 //!
-//! The lineage renderer is pure over a `Vec<TraceHead>` (a fork writes a child
-//! trace with `depends_on` set, §19.2), so a fork tree renders as a tree and is
-//! unit-testable without touching disk.
+//! The lineage renderer is pure over a `Vec<TraceHead>`, so it is unit-testable without touching disk.
 
 use hugr_agent::TraceHead;
 
@@ -97,7 +92,7 @@ mod tests {
 
     #[test]
     fn fork_tree_renders_as_a_tree() {
-        // root → t1 → { t2a, t2b } (the T0.3 three-way fork shape).
+        // root → t1 → { t2a, t2b }
         let heads = vec![
             head("root", None, "start"),
             head("t1", Some("root"), "follow up"),

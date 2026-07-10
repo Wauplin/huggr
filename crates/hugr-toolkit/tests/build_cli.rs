@@ -1,4 +1,4 @@
-//! T2.1 — `hugr build --surface cli`.
+//! `hugr build --surface cli`.
 //!
 //! The fast tests exercise the *runtime* of a built binary in-process: pack a
 //! scaffolded agent crate into a bundle, unpack it into a temp home (as the
@@ -201,8 +201,8 @@ required = true
 }
 
 /// End-to-end: build the cli binary and drive its `--mcp-serve` mode over real
-/// stdio, exercising initialize → tools/call(ask) with `trace_id` round-tripping
-/// across two calls (the T2.4 exit criterion). Ignored — invokes cargo build.
+/// stdio, exercising initialize → tools/call(ask) with `trace_id`
+/// round-tripping across two calls. Ignored — invokes cargo build.
 #[test]
 #[ignore = "invokes cargo build; slow"]
 fn real_mcp_serve_round_trips_over_stdio() {

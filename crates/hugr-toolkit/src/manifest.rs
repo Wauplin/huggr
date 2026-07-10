@@ -1,4 +1,4 @@
-//! The `hugr.toml` manifest (ARCHITECTURE §20.1, ROADMAP T1.1).
+//! The `hugr.toml` manifest.
 //!
 //! A subagent definition is an auditable Rust crate folder: a `Cargo.toml`, a
 //! `hugr.toml` manifest, and a `SYSTEM.md` system prompt beside it. This module
@@ -12,7 +12,7 @@
 //!
 //! The typed shape mirrors the pieces an agent runtime declares (system prompt,
 //! model tiers + pricing, granted tools, limits, runtime arguments, response
-//! contract); T1.3 (`hugr run`) assembles a `hugr-agent` runtime from it.
+//! contract); `hugr run` assembles a `hugr-agent` runtime from it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -26,14 +26,13 @@ pub const CARGO_MANIFEST_FILE: &str = "Cargo.toml";
 /// The system-prompt file name expected inside an agent crate folder.
 pub const SYSTEM_PROMPT_FILE: &str = "SYSTEM.md";
 
-/// Reserved keys under `[tools]` that namespace *external* tool grants
-/// (§20.3). Every other key under `[tools]` is a predefined-library grant.
+/// Reserved keys under `[tools]` that namespace external tool grants. Every
+/// other key under `[tools]` is a predefined-library grant.
 const TOOL_NAMESPACES: &[(&str, ToolKind)] = &[("mcp", ToolKind::Mcp), ("agent", ToolKind::Agent)];
 
-/// A parsed subagent definition (ARCHITECTURE §20). Produced by
-/// [`AgentDefinition::load`] (a folder) or [`AgentDefinition::parse`] (a manifest
-/// string). Every optional section carries defaults, so a minimal manifest —
-/// `[agent]` + one `[models.<tier>]` — parses.
+/// A parsed subagent definition. Produced by [`AgentDefinition::load`] (a
+/// folder) or [`AgentDefinition::parse`] (a manifest string). Every optional
+/// section carries defaults, so a minimal manifest parses.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentDefinition {
     /// Identity block (`[agent]`): name (required), version, description.
@@ -76,7 +75,7 @@ pub struct AgentMeta {
 }
 
 /// The `[models]` block: shared provider settings plus one nested table per
-/// logical tier (`[models.small]`, `[models.medium]`, `[models.big]`, §5.3).
+/// logical tier (`[models.small]`, `[models.medium]`, `[models.big]`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ModelsConfig {
     /// Provider base URL shared by every tier (`base_url`).
@@ -113,26 +112,26 @@ pub struct ToolGrant {
     /// Tool name — a library tool id (`fs_read`) or, for namespaced grants, the
     /// instance name (`docs` in `[tools.mcp.docs]`).
     pub name: String,
-    /// Which extension path this grant came from (§20.3).
+    /// Which extension path this grant came from.
     pub kind: ToolKind,
     /// Scope / configuration parameters, verbatim. Keys are tool-specific, so
     /// they are never unknown-key-checked here.
     pub config: serde_json::Value,
 }
 
-/// How a granted tool is provided (ARCHITECTURE §20.3), in order of weight.
+/// How a granted tool is provided, in order of weight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
-    /// A vetted predefined-library capability (`[tools.fs_read]`, §20.2).
+    /// A vetted predefined-library capability (`[tools.fs_read]`).
     Library,
     /// A stdio MCP server's namespaced tools (`[tools.mcp.<name>]`).
     Mcp,
-    /// Another Hugr agent granted as a tool (`[tools.agent.<name>]`, §20.5).
+    /// Another Hugr agent granted as a tool (`[tools.agent.<name>]`).
     Agent,
 }
 
-/// The `[limits]` block. Enforcement is ROADMAP T3.1; T1.1 only parses it.
+/// The `[limits]` block.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LimitsConfig {
@@ -144,7 +143,7 @@ pub struct LimitsConfig {
     pub timeout_s: Option<u64>,
 }
 
-/// The `[scratchpad]` block (ARCHITECTURE §19.3).
+/// The `[scratchpad]` block.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScratchpadConfig {
@@ -154,7 +153,7 @@ pub struct ScratchpadConfig {
     pub root: Option<String>,
 }
 
-/// The `[traces]` block (ARCHITECTURE §19.1).
+/// The `[traces]` block.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TracesConfig {

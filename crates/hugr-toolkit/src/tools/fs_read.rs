@@ -1,7 +1,6 @@
-//! `fs_read` — a root-jailed, read-only filesystem tool family (ROADMAP T1.2,
-//! ARCHITECTURE §20.2). Generalized from the `hugr-docs` retrieval tools: the
-//! docs-specific `AI_INDEX`/`is_index` bits are dropped and the root is a
-//! manifest-configured scope (`[tools.fs_read] root = "./..."`).
+//! `fs_read` — a root-jailed, read-only filesystem tool family. Generalized
+//! from the `hugr-docs` retrieval tools: the docs-specific `AI_INDEX`/`is_index`
+//! bits are dropped and the root is a manifest-configured scope.
 //!
 //! One grant registers a family of six read capabilities, all sharing the same
 //! [`FsRoot`] jail:
@@ -770,10 +769,10 @@ mod tests {
         assert!(root.resolve_existing(Some("sub/b.txt")).is_ok());
     }
 
-    /// T3.6 regression: a symlink *inside* the jail that points *outside* it
-    /// must not be a read primitive for the target. Path components are all
-    /// `Normal`, so the traversal check passes — the post-canonicalize
-    /// `starts_with(root)` re-check is what rejects it.
+    /// A symlink inside the jail that points outside it must not be a read
+    /// primitive for the target. Path components are all `Normal`, so the
+    /// traversal check passes — the post-canonicalize `starts_with(root)`
+    /// re-check is what rejects it.
     #[cfg(unix)]
     #[test]
     fn jail_rejects_symlink_that_escapes_the_root() {

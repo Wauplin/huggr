@@ -1,5 +1,4 @@
-//! A tiny, deterministic archive of an agent crate folder, embedded into a built
-//! agent binary (ROADMAP T2.1, ARCHITECTURE §21.1).
+//! A tiny, deterministic archive of an agent crate folder, embedded into a built agent binary.
 //!
 //! `hugr build` [`pack`]s the agent's source files into a
 //! single blob written next to the generated shim crate and `include_bytes!`d

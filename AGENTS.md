@@ -96,8 +96,8 @@ cargo tree -p hugr-core    # audit: must stay free of tokio/reqwest/fs
 - **Keep the docs in sync — it's part of "done".** After completing a task update `ARCHITECTURE.md` if behavior changed. A task isn't finished until the docs match reality.
 - **Prefer deletion over abstraction.** One way to do each thing; if two mechanisms do the same job, keep the one the live stack uses and delete the other.
 - **Markdown is single-line.** One physical line per paragraph or bullet — never hard-wrap prose; rely on soft-wrap. (Fenced code blocks and table rows are exempt.)
-- Reference design sections in comments as `ARCHITECTURE §X` so code stays traceable to the rationale.
-- Keep event handlers O(1)-ish (append to a buffer); no heavy work in the reducer (ARCHITECTURE §17).
+- **Comments state what the code cannot.** No references to other docs (`ARCHITECTURE §X` etc.), no "how it works" narration, no comments restating the signature or the next line, no section banners. A comment is justified only for a non-obvious constraint, failure mode, or safety/jail invariant; public items keep one concise doc line stating the contract.
+- Keep event handlers O(1)-ish (append to a buffer); no heavy work in the reducer.
 - When you add a `Command`/`Event`/`Record` variant: update the reducer's match and add a scripted test that pins the resulting command sequence.
 - Determinism is testable: any new control-flow path should have a replay test asserting identical commands on a re-fed event stream; `verify()` is the release gate.
-- Drop short raw ideas into `new_ideas.md`.
+- **Ideas flow: `new_ideas.md` → `plan.md` → implementation.** While implementing, drop short one-line ideas (not designs or TODO lists) into `new_ideas.md` so the owner can review them; when an idea is promoted into the structured roadmap `plan.md`, remove it from `new_ideas.md`.

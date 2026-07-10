@@ -1,8 +1,4 @@
 //! OpenAI Chat Completions adapter with streaming.
-//!
-//! Translates the canonical [`ModelRequest`] into the chat-completions wire
-//! format, streams the SSE response, forwards deltas through the
-//! [`ModelSink`], and returns the consolidated [`ModelOutput`] + [`Usage`].
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -19,7 +15,6 @@ use serde_json::{Value, json};
 // Point `HUGR_BASE_URL` at `https://api.openai.com/v1` to use OpenAI directly.
 const DEFAULT_BASE_URL: &str = "https://router.huggingface.co/v1";
 
-// Transport-level retry defaults (ARCHITECTURE: retries are the adapter's job).
 // 4 attempts = 1 initial try + up to 3 retries, with exponential backoff capped
 // so a flaky network or a transient 429/5xx recovers without a long stall.
 const DEFAULT_MAX_ATTEMPTS: u32 = 4;
@@ -168,8 +163,7 @@ impl OpenAiAdapter {
             })
             .collect();
 
-        // Streaming is the only mode (see `ModelAdapter`): always request a
-        // streamed response, and ask for usage in the final SSE chunk.
+        // Always stream; `include_usage` puts usage in the final SSE chunk.
         let mut body = json!({
             "model": self.model,
             "messages": messages,
@@ -204,10 +198,9 @@ impl OpenAiAdapter {
     /// [`Self::max_attempts`].
     ///
     /// Retried: connection/timeout errors, HTTP 429, and 5xx. Never retried:
-    /// 4xx other than 429 — those are semantic errors that won't fix themselves
-    /// (per CLAUDE.md, semantic errors are not the adapter's to retry). On a
-    /// successful (2xx) response the streaming body is returned untouched; the
-    /// stream itself is consumed once and not retried.
+    /// 4xx other than 429 — those are semantic errors that won't fix themselves.
+    /// On a successful (2xx) response the streaming body is returned untouched;
+    /// the stream itself is consumed once and not retried.
     async fn send_with_retry(&self, body: &Value) -> anyhow::Result<reqwest::Response> {
         let url = format!("{}/chat/completions", self.base_url);
         let mut attempt = 1;
@@ -257,8 +250,6 @@ fn backoff_delay(attempt: u32) -> Duration {
     RETRY_BASE_DELAY.saturating_mul(factor).min(RETRY_MAX_DELAY)
 }
 
-/// Sleep indirection so the retry path stays host-side (tokio) without leaking
-/// into core; see CLAUDE.md (all IO/clock work lives in the host).
 async fn sleep(dur: Duration) {
     tokio::time::sleep(dur).await;
 }
@@ -309,8 +300,7 @@ where
         let mut start = 0;
         while let Some(rel) = buf[start..].iter().position(|&b| b == b'\n') {
             let pos = start + rel;
-            // Borrows for valid UTF-8; allocates only for the rare invalid
-            // line (same lossy tolerance as before).
+            // Borrows for valid UTF-8; allocates only for a rare invalid line.
             let line = String::from_utf8_lossy(&buf[start..pos]);
             start = pos + 1;
             if ingest_sse_line(&line, acc, sink) {
@@ -478,7 +468,7 @@ impl Accumulator {
         let output = ModelOutput::new(self.text, reasoning, calls, stop);
 
         // Prefer the router's real cost; only fall back to the static price
-        // table when the response carried none (Task D).
+        // table when the response carried none.
         let usage = build_usage(
             self.input_tokens,
             self.output_tokens,
@@ -508,14 +498,12 @@ fn extract_cost(usage: &Value) -> Option<f64> {
 
 /// Build [`Usage`], stashing cost in its opaque `extra` as `{ "cost": <usd>,
 /// "cost_source": "router" | "estimated" }`. The brain never reads this; only a
-/// host metrics front-end does (narrow-waist passthrough, ARCHITECTURE §2.4).
+/// host metrics front-end does.
 fn build_usage(input_tokens: u64, output_tokens: u64, reported: Option<f64>, model: &str) -> Usage {
     let usage = Usage::new(input_tokens, output_tokens);
     match reported {
-        // The router told us the real cost — use it, no table guess.
         Some(cost) => usage.with_extra(json!({ "cost": cost, "cost_source": "router" })),
-        // No cost in the response: estimate from the static price table, if the
-        // model is known. Unknown models get no cost rather than a wrong guess.
+        // Unknown models get no cost rather than a wrong guess.
         None => match estimate_cost(input_tokens, output_tokens, model) {
             Some(cost) => usage.with_extra(json!({ "cost": cost, "cost_source": "estimated" })),
             None => usage,

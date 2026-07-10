@@ -89,6 +89,8 @@ pub struct ContextPlan {
     pub tools: Vec<ToolSchema>,
     pub params: SamplingParams,
     pub extra: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wants_summary: Option<SummaryRequest>,
 }
 
 impl ContextPlan {
@@ -106,6 +108,7 @@ impl ContextPlan {
             tools,
             params,
             extra: Value::Null,
+            wants_summary: None,
         }
     }
 
@@ -126,6 +129,30 @@ impl ContextPlan {
     pub fn with_extra(mut self, extra: Value) -> Self {
         self.extra = extra;
         self
+    }
+
+    pub fn with_summary_request(mut self, request: SummaryRequest) -> Self {
+        self.wants_summary = Some(request);
+        self
+    }
+}
+
+/// A policy request for a model-backed context summary before the main model call.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SummaryRequest {
+    pub replaces_up_to: Seq,
+    pub selector: ModelSelector,
+    pub request: ModelRequest,
+}
+
+impl SummaryRequest {
+    pub fn new(replaces_up_to: Seq, selector: ModelSelector, request: ModelRequest) -> Self {
+        Self {
+            replaces_up_to,
+            selector,
+            request,
+        }
     }
 }
 

@@ -1151,6 +1151,42 @@ async fn budget_policy_wraps_default_policy_and_records_config() {
     hugr_host::hugr_replay::verify(&trace).expect("budget policy trace verifies");
 }
 
+#[tokio::test]
+async fn summary_policy_records_summary_and_verifies() {
+    let medium = MockModel::new([
+        ModelOutput::text("first answer"),
+        ModelOutput::text("final answer after summary"),
+    ]);
+    let summarizer = MockModel::new([ModelOutput::text("summary of the old turn")]);
+    let mut engine = Engine::builder()
+        .record(true)
+        .clock(deterministic_clock())
+        .model(ModelSelector::named("medium"), medium.clone())
+        .model(ModelSelector::named("summarizer"), summarizer.clone())
+        .budget_policy(
+            BudgetPolicy::new(16)
+                .with_trigger_tokens(16)
+                .with_keep_recent_tokens(4)
+                .with_summary_selector(ModelSelector::named("summarizer")),
+        )
+        .build();
+
+    engine
+        .user_turn("old context ".repeat(30).to_string())
+        .await;
+    engine.user_turn("use that context".into()).await;
+    engine.session_end();
+
+    assert_eq!(summarizer.requests.lock().unwrap().len(), 1);
+    assert_eq!(medium.requests.lock().unwrap().len(), 2);
+    let trace = engine.trace().unwrap();
+    assert!(trace.log.iter().any(|entry| matches!(
+        &entry.record,
+        Record::ContextSummary { text, .. } if text == "summary of the old turn"
+    )));
+    hugr_host::hugr_replay::verify(&trace).expect("summarizing trace verifies");
+}
+
 /// Regression: a resumed engine must start **quiescent**. Resuming a trace
 /// whose fold leaves an op in flight (a crash mid-model-call) reconciles it by
 /// folding `OpCancelled` — and the commands that queues (a `Done { Cancelled }`,

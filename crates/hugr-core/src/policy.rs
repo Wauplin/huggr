@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{
     ContentPart, ContextBlock, ContextBudgetTotals, ContextDisposition, ContextPlan,
-    ContextPlanEntry, ContextSource, ModelSelector, Role, SamplingParams, TokenBudget, ToolSchema,
+    ContextPlanEntry, ContextSource, ModelRequest, ModelSelector, Role, SamplingParams,
+    SummaryRequest, TokenBudget, ToolSchema,
 };
 use crate::primitives::Value;
 use crate::record::{LogEntry, Record};
@@ -233,6 +234,7 @@ impl TurnPolicy for StaticPolicy {
         // One context block per logged message / result, in log order.
         let mut entries = Vec::new();
         let mut totals = ContextBudgetTotals::new();
+        let active_summary = active_summary(log);
         // One projected block: count it against the budget totals and record
         // the plan entry, in one step. The arms that deliberately do *not*
         // count against the totals (`OpEnded` bookkeeping) push their entries
@@ -262,6 +264,16 @@ impl TurnPolicy for StaticPolicy {
         }
         let mut projected_tool_results = HashSet::new();
         for entry in log {
+            if let Some((_, replaces_up_to)) = active_summary
+                && entry.seq <= replaces_up_to
+            {
+                entries.push(ContextPlanEntry::new(
+                    ContextSource::log_entry(entry.seq),
+                    entry.record.content_est_tokens().unwrap_or(0),
+                    ContextDisposition::omitted(),
+                ));
+                continue;
+            }
             if projected_tool_results.contains(&entry.seq) {
                 let est_tokens = entry.record.content_est_tokens().unwrap_or(0);
                 entries.push(ContextPlanEntry::new(
@@ -348,6 +360,35 @@ impl TurnPolicy for StaticPolicy {
                         }
                     }
                 }
+                Record::ContextSummary {
+                    replaces_up_to,
+                    text,
+                    est_tokens,
+                    ..
+                } => {
+                    if Some((entry.seq, *replaces_up_to)) == active_summary {
+                        let disposition = ContextDisposition::included(ContextBlock::new(
+                            Role::System,
+                            vec![ContentPart::Text(format!(
+                                "Context summary through log seq {}:\n{text}",
+                                replaces_up_to.0
+                            ))],
+                        ));
+                        push(
+                            &mut totals,
+                            &mut entries,
+                            ContextSource::log_entry(entry.seq),
+                            *est_tokens,
+                            disposition,
+                        );
+                    } else {
+                        entries.push(ContextPlanEntry::new(
+                            ContextSource::log_entry(entry.seq),
+                            *est_tokens,
+                            ContextDisposition::omitted(),
+                        ));
+                    }
+                }
                 Record::ToolResult {
                     call_id,
                     result,
@@ -402,6 +443,15 @@ impl TurnPolicy for StaticPolicy {
     }
 }
 
+fn active_summary(log: &[LogEntry]) -> Option<(crate::primitives::Seq, crate::primitives::Seq)> {
+    log.iter()
+        .filter_map(|entry| match &entry.record {
+            Record::ContextSummary { replaces_up_to, .. } => Some((entry.seq, *replaces_up_to)),
+            _ => None,
+        })
+        .max_by_key(|(_, replaces_up_to)| *replaces_up_to)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BudgetPolicy {
     #[serde(default = "budget_policy_kind")]
@@ -416,6 +466,8 @@ pub struct BudgetPolicy {
     tool_ttl: BTreeMap<String, u32>,
     #[serde(default)]
     keep_last_per_tool: BTreeMap<String, u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary_selector: Option<ModelSelector>,
 }
 
 fn budget_policy_kind() -> String {
@@ -435,6 +487,7 @@ impl BudgetPolicy {
             max_block_tokens: (budget_tokens / 4).max(1),
             tool_ttl: BTreeMap::new(),
             keep_last_per_tool: BTreeMap::new(),
+            summary_selector: None,
         }
     }
 
@@ -473,6 +526,11 @@ impl BudgetPolicy {
             .collect();
         self
     }
+
+    pub fn with_summary_selector(mut self, selector: ModelSelector) -> Self {
+        self.summary_selector = Some(selector);
+        self
+    }
 }
 
 impl TurnPolicy for BudgetPolicy {
@@ -505,6 +563,13 @@ impl TurnPolicy for BudgetPolicy {
         );
         plan.totals = totals_for(&plan.entries);
         let recent = recent_indices(&plan.entries, self.keep_recent_tokens);
+        if let Some(selector) = &self.summary_selector
+            && let Some(up_to) = summary_cutoff(&plan.entries, &recent)
+            && !has_summary_covering(log, up_to)
+        {
+            plan.wants_summary = Some(summary_request(selector.clone(), up_to, &plan));
+            return plan;
+        }
         let mut used = plan.totals.used_tokens;
         let target = u64::from(self.budget_tokens);
         let mut dropped = 0u64;
@@ -625,7 +690,8 @@ fn apply_forget_rules(
                 }
                 newer_by_tool.insert(name.clone(), newer_same.saturating_add(1));
             }
-            Record::ModelOutput { .. } | Record::OpEnded { .. } => {}
+            Record::ModelOutput { .. } | Record::ContextSummary { .. } | Record::OpEnded { .. } => {
+            }
         }
     }
 
@@ -698,6 +764,61 @@ fn balance_tool_call_groups(entries: &mut [ContextPlanEntry]) {
             break;
         }
     }
+}
+
+fn summary_cutoff(
+    entries: &[ContextPlanEntry],
+    recent: &HashSet<usize>,
+) -> Option<crate::primitives::Seq> {
+    let mut cutoff = None;
+    for (idx, entry) in entries.iter().enumerate() {
+        if recent.contains(&idx) {
+            break;
+        }
+        if let ContextSource::LogEntry { seq } = entry.source {
+            cutoff = Some(seq);
+        }
+    }
+    cutoff
+}
+
+fn has_summary_covering(log: &[LogEntry], up_to: crate::primitives::Seq) -> bool {
+    log.iter().any(|entry| {
+        matches!(
+            &entry.record,
+            Record::ContextSummary { replaces_up_to, .. } if *replaces_up_to >= up_to
+        )
+    })
+}
+
+fn summary_request(
+    selector: ModelSelector,
+    replaces_up_to: crate::primitives::Seq,
+    plan: &ContextPlan,
+) -> SummaryRequest {
+    let mut blocks = vec![ContextBlock::new(
+        Role::System,
+        vec![ContentPart::Text(
+            "Summarize the following conversation context for future turns. Preserve user goals, decisions, constraints, tool findings, and unresolved work. Return only the summary text.".to_string(),
+        )],
+    )];
+    for entry in &plan.entries {
+        match entry.source {
+            ContextSource::LogEntry { seq } if seq <= replaces_up_to => match &entry.disposition {
+                ContextDisposition::Included { block }
+                | ContextDisposition::Truncated { block } => {
+                    blocks.push(block.clone());
+                }
+                ContextDisposition::Dropped { .. } | ContextDisposition::Omitted => {}
+            },
+            ContextSource::System | ContextSource::LogEntry { .. } => {}
+        }
+    }
+    SummaryRequest::new(
+        replaces_up_to,
+        selector,
+        ModelRequest::new(blocks, Vec::new(), SamplingParams::default()),
+    )
 }
 
 fn recent_indices(entries: &[ContextPlanEntry], keep_recent_tokens: u32) -> HashSet<usize> {

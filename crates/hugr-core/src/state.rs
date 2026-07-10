@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::command::Command;
 use crate::model::ModelSelector;
-use crate::primitives::{OpId, Timestamp, Value};
+use crate::primitives::{OpId, Seq, Timestamp, Value};
 use crate::record::LogEntry;
 
 /// The brain's working state. Derived from [`log`](BrainState::log); never the
@@ -197,6 +197,7 @@ pub enum OpKind {
     Model {
         selector: ModelSelector,
         text_so_far: String,
+        purpose: ModelPurpose,
     },
     /// A capability (tool) invocation in progress. `background` ops do **not**
     /// block the model turn: the turn resumes while they keep running, so a
@@ -212,6 +213,13 @@ pub enum OpKind {
         args: Value,
         call_id: String,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum ModelPurpose {
+    Main,
+    Summary { replaces_up_to: Seq },
 }
 
 impl OpKind {
@@ -256,5 +264,15 @@ impl OpKind {
 
     pub(crate) fn is_model_call(&self) -> bool {
         matches!(self, OpKind::Model { .. })
+    }
+
+    pub(crate) fn summary_replaces_up_to(&self) -> Option<Seq> {
+        match self {
+            OpKind::Model {
+                purpose: ModelPurpose::Summary { replaces_up_to, .. },
+                ..
+            } => Some(*replaces_up_to),
+            _ => None,
+        }
     }
 }

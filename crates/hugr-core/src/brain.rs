@@ -18,7 +18,7 @@ use crate::model::{ContextPlan, ModelDelta, ModelOutput, ToolCall, Usage};
 use crate::policy::{StaticPolicy, TurnPolicy};
 use crate::primitives::{OpId, Value};
 use crate::record::{LogEntry, OpMeta, OpOutcome, Record};
-use crate::state::{BrainState, OpKind};
+use crate::state::{BrainState, ModelPurpose, OpKind};
 
 /// The agent core. Construct one with a [`TurnPolicy`], feed it [`Event`]s
 /// with [`submit`](Brain::submit), and drain [`Command`]s with
@@ -148,6 +148,26 @@ impl Brain {
     }
 
     fn on_model_done(&mut self, op: OpId, output: ModelOutput, usage: Usage, est_tokens: u32) {
+        if let Some(replaces_up_to) = self
+            .state
+            .get_op(op)
+            .and_then(|entry| entry.kind.summary_replaces_up_to())
+        {
+            self.append(Record::ContextSummary {
+                op,
+                replaces_up_to,
+                text: output.text,
+                est_tokens,
+            });
+            self.end_op(op, OpOutcome::Ok, Some(usage));
+            if self.resolve_abort_if_drained() {
+                return;
+            }
+            self.checkpoint();
+            self.start_model_turn();
+            return;
+        }
+
         self.append(Record::ModelOutput {
             op,
             output: output.clone(),
@@ -346,6 +366,25 @@ impl Brain {
     fn start_model_turn(&mut self) {
         let budget = self.policy.context_budget(&self.state);
         let plan = self.policy.project_context(self.state.log(), budget);
+        if let Some(summary) = plan.wants_summary {
+            let op = self.state.alloc_op();
+            self.state.mark(
+                op,
+                OpKind::Model {
+                    selector: summary.selector.clone(),
+                    text_so_far: String::new(),
+                    purpose: ModelPurpose::Summary {
+                        replaces_up_to: summary.replaces_up_to,
+                    },
+                },
+            );
+            self.state.push_command(Command::StartModelCall {
+                op,
+                model: summary.selector,
+                request: summary.request,
+            });
+            return;
+        }
         let op = self.state.alloc_op();
         let selector = self.policy.choose_model(&self.state);
         let request = plan.to_model_request();
@@ -354,6 +393,7 @@ impl Brain {
             OpKind::Model {
                 selector: selector.clone(),
                 text_so_far: String::new(),
+                purpose: ModelPurpose::Main,
             },
         );
         self.state.push_command(Command::StartModelCall {

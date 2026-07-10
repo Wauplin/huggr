@@ -510,6 +510,91 @@ fn policy_registry_decodes_budget_policy() {
 }
 
 #[test]
+fn budget_policy_requests_summary_before_main_model_turn() {
+    let mut seed = Brain::with_default_policy();
+    run_script(
+        &mut seed,
+        vec![
+            Event::UserInput {
+                content: json!("old user details that should be summarized"),
+                est_tokens: 20,
+            },
+            Event::ModelDone {
+                op: OpId(0),
+                output: text_output("old answer details that should be summarized"),
+                usage: usage(),
+                est_tokens: 20,
+            },
+        ],
+    );
+
+    let policy = BudgetPolicy::new(12)
+        .with_trigger_tokens(12)
+        .with_keep_recent_tokens(2)
+        .with_summary_selector(ModelSelector::named("summarizer"));
+    let mut brain = Brain::from_log(Box::new(policy), seed.state().log().to_vec());
+    let commands = run_script(
+        &mut brain,
+        vec![Event::UserInput {
+            content: json!("new question"),
+            est_tokens: 1,
+        }],
+    );
+    let summary_op = match effectful(&commands).as_slice() {
+        [Command::StartModelCall { op, model, request }] => {
+            assert_eq!(model.0, "summarizer");
+            assert!(request.tools.is_empty());
+            assert!(request.blocks.iter().any(|block| {
+                block.content.iter().any(|part| {
+                    matches!(part, ContentPart::Text(text) if text.contains("old user details"))
+                })
+            }));
+            *op
+        }
+        other => panic!("expected only summary model call, got {other:#?}"),
+    };
+
+    let commands = run_script(
+        &mut brain,
+        vec![Event::ModelDone {
+            op: summary_op,
+            output: text_output("summary of old details"),
+            usage: usage(),
+            est_tokens: 3,
+        }],
+    );
+    assert!(brain.state().log().iter().any(|entry| matches!(
+        &entry.record,
+        Record::ContextSummary { text, .. } if text == "summary of old details"
+    )));
+    match effectful(&commands).as_slice() {
+        [
+            Command::Checkpoint,
+            Command::StartModelCall { model, request, .. },
+        ] => {
+            assert_eq!(model.0, "medium");
+            assert!(request.blocks.iter().any(|block| {
+                block.role == Role::System
+                    && block.content.iter().any(|part| {
+                        matches!(part, ContentPart::Text(text) if text.contains("summary of old details"))
+                    })
+            }));
+            assert!(request.blocks.iter().any(|block| {
+                block.content.iter().any(
+                    |part| matches!(part, ContentPart::Text(text) if text.contains("new question")),
+                )
+            }));
+            assert!(!request.blocks.iter().any(|block| {
+                block.content.iter().any(|part| {
+                    matches!(part, ContentPart::Text(text) if text.contains("old answer details"))
+                })
+            }));
+        }
+        other => panic!("expected checkpoint then main model call, got {other:#?}"),
+    }
+}
+
+#[test]
 fn duplicate_permission_allow_does_not_drop_the_live_op() {
     let policy = StaticPolicy::default().with_permissioned(["shell".to_string()]);
     let mut brain = Brain::new(Box::new(policy));

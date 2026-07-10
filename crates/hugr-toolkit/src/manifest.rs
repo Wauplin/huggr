@@ -159,6 +159,8 @@ pub struct ContextConfig {
     pub keep_recent_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_block_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_model: Option<String>,
     #[serde(default)]
     pub forget: ContextForgetConfig,
 }
@@ -610,10 +612,11 @@ fn validate_runtime_arg(arg: &RuntimeArg, path: &Path) -> Result<(), ManifestErr
 
 fn validate_context(context: &ContextConfig, path: &Path) -> Result<(), ManifestError> {
     let compaction = context.compaction.as_deref().unwrap_or("none");
-    if !matches!(compaction, "none" | "truncate") {
+    if !matches!(compaction, "none" | "truncate" | "summarize") {
         return Err(ManifestError::Validate {
             path: path.to_path_buf(),
-            message: "[context].compaction must be \"none\" or \"truncate\"".to_string(),
+            message: "[context].compaction must be \"none\", \"truncate\", or \"summarize\""
+                .to_string(),
         });
     }
     for (key, value) in [
@@ -642,6 +645,12 @@ fn validate_context(context: &ContextConfig, path: &Path) -> Result<(), Manifest
                 });
             }
         }
+    }
+    if matches!(context.summary_model.as_deref(), Some("")) {
+        return Err(ManifestError::Validate {
+            path: path.to_path_buf(),
+            message: "[context].summary_model must not be empty".to_string(),
+        });
     }
     Ok(())
 }
@@ -727,10 +736,11 @@ model = "m"
 
 [context]
 budget_tokens = 4096
-compaction = "truncate"
+compaction = "summarize"
 trigger_tokens = 3500
 keep_recent_tokens = 500
 max_block_tokens = 200
+summary_model = "small"
 
 [context.forget.tool_ttl]
 page_snapshot = 2
@@ -740,7 +750,8 @@ browser_observation = 1
 "#;
         let def = AgentDefinition::parse(src, "hugr.toml").unwrap();
         assert_eq!(def.context.budget_tokens, Some(4096));
-        assert_eq!(def.context.compaction.as_deref(), Some("truncate"));
+        assert_eq!(def.context.compaction.as_deref(), Some("summarize"));
+        assert_eq!(def.context.summary_model.as_deref(), Some("small"));
         assert_eq!(def.context.forget.tool_ttl["page_snapshot"], 2);
         assert_eq!(
             def.context.forget.keep_last_per_tool["browser_observation"],
@@ -753,7 +764,7 @@ browser_observation = 1
         let base = "[agent]\nname = \"x\"\n[models.medium]\nmodel = \"m\"\n";
         for (src, needle) in [
             (
-                format!("{base}[context]\ncompaction = \"summarize\"\n"),
+                format!("{base}[context]\ncompaction = \"compactify\"\n"),
                 "compaction".to_string(),
             ),
             (

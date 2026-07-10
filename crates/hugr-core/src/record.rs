@@ -51,6 +51,16 @@ pub enum Record {
         est_tokens: u32,
     },
 
+    /// A model-backed projection summary. It replaces older records in future
+    /// context projections but never deletes them from the durable log.
+    ContextSummary {
+        op: OpId,
+        replaces_up_to: Seq,
+        text: String,
+        #[serde(default)]
+        est_tokens: u32,
+    },
+
     /// A tool/capability result fed back into the conversation. (Also used for
     /// denials and conflicts, which are just error-shaped results to the model.)
     ToolResult {
@@ -83,6 +93,7 @@ impl Record {
     pub fn op_id(&self) -> Option<OpId> {
         match self {
             Record::ModelOutput { op, .. }
+            | Record::ContextSummary { op, .. }
             | Record::ToolResult { op, .. }
             | Record::OpEnded { op, .. } => Some(*op),
             Record::UserMessage { .. } => None,
@@ -95,6 +106,7 @@ impl Record {
         match self {
             Record::UserMessage { est_tokens, .. }
             | Record::ModelOutput { est_tokens, .. }
+            | Record::ContextSummary { est_tokens, .. }
             | Record::ToolResult { est_tokens, .. } => Some(*est_tokens),
             Record::OpEnded { .. } => None,
         }

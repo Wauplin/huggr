@@ -414,7 +414,8 @@ fn response_contract(
 }
 
 fn context_policy(def: &AgentDefinition) -> Option<BudgetPolicy> {
-    if def.context.compaction.as_deref().unwrap_or("none") != "truncate" {
+    let compaction = def.context.compaction.as_deref().unwrap_or("none");
+    if compaction == "none" {
         return None;
     }
     let budget_tokens = def.context.budget_tokens.unwrap_or(128_000);
@@ -428,11 +429,19 @@ fn context_policy(def: &AgentDefinition) -> Option<BudgetPolicy> {
     if let Some(max_block_tokens) = def.context.max_block_tokens {
         policy = policy.with_max_block_tokens(max_block_tokens);
     }
-    Some(
-        policy
-            .with_tool_ttl(def.context.forget.tool_ttl.clone())
-            .with_keep_last_per_tool(def.context.forget.keep_last_per_tool.clone()),
-    )
+    policy = policy
+        .with_tool_ttl(def.context.forget.tool_ttl.clone())
+        .with_keep_last_per_tool(def.context.forget.keep_last_per_tool.clone());
+    if compaction == "summarize" {
+        let selector = def
+            .context
+            .summary_model
+            .as_deref()
+            .or_else(|| def.default_tier())
+            .unwrap_or("medium");
+        policy = policy.with_summary_selector(ModelSelector::named(selector));
+    }
+    Some(policy)
 }
 
 /// Extract `command` (required) and `args` (optional string array) from an
@@ -766,12 +775,16 @@ name = "x"
 [models.medium]
 model = "m"
 
+[models.small]
+model = "small-m"
+
 [context]
 budget_tokens = 64
-compaction = "truncate"
+compaction = "summarize"
 trigger_tokens = 48
 keep_recent_tokens = 16
 max_block_tokens = 8
+summary_model = "small"
 
 [context.forget.keep_last_per_tool]
 page_snapshot = 1
@@ -784,6 +797,7 @@ page_snapshot = 1
         assert_eq!(value["kind"], "budget");
         assert_eq!(value["budget_tokens"], 64);
         assert_eq!(value["trigger_tokens"], 48);
+        assert_eq!(value["summary_selector"], "small");
         assert_eq!(value["keep_last_per_tool"]["page_snapshot"], 1);
     }
 

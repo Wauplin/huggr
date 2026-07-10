@@ -63,7 +63,11 @@ env = "HUGR_DOCS_PATH"
 help = "Folder containing the documentation to search."
 ```
 
-The manifest defines the agent's blast radius and is the document to audit. Unknown keys are hard errors, so a typo cannot silently widen or narrow it. The current tool library includes `fs_read` (six read-only `fs_*` tools), `web_fetch`, `memory`, `traces_read` (read-only trace and feedback mining), and the scratchpad. It also supports `[tools.mcp.<name>]` (the one external-process escape hatch) and `[tools.agent.<name>]` (another built agent as a tool).
+The manifest defines the agent's blast radius and is the document to audit. Unknown keys are hard errors, so a typo cannot silently widen or narrow it.
+
+The current tool library includes `fs_read` (six read-only `fs_*` tools), `web_fetch`, `memory`, `traces_read` (read-only trace and feedback mining), and the scratchpad.
+
+It also supports `[tools.mcp.<name>]`, the one external-process escape hatch, and `[tools.agent.<name>]`, another built agent used as a tool.
 
 ## The core underneath
 
@@ -79,7 +83,11 @@ loop {
 }
 ```
 
-Hugr separates four concerns that many harnesses combine: durable state (the event log), model context (a projection), IO (the host), and permissions (externalized policy). A **trace** is a durable log, **resume** re-folds a trace, a **fork** copies a log prefix, and **cost** is calculated from per-op metadata in the log. All nondeterminism is injected as events, so replay is bit-for-bit deterministic.
+Hugr separates four concerns that many harnesses combine: durable state (the event log), model context (a projection), IO (the host), and permissions (externalized policy).
+
+A **trace** is a durable log. **Resume** re-folds a trace, a **fork** copies a log prefix, and **cost** is calculated from per-op metadata in the log.
+
+All nondeterminism is injected as events, so replay is bit-for-bit deterministic.
 
 ## Crate layout
 
@@ -124,13 +132,21 @@ cargo run -p hugr-toolkit --bin hugr -- run examples/hugr-docs ./docs "What is t
 }
 ```
 
-The docs root is runtime config, not a compiled-in scope: `hugr run examples/hugr-docs ./docs "..."` and `hugr run examples/hugr-docs ./other-docs "..."` use the same agent crate with different read jails. Because `hugr-docs` exposes `RESPONSE_RUST_TYPE` and a typed Rust response contract, generic `hugr run` compiles and reuses a cached dev shim under the temp dir so `hugr-toolkit` still does not depend on `hugr-docs`. Build it with `hugr build examples/hugr-docs`; the generated standalone shim links the current agent crate inferred from `Cargo.toml`, then Python and other languages consume the built binary via subprocess or `--mcp-serve`.
+The docs root is runtime config, not a compiled-in scope. `hugr run examples/hugr-docs ./docs "..."` and `hugr run examples/hugr-docs ./other-docs "..."` use the same agent crate with different read jails.
+
+Because `hugr-docs` exposes `RESPONSE_RUST_TYPE` and a typed Rust response contract, generic `hugr run` compiles and reuses a cached development shim under the temporary directory. `hugr-toolkit` therefore does not depend on `hugr-docs`.
+
+Build it with `hugr build examples/hugr-docs`. The generated standalone shim links the current agent crate inferred from `Cargo.toml`. Python and other languages can then consume the binary through a subprocess or `--mcp-serve`.
 
 Runs for this reference agent land in `~/.hugr/hugr-docs/traces` unless `HUGR_AGENT_HOME`, `HUGR_HOME`, or an explicit `[traces].store` override is set.
 
 ## Define an agent in Python or TypeScript
 
-The `hugr-agents` Python package (`bindings/python`) embeds the same runtime: fixed-shape config inputs are `TypedDict`s, tools are sync/async Python callables with explicit JSON schemas, `agent.ask(...)` returns the standard `Answer` dataclass, and `async for event in agent.run(...)` streams a union of event dataclasses. Introspection, trace, feedback, and stats outputs are recursive dataclass graphs too; only domain-owned opaque JSON stays as JSON. Traces land in `~/.hugr/<name>/` and verify with the Rust CLI. See `bindings/python/README.md`.
+The `hugr-agents` Python package in `bindings/python` embeds the same runtime. Fixed-shape config inputs are `TypedDict`s, and tools are synchronous or asynchronous Python callables with explicit JSON schemas.
+
+`agent.ask(...)` returns the standard `Answer` dataclass. `async for event in agent.run(...)` streams a union of event dataclasses. Introspection, trace, feedback, and stats outputs are recursive dataclass graphs; only domain-owned opaque JSON stays as JSON.
+
+Traces land in `~/.hugr/<name>/` and verify with the Rust CLI. See `bindings/python/README.md`.
 
 The `hugr-agents` TypeScript package (`bindings/typescript`) is the same shape for Node and the browser, driving the WASM brain: tools as `{name, description, schema, invoke}` objects, the same config keys and events, node-fs or IndexedDB trace stores, and cross-language `verify` in both directions. See `bindings/typescript/README.md`.
 

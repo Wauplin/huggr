@@ -1,13 +1,29 @@
 # Your first Chrome extension
 
-In this tutorial you'll build a browser-agent Chrome extension with custom tools and a custom UI. It uses the same three reusable pieces as the shipped example: the generic WASM brain bindings in `crates/hugr-wasm`, the generic JavaScript host modules in `bindings/typescript`, and a thin Chrome-specific layer. You'll learn what each layer provides, how `examples/chrome-extension` connects them, and which files to copy, keep, and replace. The [runtime documentation](../runtime.md) explains why the brain is sans-IO and every effect is injected. This tutorial covers assembly.
+This tutorial builds a browser-agent Chrome extension with custom tools and a custom UI. It uses the same three reusable pieces as the shipped example: the generic WASM brain bindings in `crates/hugr-wasm`, the generic JavaScript host modules in `bindings/typescript`, and a thin Chrome-specific layer.
+
+You will see what each layer provides, how `examples/chrome-extension` connects them, and which files to copy, keep, and replace.
+
+The [runtime documentation](../runtime.md) explains why the brain is sans-IO and every effect is injected. This tutorial covers assembly.
 
 ## The three layers
 
 A browser host is a stack, and only the top layer knows about Chrome:
 
-- **`crates/hugr-wasm`** compiles `hugr-core` to `wasm32-unknown-unknown` and exposes it over wasm-bindgen. The extension-facing class is `HugrWasm`: you construct it with a JSON config (`BrowserAgentConfig`: `base_url`, `model`, `api_key`, `max_model_calls`, `max_cost_micro_usd`, `system_prompt`, `context`), then drive it with `submit_user_input`, `poll_commands_json`, `submit_model_done`/`submit_model_error`, `submit_capability_done`/`submit_capability_error`, `submit_permission_decision`, `abort`, and read results with `final_text()`, `trace_json()`, `log_json()`. It also provides the browser tool contract through `browser_capabilities()` / `browser_tool_schemas()`, which define the model⇄browser vocabulary (`tabs_list`, `page_snapshot`, `page_click`, `file_download_url`, …). It contains **no Chrome APIs and no built-in prompt**: the schemas name the tools, but every implementation is injected by JS.
-- **`bindings/typescript`** provides the generic plain-JavaScript host modules that any browser extension can vendor: `agent_driver.js` (`runAgent(question, host, hooks)`, the submit/poll loop that turns brain commands into host calls), `openai_adapter.js` (`callOpenAiCompatible(request, settings, hooks)`, a streaming `/chat/completions` fetch client with 429/5xx retries), and `indexed_db.js` (settings, session/trace records, and a local file store in IndexedDB). The driver never touches `chrome.*`; it only calls the supplied `host` object.
+- **`crates/hugr-wasm`** compiles `hugr-core` to `wasm32-unknown-unknown` and exposes it through wasm-bindgen.
+
+  The extension-facing class is `HugrWasm`. Construct it with a `BrowserAgentConfig` JSON object containing `base_url`, `model`, `api_key`, `max_model_calls`, `max_cost_micro_usd`, `system_prompt`, and `context`.
+
+  Drive it with `submit_user_input`, `poll_commands_json`, `submit_model_done`/`submit_model_error`, `submit_capability_done`/`submit_capability_error`, `submit_permission_decision`, and `abort`. Read results with `final_text()`, `trace_json()`, and `log_json()`.
+
+  The crate also provides the browser tool contract through `browser_capabilities()` / `browser_tool_schemas()`. These functions define the model⇄browser vocabulary (`tabs_list`, `page_snapshot`, `page_click`, `file_download_url`, …).
+
+  The crate contains **no Chrome APIs and no built-in prompt**. The schemas name the tools, but JavaScript injects every implementation.
+- **`bindings/typescript`** provides generic plain-JavaScript host modules that any browser extension can vendor.
+
+  `agent_driver.js` provides `runAgent(question, host, hooks)`, the submit/poll loop that turns brain commands into host calls. `openai_adapter.js` provides `callOpenAiCompatible(request, settings, hooks)`, a streaming `/chat/completions` fetch client with 429/5xx retries. `indexed_db.js` stores settings, session and trace records, and extension-local files in IndexedDB.
+
+  The driver never touches `chrome.*`; it only calls the supplied `host` object.
 - **Your extension folder** supplies everything Chrome-specific: the MV3 manifest, the service worker, the side-panel UI, the system prompt, and the **capability dispatcher** that maps tool names from the brain's `StartCapability` commands onto real `chrome.*` calls.
 
 ## The host interface — the one shape to keep
@@ -46,9 +62,17 @@ const result = await runAgent("Close all the shopping tabs", host, {
 
 These five files define the Chrome layer:
 
-- **`manifest.json`** (MV3): `"background": { "service_worker": "service_worker.js", "type": "module" }`, a `side_panel.default_path` pointing at `sidepanel.html`, `content_security_policy.extension_pages` including `'wasm-unsafe-eval'` (required to instantiate the WASM brain), permissions `activeTab, sidePanel, scripting, storage, tabs, webNavigation`, plus broad host permissions and a `content_scripts` entry injecting `content_script.js` into pages.
+- **`manifest.json`** (MV3) defines the service worker, side panel, content security policy, permissions, and content scripts.
+
+  Set `"background": { "service_worker": "service_worker.js", "type": "module" }` and point `side_panel.default_path` at `sidepanel.html`. Include `'wasm-unsafe-eval'` in `content_security_policy.extension_pages` so the WASM brain can instantiate.
+
+  The example requests `activeTab, sidePanel, scripting, storage, tabs, webNavigation`, plus broad host permissions. Its `content_scripts` entry injects `content_script.js` into pages.
 - **`service_worker.js`:** opens the side panel on icon click and handles `chrome.runtime.onMessage` requests (`hugr.tabs.list`, `hugr.tab.open`, `hugr.tab.close`, `hugr.tab.switch`) for privileged tab operations that must run in the background context.
-- **`chrome_api.js`:** the capability dispatcher. `invokeBrowserCapability(name, args)` is one large `switch` on the tool name. Tab tools message the service worker through `chromeCall`; page tools (`page_snapshot`, `page_click`, `page_type`, waits, …) message the content script in the target tab through `contentCall(tabId, message)`; and file tools read or write the IndexedDB-local file store. Unknown names throw `capability not implemented yet: <name>`, which routes back to the model as a tool error rather than crashing.
+- **`chrome_api.js`:** the capability dispatcher. `invokeBrowserCapability(name, args)` is one large `switch` on the tool name.
+
+  Tab tools message the service worker through `chromeCall`. Page tools (`page_snapshot`, `page_click`, `page_type`, waits, …) message the content script in the target tab through `contentCall(tabId, message)`. File tools read or write the IndexedDB-local file store.
+
+  Unknown names throw `capability not implemented yet: <name>`, which routes back to the model as a tool error rather than crashing.
 - **`sidepanel.html` / `sidepanel.js`**: the UI. It calls `runAgent(question, host, { onEvent })`, renders the event timeline, supports an Interrupt button, and lists saved sessions and files straight from `indexed_db.js`.
 - **`system_prompt.js`:** host config passed into the WASM brain at construction. The crate has no built-in prompt.
 

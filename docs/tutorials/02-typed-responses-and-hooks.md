@@ -1,6 +1,10 @@
 # Typed responses and answer hooks
 
-In this tutorial you'll learn how a Hugr agent's response contract works: how `RESPONSE_RUST_TYPE` turns a Rust struct into the provider's structured-output schema, how the optional `MODEL_RESPONSE_RUST_TYPE` lets the model fill a simpler schema than the one your users receive, and how `answer_hooks()` bridges the two with deterministic post-processing. The worked example is the checked-in reference agent `examples/hugr-docs`, which enriches model-cited document paths into public Hugging Face documentation URLs. Prerequisite: [tutorial 1](01-first-agent-cli.md). For the design background, see [language surfaces](../agents.md#language-surfaces).
+This tutorial explains how a Hugr agent's response contract works. `RESPONSE_RUST_TYPE` turns a Rust struct into the provider's structured-output schema. The optional `MODEL_RESPONSE_RUST_TYPE` lets the model fill a simpler schema than the one users receive. `answer_hooks()` bridges the two with deterministic post-processing.
+
+The worked example is the checked-in reference agent `examples/hugr-docs`. It enriches model-cited document paths into public Hugging Face documentation URLs.
+
+Prerequisite: [tutorial 1](01-first-agent-cli.md). For the design background, see [language surfaces](../agents.md#language-surfaces).
 
 ## How the contract is discovered
 

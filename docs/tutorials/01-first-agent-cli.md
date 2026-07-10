@@ -1,6 +1,8 @@
 # Your first agent from the CLI
 
-In this tutorial you'll scaffold a weather-answering subagent with `hugr new`, look at every file it generates, ask it a question with `hugr run`, resume and fork past conversations by trace id, inspect the agent card with `--describe`, and finally compile it into one self-contained binary with `hugr build`. No prior Hugr knowledge is assumed; for the design rationale behind any step, see [the subagent overview](../overview.md#what-a-subagent-is).
+This tutorial scaffolds a weather-answering subagent with `hugr new` and explains every generated file. It then asks a question with `hugr run`, resumes and forks conversations by trace id, inspects the agent card with `--describe`, and compiles one self-contained binary with `hugr build`.
+
+No prior Hugr knowledge is assumed. For the design rationale behind any step, see [the subagent overview](../overview.md#what-a-subagent-is).
 
 ## 1. Scaffold the agent
 
@@ -89,7 +91,11 @@ export HUGR_API_KEY=...   # e.g. an hf_... token for router.huggingface.co
 hugr run my-agent "what's the weather in Paris?"
 ```
 
-You get one pretty-printed JSON `Answer` on stdout (diagnostics go to stderr). Add `--json` for compact single-line output. The `Answer` carries `status`, your typed `response` object, a `trace_id`, and mandatory `metadata` (duration, cost in micro-USD, tokens, model/tool call counts). **The ask path always exits 0.** A missing key, a bad manifest, or a blown limit returns a `status: "error"` answer instead of crashing (see [the Ask and Answer contract](../agents.md#the-ask-and-answer-contract)).
+You get one pretty-printed JSON `Answer` on stdout, while diagnostics go to stderr. Add `--json` for compact single-line output.
+
+The `Answer` carries `status`, your typed `response` object, a `trace_id`, and mandatory `metadata`: duration, cost in micro-USD, tokens, and model/tool call counts.
+
+**The ask path always exits 0.** A missing key, a bad manifest, or a blown limit returns a `status: "error"` answer instead of crashing. See [the Ask and Answer contract](../agents.md#the-ask-and-answer-contract).
 
 Because this agent has a typed Rust contract, the first `hugr run` compiles a small cached shim crate that links your `src/lib.rs`; later runs reuse it, so only the first ask pays the compile.
 
@@ -107,7 +113,11 @@ To continue a conversation, pass the parent's trace id back in:
 hugr run my-agent --trace <TRACE_ID> "and in London?"
 ```
 
-A resumed ask never mutates the old trace. It writes a **new** trace with `depends_on` pointing at the parent. Resuming the same id twice forks the conversation into two branches, and `hugr traces` shows the tree. `hugr verify my-agent <TRACE_ID>` confirms that a trace replays bit-for-bit, while `hugr replay my-agent <TRACE_ID> --step` walks through it event by event. See [determinism and replay](../runtime.md#determinism-replay-and-traces) for the underlying design. `hugr stats my-agent` aggregates cost, tokens, and tool usage across stored traces.
+A resumed ask never mutates the old trace. It writes a **new** trace with `depends_on` pointing at the parent. Resuming the same id twice forks the conversation into two branches, and `hugr traces` shows the tree.
+
+`hugr verify my-agent <TRACE_ID>` confirms that a trace replays bit-for-bit. `hugr replay my-agent <TRACE_ID> --step` walks through it event by event. See [determinism and replay](../runtime.md#determinism-replay-and-traces) for the underlying design.
+
+`hugr stats my-agent` aggregates cost, tokens, and tool usage across stored traces.
 
 ## 5. Inspect the agent card
 
@@ -125,7 +135,11 @@ hugr run my-agent -- --describe
 hugr build my-agent --release
 ```
 
-This generates a shim crate under `my-agent/dist/` (override with `--out <dir>`) that embeds the agent bundle, including the manifest, prompt, and response contract, then compiles it with cargo. The result is one self-contained binary at `my-agent/dist/my_agent-cli/target/release/my_agent` that needs no repository checkout. On startup, it unpacks its bundle into `~/.hugr/<name>/`, so traces persist across runs and `--trace` resume works anywhere you copy it. `--surface python` also generates a pip-installable Python module.
+This generates a shim crate under `my-agent/dist/` (override with `--out <dir>`). The shim embeds the agent bundle, including the manifest, prompt, and response contract, then compiles it with cargo.
+
+The result is one self-contained binary at `my-agent/dist/my_agent-cli/target/release/my_agent` that needs no repository checkout. On startup, it unpacks its bundle into `~/.hugr/<name>/`, so traces persist across runs and `--trace` resume works anywhere you copy it.
+
+`--surface python` also generates a pip-installable Python module.
 
 The built binary speaks the same universal surface as `hugr run`:
 

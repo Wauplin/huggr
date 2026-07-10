@@ -32,10 +32,22 @@ examples/chrome-extension/ # a concrete browser host: chrome.* capability dispat
                         #   script, side-panel UI, MV3 manifest; vendors the generic JS at build time.
 ```
 
-Dependency rules: **`hugr-core` depends on nothing environmental** (verify with `cargo tree -p hugr-core`). `hugr-replay` may use `std::fs` but consumes `hugr-core` as pure data. The native layers stack strictly: `hugr-agent` on `hugr-host` + `hugr-replay`, then `hugr-toolkit` on `hugr-agent`. Browser-specific behavior lives in JavaScript hosts (`bindings/typescript` + `examples/chrome-extension`). Chrome APIs, IndexedDB, extension UI, and browser tool execution never enter the core or native host crates; `crates/hugr-wasm` is only a JSON-in/JSON-out binding around the brain. Browser context management uses the same core `BudgetPolicy`, and the OpenAI-compatible JavaScript adapter only translates `ModelRequest` blocks to provider messages. Nothing reaches into `hugr-core` internals; these layers are all hosts.
+**`hugr-core` depends on nothing environmental.** Verify this with `cargo tree -p hugr-core`.
+
+`hugr-replay` may use `std::fs`, but it consumes `hugr-core` as pure data. The native layers stack strictly: `hugr-agent` depends on `hugr-host` + `hugr-replay`, then `hugr-toolkit` depends on `hugr-agent`.
+
+Browser-specific behavior lives in JavaScript hosts under `bindings/typescript` and `examples/chrome-extension`. Chrome APIs, IndexedDB, extension UI, and browser tool execution never enter the core or native host crates. `crates/hugr-wasm` is only a JSON-in/JSON-out binding around the brain.
+
+Browser context management uses the same core `BudgetPolicy`. The OpenAI-compatible JavaScript adapter only translates `ModelRequest` blocks to provider messages.
+
+Nothing reaches into `hugr-core` internals. These layers are all hosts.
 
 ## Standards
 
-- **MCP** exposes a Hugr agent as a tool to orchestrators (Claude Code and most frameworks speak it). Every built binary serves `--mcp-serve` with an `ask` tool whose structured result carries the full `Answer`, plus a `feedback` tool keyed to a returned `trace_id`. Session continuity uses the `trace_id` in tool arguments rather than MCP session state. Hugr does not use deprecated MCP sampling; the agent owns its provider.
+- **MCP** exposes a Hugr agent as a tool to orchestrators. Claude Code and most frameworks speak it.
+
+  Every built binary serves `--mcp-serve` with an `ask` tool whose structured result carries the full `Answer`. It also exposes a `feedback` tool keyed to a returned `trace_id`.
+
+  Session continuity uses the `trace_id` in tool arguments rather than MCP session state. Hugr does not use deprecated MCP sampling; the agent owns its provider.
 - **A2A** is the surviving agent↔agent standard for *remote* orchestration; an adapter is possible later (our `describe()` output is card-shaped) but is deliberately not a foundation.
 - **The gap Hugr fills**, verified unowned: (a) a cross-process **forkable session contract** (`trace_id`/`depends_on` with bit-for-bit deterministic replay), (b) **mandatory cost/duration metadata on every response**, and (c) **single-binary agent packaging**. Hugr provides this combination.

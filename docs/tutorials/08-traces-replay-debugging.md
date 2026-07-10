@@ -14,7 +14,9 @@ Every surface (`hugr run`, a built binary, or a Python or TypeScript agent) reso
 hugr traces ./examples/hugr-weather
 ```
 
-The built binary provides the same view through `--traces`. Output is a lineage tree: each head shows its `trace_id`, parent (`depends_on`), question, status wire string (`success` / `off_topic` / `error`), and feedback count. The storage default and path resolution are documented in `crates/hugr-toolkit/src/surface.rs`, with home resolution in `crates/hugr-agent/src/store.rs`. Environment overrides are `HUGR_AGENT_HOME`, `HUGR_HOME`, and `HUGR_BLOB_STORE`.
+The built binary provides the same view through `--traces`. Output is a lineage tree. Each head shows its `trace_id`, parent (`depends_on`), question, status wire string (`success` / `off_topic` / `error`), and feedback count.
+
+The storage default and path resolution are documented in `crates/hugr-toolkit/src/surface.rs`. Home resolution is implemented in `crates/hugr-agent/src/store.rs`. Environment overrides are `HUGR_AGENT_HOME`, `HUGR_HOME`, and `HUGR_BLOB_STORE`.
 
 ## Trace anatomy
 
@@ -55,7 +57,11 @@ hugr verify ./examples/hugr-weather <trace_id>
 # <trace_id> verified ✓ (replays bit-for-bit)
 ```
 
-A `verify` failure means the recorded input now produces different output; typically a brain change that forgot a reducer arm or dropped an event field. `hugr-core` is **sans-IO and pure**: no clock, no RNG, no IO. All nondeterminism is *injected* as events (`Tick` for time, model output and tool results as events), so the brain's output is a pure function of its input log. Anything that breaks that is a bug; see the ground rule in `AGENTS.md`.
+A `verify` failure means the recorded input now produces different output. The usual cause is a brain change that omitted a reducer arm or dropped an event field.
+
+`hugr-core` is **sans-IO and pure**: no clock, RNG, or IO. All nondeterminism is injected as events, including `Tick` for time and events for model output and tool results. The brain's output is therefore a pure function of its input log.
+
+Anything that breaks this property is a bug. See the ground rule in `AGENTS.md`.
 
 ## Schedule recurring asks with cron
 
@@ -79,7 +85,13 @@ hugr cron ./examples/hugr-weather --allow-uncapped
 my-weather --cron-serve --allow-uncapped
 ```
 
-The process is the scheduler. It does not daemonize or persist the schedule; `systemd` or `launchd` keeps it running. Each fire is an ordinary `Ask` (with `extra: {"cron": "<name>", "fired_at": …}`), the trace is persisted like any other, and overlap of the same job is skipped (asks can be slow). The scheduler **refuses** to start a job with no effective `max_cost_micro_usd` because unattended model calls can spend money without supervision. Pass `--allow-uncapped` only if you really mean it. The scheduler and config are in `crates/hugr-toolkit/src/cron.rs`.
+The process is the scheduler. It does not daemonize or persist the schedule; `systemd` or `launchd` keeps it running.
+
+Each fire is an ordinary `Ask` with `extra: {"cron": "<name>", "fired_at": …}`. Its trace is persisted like any other. Overlapping runs of the same job are skipped because asks can be slow.
+
+The scheduler **refuses** to start a job with no effective `max_cost_micro_usd` because unattended model calls can spend money without supervision. Use `--allow-uncapped` only when this is intentional.
+
+The scheduler and config are in `crates/hugr-toolkit/src/cron.rs`.
 
 ## Close the loop with the insights agent
 
@@ -89,7 +101,11 @@ Traces and the feedback filed in tutorial 07 provide the input for offline impro
 hugr run ./examples/hugr-insights ~/.hugr/hugr-weather "What should hugr-weather improve?"
 ```
 
-The agent's method (in its `SYSTEM.md`): `trace_list` for an overview, `trace_ops` for the model/tool call sequence without content, `trace_transcript` only when it needs the actual text to explain a pattern, and `feedback_list` for the themes others recorded. Results are **summaries and paged, size-capped excerpts**, never raw trace JSON; a full trace would blow any context budget. The tool family and its jailing live in `crates/hugr-toolkit/src/tools/traces_read.rs`.
+The agent's method is defined in its `SYSTEM.md`. It uses `trace_list` for an overview and `trace_ops` for the model/tool call sequence without content. It calls `trace_transcript` only when it needs the text behind a pattern, and `feedback_list` for recorded themes.
+
+Results are **summaries and paged, size-capped excerpts**, never raw trace JSON. A full trace would exceed the context budget.
+
+The tool family and its jailing live in `crates/hugr-toolkit/src/tools/traces_read.rs`.
 
 Two things to keep in mind about this kind of agent (full threat note in [the security documentation](../security.md)):
 

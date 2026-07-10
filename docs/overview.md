@@ -2,7 +2,9 @@
 
 ## Vision
 
-Hugr builds **domain-specific subagents**: small, specialized agents that handle focused tasks such as answering questions about a documentation folder, reading PDFs, or fetching live data from an allowlisted API. An orchestrator (a human, a script, or a larger agent) calls them through **one uniform contract**: a question in and a structured response out, with cost, duration, and a resumable trace id attached.
+Hugr builds **domain-specific subagents**: small, specialized agents that handle focused tasks. Examples include answering questions about a documentation folder, reading PDFs, or fetching live data from an allowlisted API.
+
+An orchestrator, whether a human, script, or larger agent, calls them through **one uniform contract**. A question goes in, and a structured response comes out with cost, duration, and a resumable trace id.
 
 **A subagent is a small Rust crate plus a system prompt and a set of tools with privileges. Hugr turns that crate folder into a self-contained binary** with built-in traces, forking, sandboxing, and cost accounting.
 

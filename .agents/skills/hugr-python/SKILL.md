@@ -83,7 +83,13 @@ async def stream():
             answer = event.answer
 ```
 
-Fixed-shape inputs use the exported `TypedDict`s (`TierConfig`, `LimitsConfig`, `ContextConfig`, `GrantsConfig`, and individual grant configs); tier selectors and external grant instance names stay typed mappings because they are open strings. Structured outputs are recursive dataclasses: `Answer`, every `AgentEvent` variant, `AgentCard`, `TraceHead`, `Feedback`, and `AgentStats`. Branch on `answer.ok` or `answer.status`; errors are answers with mandatory metadata. Use `BlobHandle.from_path(...)` and the `blobs=` ask argument for files. Opaque domain payloads remain `JsonValue`/`JsonObject`; validation stays in Rust and Python only casts. State defaults to `~/.hugr/<name>/`, shared with Rust and TypeScript surfaces.
+Fixed-shape inputs use the exported `TypedDict`s: `TierConfig`, `LimitsConfig`, `ContextConfig`, `GrantsConfig`, and the individual grant configs. Tier selectors and external grant instance names remain typed mappings because they are open strings.
+
+Structured outputs are recursive dataclasses: `Answer`, every `AgentEvent` variant, `AgentCard`, `TraceHead`, `Feedback`, and `AgentStats`. Branch on `answer.ok` or `answer.status`. Errors are answers with mandatory metadata.
+
+Use `BlobHandle.from_path(...)` and the `blobs=` ask argument for files. Opaque domain payloads remain `JsonValue`/`JsonObject`; validation stays in Rust and Python only casts.
+
+State defaults to `~/.hugr/<name>/`, shared with Rust and TypeScript surfaces.
 
 ## Validate
 

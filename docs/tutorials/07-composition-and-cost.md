@@ -53,7 +53,11 @@ From the parent binary, attach a local file as an inbound blob with `--blob`:
 my-orchestrator "summarize this dataset" --blob ./data.csv
 ```
 
-The file is hashed and hardlinked into the shared store (a same-filesystem hardlink, so no byte copies; `crates/hugr-agent/src/blobs.rs`). The parent's model receives a `sha256:<hash>` handle. When it calls `agent_weather` with `blobs: [{"type":"sha256","hash":"…"}]`, the resolver passes that `sha256:` ref to the child as a `--blob sha256:<hash>` argument and sets `HUGR_BLOB_STORE` to the same shared root; the child resolves the ref from the same store, **zero bytes crossing the process boundary**. The child's own answer blobs (also `sha256` refs) flow back into the parent's tool result unchanged for the same reason.
+The file is hashed and hardlinked into the shared store. A same-filesystem hardlink avoids copying bytes; the implementation is in `crates/hugr-agent/src/blobs.rs`. The parent's model receives a `sha256:<hash>` handle.
+
+When the parent calls `agent_weather` with `blobs: [{"type":"sha256","hash":"…"}]`, the resolver passes the reference to the child as `--blob sha256:<hash>`. It also sets `HUGR_BLOB_STORE` to the same shared root.
+
+The child resolves the reference from that store, so **zero bytes cross the process boundary**. The child's answer blobs are also `sha256` references and return unchanged in the parent's tool result.
 
 Hashes are capabilities, not secrets: anyone handed a hash can read that object from the shared store. If that's not what you want, keep the blob in scratch and read it directly instead.
 

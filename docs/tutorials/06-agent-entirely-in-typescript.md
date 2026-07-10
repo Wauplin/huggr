@@ -1,6 +1,10 @@
 # An agent entirely in TypeScript
 
-In this tutorial you'll define a Hugr subagent entirely in TypeScript, with config as a plain object and tools as functions. It drives the same sans-IO brain as every other surface, compiled to WebAssembly and running in Node or the browser. You'll learn the `Agent` class, the `ToolSpec` shape, the `ask`/`run` pair and their event stream, the node-vs-browser entry points, and the trace/verify story that stays cross-compatible with the Rust CLI. The config keys mirror `hugr.toml` exactly, and the `Answer` contract is identical to the Rust and Python surfaces. For why the brain is sans-IO and every effect is injected, see [the runtime documentation](../runtime.md). This tutorial covers assembly.
+This tutorial defines a Hugr subagent entirely in TypeScript, with config as a plain object and tools as functions. It drives the same sans-IO brain as every other surface, compiled to WebAssembly and running in Node or the browser.
+
+Topics include the `Agent` class, the `ToolSpec` shape, the `ask`/`run` pair and event stream, Node and browser entry points, and cross-compatible trace verification with the Rust CLI.
+
+The config keys mirror `hugr.toml`, and the `Answer` contract is identical to the Rust and Python surfaces. The [runtime documentation](../runtime.md) explains why the brain is sans-IO and every effect is injected. This tutorial covers assembly.
 
 ## What the package is
 
@@ -76,7 +80,11 @@ const lookupPolicy: ToolSpec = {
 };
 ```
 
-The `invoke` signature is `invoke(args: Json): Promise<Json> | Json`. Its return value is JSON-serialized and fed back to the brain as a capability result. If it throws, the exception message becomes a semantic tool error routed back to the model as `{ error: <message> }`, matching the Rust runtime rather than crashing. An unknown tool name (one you didn't register) yields `unknown tool: <name>` routed the same way.
+The `invoke` signature is `invoke(args: Json): Promise<Json> | Json`. Its return value is JSON-serialized and fed back to the brain as a capability result.
+
+If it throws, the exception message becomes a semantic tool error routed back to the model as `{ error: <message> }`. This matches the Rust runtime instead of crashing.
+
+An unknown tool name (one you did not register) yields `unknown tool: <name>` and follows the same path.
 
 Registration *is* the sandbox: tools you list in `config.tools` are the only ones the model can invoke. There is no privileged built-in. `requiresPermission?: boolean` is an opt-in flag on permissioned tools, but the TS `Agent` auto-allows every tool at registration (the embedding code was the grant), so it currently behaves as YOLO mode, following the same discipline as the Chrome extension host.
 
@@ -100,7 +108,11 @@ console.log(answer.metadata.cost_micro_usd);   // number
 console.log(answer.metadata.model_calls);      // number
 ```
 
-`agent.ask(question, options?): Promise<Answer>` is the convenience that drains the whole run and returns the final `Answer`. The `Answer` is the same shape every surface returns: `status` (`"success"` or `"error"`), `response` (a `Record<string, Json>` object), `trace_id`, optional `blobs`, and `metadata: AnswerMeta` with `duration_ms`, `cost_micro_usd`, `tokens_in`, `tokens_out`, `model_calls`, `tool_calls`. Errors are answers (`status: "error"`), never thrown; a blown limit, a model that produced no final text, or a timed-out ask all come back as error answers with `response.error` set.
+`agent.ask(question, options?): Promise<Answer>` drains the run and returns the final `Answer`.
+
+The `Answer` has the same shape on every surface. It contains `status` (`"success"` or `"error"`), `response` (a `Record<string, Json>` object), `trace_id`, optional `blobs`, and `metadata: AnswerMeta`. Metadata contains `duration_ms`, `cost_micro_usd`, `tokens_in`, `tokens_out`, `model_calls`, and `tool_calls`.
+
+Errors are answers and are never thrown. A blown limit, missing final model text, or timeout returns an error answer with `response.error` set.
 
 ## 4. Stream with `agent.run`
 
@@ -183,7 +195,11 @@ import { createAgent, FsTraceStore, FsFeedbackStore, nodeRuntime } from "hugr-ag
 const agent = createAgent(config, { traces: new FsTraceStore("/custom/traces") });
 ```
 
-This wires `loadWasm()` (reads `./pkg` bytes, no fetch), `FsTraceStore` under `<home>/traces/`, `FsFeedbackStore` under `<home>/feedback/`, and `env: process.env[name]`. The home resolves the same way as the Rust runtime: `$HUGR_AGENT_HOME`, else `$HUGR_HOME/<name>`, else `~/.hugr/<name>`. Traces land as `<home>/traces/<id>.json` in the portable `hugr-replay` format; the same layout the Rust runtime writes, so `hugr verify` and `hugr traces` read TS-recorded traces directly.
+This wires `loadWasm()` (which reads `./pkg` bytes without fetch), `FsTraceStore` under `<home>/traces/`, `FsFeedbackStore` under `<home>/feedback/`, and `env: process.env[name]`.
+
+The home resolves in the same order as the Rust runtime: `$HUGR_AGENT_HOME`, then `$HUGR_HOME/<name>`, then `~/.hugr/<name>`.
+
+Traces land as `<home>/traces/<id>.json` in the portable `hugr-replay` format. The Rust runtime writes the same layout, so `hugr verify` and `hugr traces` can read TypeScript-recorded traces directly.
 
 `FsTraceStore.put` stamps a content-derived id (sha256 of the headed trace JSON, first 16 hex chars) and writes atomically (`flag: "wx"` claims the name, a collision bumps a `-N` suffix; the body goes to a `.tmp` and renames into place); so a put never overwrites, preserving trace immutability.
 
@@ -251,7 +267,11 @@ await agent.verify(traceId);   // replays bit-for-bit; throws on drift
 - `chrome_api.js` is the capability dispatcher: one `switch` on tool name mapping `tabs_list`, `page_snapshot`, `page_click`, `file_download_url`, … onto `chrome.*` calls. Unknown names throw, routing back to the model as a tool error.
 - The manifest needs `content_security_policy.extension_pages` with `'wasm-unsafe-eval'` (required to instantiate the WASM brain), and the build vendors the generic modules because extensions can only load modules from inside their own folder.
 
-To run your own typed browser agent, use `hugr-agents/browser`'s `createAgent` and `IndexedDbTraceStore`. If you want Chrome-specific capabilities, you still write the dispatcher (your `invokeCapability` equivalent) and register those tools in `config.tools`; the typed `Agent` is platform-neutral, and only its runtime knows about Chrome. See [tutorial 3](03-first-chrome-extension.md) for the full extension build.
+To run a typed browser agent, use `createAgent` and `IndexedDbTraceStore` from `hugr-agents/browser`.
+
+Chrome-specific capabilities still need a dispatcher, equivalent to `invokeCapability`, and registration in `config.tools`. The typed `Agent` is platform-neutral; only its runtime knows about Chrome.
+
+See [tutorial 3](03-first-chrome-extension.md) for the full extension build.
 
 ## 10. Putting it together
 

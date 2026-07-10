@@ -4,9 +4,13 @@ Guidance for working in the Hugr repository.
 
 ## What this is
 
-Hugr is a **toolkit for building small, self-contained, domain-specific subagents** on a runtime-free, sans-IO Rust core. A subagent is a small Rust crate plus a system prompt and a set of tools with declared privileges; Hugr turns that agent crate folder into one standalone binary exposing the ask/answer contract (and an MCP server via `--mcp-serve`), with traces, forking, a scratchpad, blob exchange, and cost accounting built in.
+Hugr is a **toolkit for building small, self-contained, domain-specific subagents** on a runtime-free, sans-IO Rust core.
 
-The documentation under `docs/` contains the design, architecture, and threat model. Read it before non-trivial changes and keep it in sync with reality. `docs/tutorials/` contains teaching material that links to the reference documentation instead of restating it. A behavior change is not complete until the reference documentation matches reality and every tutorial that shows the changed behavior still works.
+A subagent is a small Rust crate plus a system prompt and a set of tools with declared privileges. Hugr turns that folder into one standalone binary that exposes the ask/answer contract and serves MCP through `--mcp-serve`. Traces, forking, a scratchpad, blob exchange, and cost accounting are built in.
+
+The documentation under `docs/` contains the design, architecture, and threat model. Read it before non-trivial changes and keep it in sync with reality.
+
+`docs/tutorials/` contains teaching material that links to the reference documentation instead of restating it. A behavior change is not complete until the reference documentation matches reality and every tutorial that shows the changed behavior still works.
 
 ## The one rule that matters most
 
@@ -83,9 +87,21 @@ examples/chrome-extension/ # a concrete browser host: chrome.* capabilities,
                         #   language/browser surfaces, and trace debugging
 ```
 
-`hugr-replay` is a host-side **persistence** crate. It may use `std::fs`, but it depends on `hugr-core` as pure data only. The layers stack strictly: `hugr-agent` on `hugr-host` + `hugr-replay`, then `hugr-toolkit` on `hugr-agent`. Nothing reaches into `hugr-core` internals; these layers are hosts like any other. **Never add environmental dependencies to `hugr-core`** to make a host easier. Put them in the host crate.
+`hugr-replay` is a host-side **persistence** crate. It may use `std::fs`, but it depends on `hugr-core` as pure data only.
 
-Subagent-layer conventions are documented in `docs/agents.md`. The `Ask`/`Answer` contract is the stable boundary: `AnswerMeta` (cost/duration/tokens) is mandatory, errors are answers (`status: "error"`, exit 0), the user-facing payload uses `Answer.response` as a JSON object, and typed Rust response contracts derive provider JSON Schema with `schemars` and cast final JSON with `serde`. Traces are immutable; a resumed ask writes a **new** trace with `depends_on` set. Default agent state is `~/.hugr/<agent>/` (`traces/`, `scratch/`, `memory/`, `feedback/`) plus the shared blob store `~/.hugr/blobs` (override with `HUGR_AGENT_HOME`, `HUGR_HOME`, or `HUGR_BLOB_STORE`). Custom `StorageOverrides` are trusted host code and must stay outside `hugr-core`. Tools are granted in the manifest and jailed to their declared scope through sandbox-by-registration, so never register a capability that the manifest does not grant. A built Hugr agent can be granted as a tool (`[tools.agent.<name>]`, subprocess over the CLI JSON contract). Delegation never widens privileges, and the child's cost folds into the caller's `AnswerMeta`. The tool library is exec-free except for the planned sandboxed `code_exec`; never add a `shell` to the library. MCP (`[tools.mcp.<name>]`) is the **only** external-process tool escape hatch.
+The layers stack strictly: `hugr-agent` on `hugr-host` + `hugr-replay`, then `hugr-toolkit` on `hugr-agent`. Nothing reaches into `hugr-core` internals; these layers are hosts like any other.
+
+**Never add environmental dependencies to `hugr-core`** to make a host easier. Put them in the host crate.
+
+Subagent-layer conventions are documented in `docs/agents.md`. The `Ask`/`Answer` contract is the stable boundary. `AnswerMeta` (cost/duration/tokens) is mandatory, errors are answers (`status: "error"`, exit 0), and the user-facing payload uses `Answer.response` as a JSON object. Typed Rust response contracts derive provider JSON Schema with `schemars` and cast final JSON with `serde`.
+
+Traces are immutable. A resumed ask writes a **new** trace with `depends_on` set. Default agent state is `~/.hugr/<agent>/` (`traces/`, `scratch/`, `memory/`, `feedback/`) plus the shared blob store `~/.hugr/blobs`. Override these paths with `HUGR_AGENT_HOME`, `HUGR_HOME`, or `HUGR_BLOB_STORE`. Custom `StorageOverrides` are trusted host code and must stay outside `hugr-core`.
+
+Tools are granted in the manifest and jailed to their declared scope through sandbox-by-registration. Never register a capability that the manifest does not grant.
+
+A built Hugr agent can be granted as a tool with `[tools.agent.<name>]` and a subprocess over the CLI JSON contract. Delegation never widens privileges, and the child's cost folds into the caller's `AnswerMeta`.
+
+The tool library is exec-free except for the planned sandboxed `code_exec`; never add a `shell` to the library. MCP (`[tools.mcp.<name>]`) is the **only** external-process tool escape hatch.
 
 When extending the host, keep capabilities uniform with no privileged built-ins. A model call is an effect provided by the host and registered like a capability. The adapter handles transport errors such as retries and 429s, while semantic errors return to the model as tool results.
 
@@ -104,7 +120,9 @@ hugr cron <agent-dir>       # run configured [cron.<name>] recurring asks
 ## Conventions
 
 - **Keep the docs and agent skills in sync.** After a behavior change, update the relevant reference documentation under `docs/` and every tutorial that demonstrates it. A manifest, tool, surface, packaging, or trace-workflow change is not complete until the relevant `.agents/skills/*/SKILL.md` cheat sheet matches reality.
-- **Keep Rust and Python API types in sync in both directions.** Any change to a Rust-serialized runtime input or output type (contracts, events, cards, trace listings, feedback, stats, or nested values) must update the corresponding `bindings/python/python/hugr_agents/_types.py` `TypedDict`/dataclass, caster, exports, and tests; any change to those public Python mirrors must update the corresponding Rust type and serde wire shape plus its tests.
+- **Keep Rust and Python API types in sync in both directions.** Any change to a Rust-serialized runtime input or output type must update the corresponding `bindings/python/python/hugr_agents/_types.py` `TypedDict`/dataclass, caster, exports, and tests. This includes contracts, events, cards, trace listings, feedback, stats, and nested values.
+
+  Any change to those public Python mirrors must update the corresponding Rust type, serde wire shape, and tests.
 - **Prefer deletion over abstraction.** One way to do each thing; if two mechanisms do the same job, keep the one the live stack uses and delete the other.
 - **Markdown is single-line.** Use one physical line per paragraph or bullet. Do not hard-wrap prose; rely on soft wrapping. Fenced code blocks and table rows are exempt.
 - **Comments state what the code cannot.** No references to numbered documentation sections, no "how it works" narration, no comments restating the signature or the next line, no section banners. A comment is justified only for a non-obvious constraint, failure mode, or safety/jail invariant; public items keep one concise doc line stating the contract.

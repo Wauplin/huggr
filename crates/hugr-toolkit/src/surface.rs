@@ -493,6 +493,15 @@ pub fn blob_handle_from_path(path: &Path) -> Result<BlobHandle, String> {
     let path_str = path
         .to_str()
         .ok_or_else(|| format!("blob path is not valid UTF-8: {}", path.display()))?;
+    if path_str.starts_with("sha256:") {
+        return Ok(BlobHandle {
+            blob_ref: BlobRef::Sha256 {
+                sha256: path_str.to_string(),
+            },
+            media_type: "application/octet-stream".to_string(),
+            name: None,
+        });
+    }
     let media = media_type_for(path);
     Ok(BlobHandle {
         blob_ref: BlobRef::Path {

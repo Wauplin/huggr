@@ -58,6 +58,19 @@ pub trait ScratchBackend: Send + Sync {
         bytes: &[u8],
     ) -> Result<String, String>;
     async fn read_bytes(&self, handle: &ScratchHandle, rel_path: &str) -> Result<Vec<u8>, String>;
+    async fn import_file(
+        &self,
+        handle: &ScratchHandle,
+        rel_path: &str,
+        source: &Path,
+    ) -> Result<String, String> {
+        let bytes = fs::read(source)
+            .map_err(|e| format!("failed to read imported file {rel_path}: {e}"))?;
+        self.write_bytes(handle, rel_path, &bytes).await
+    }
+    async fn local_path(&self, _handle: &ScratchHandle, _rel_path: &str) -> Option<PathBuf> {
+        None
+    }
     async fn list(
         &self,
         handle: &ScratchHandle,
@@ -88,6 +101,20 @@ impl ScratchSession {
 
     pub(crate) async fn read_bytes(&self, rel_path: &str) -> Result<Vec<u8>, String> {
         self.backend.read_bytes(&self.handle, rel_path).await
+    }
+
+    pub(crate) async fn import_file(
+        &self,
+        rel_path: &str,
+        source: &Path,
+    ) -> Result<String, String> {
+        self.backend
+            .import_file(&self.handle, rel_path, source)
+            .await
+    }
+
+    pub(crate) async fn local_path(&self, rel_path: &str) -> Option<PathBuf> {
+        self.backend.local_path(&self.handle, rel_path).await
     }
 
     pub(crate) async fn list(&self, rel_path: &str) -> Result<Vec<ScratchEntry>, String> {
@@ -225,6 +252,10 @@ impl ScratchBackend for FsScratch {
         bytes: &[u8],
     ) -> Result<String, String> {
         let path = self.resolve_for_write(handle, rel_path)?;
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|e| format!("failed to replace existing scratch file {rel_path}: {e}"))?;
+        }
         fs::write(&path, bytes).map_err(|e| format!("failed to write {rel_path}: {e}"))?;
         let root = self
             .working_path(handle)
@@ -239,6 +270,34 @@ impl ScratchBackend for FsScratch {
             return Err(format!("scratch_read path is not a file: {rel_path}"));
         }
         fs::read(&path).map_err(|e| format!("failed to read {rel_path}: {e}"))
+    }
+
+    async fn import_file(
+        &self,
+        handle: &ScratchHandle,
+        rel_path: &str,
+        source: &Path,
+    ) -> Result<String, String> {
+        let path = self.resolve_for_write(handle, rel_path)?;
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|e| format!("failed to replace existing scratch file {rel_path}: {e}"))?;
+        }
+        match fs::hard_link(source, &path) {
+            Ok(()) => {}
+            Err(_) => {
+                fs::copy(source, &path).map_err(|e| format!("failed to import {rel_path}: {e}"))?;
+            }
+        }
+        let root = self
+            .working_path(handle)
+            .canonicalize()
+            .map_err(|e| format!("scratch root is not available: {e}"))?;
+        Ok(rel_path_from(&root, &path))
+    }
+
+    async fn local_path(&self, handle: &ScratchHandle, rel_path: &str) -> Option<PathBuf> {
+        self.resolve_existing(handle, rel_path).ok()
     }
 
     async fn list(

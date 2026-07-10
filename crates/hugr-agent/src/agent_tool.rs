@@ -73,7 +73,12 @@ fn agent_tool_schema(name: &str, description: &str) -> ToolSchema {
             "type": "object",
             "properties": {
                 "question": { "type": "string", "description": "The question for the subagent." },
-                "trace_id": { "type": "string", "description": "Resume/fork the subagent's prior trace (from an earlier Answer)." }
+                "trace_id": { "type": "string", "description": "Resume/fork the subagent's prior trace (from an earlier Answer)." },
+                "blobs": {
+                    "type": "array",
+                    "description": "Blob handles to forward to the subagent.",
+                    "items": { "type": "object" }
+                }
             },
             "required": ["question"],
             "additionalProperties": false

@@ -10,6 +10,7 @@
 //! Storing identical content twice lands on the same path and is a no-op the
 //! second time — natural deduplication.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -45,9 +46,12 @@ impl BlobStore {
 
     /// The on-disk path a given content hash maps to.
     fn path_for(&self, hash: &str) -> PathBuf {
-        // The hash includes the `sha256:` scheme; swap the `:` for a filesystem
-        // friendly `-` so it is a single valid filename.
-        self.root.join(hash.replace(':', "-"))
+        let file_name = hash.replace(':', "-");
+        let shard = file_name
+            .get(..9)
+            .filter(|prefix| prefix.starts_with("sha256-"))
+            .unwrap_or("sha256-unknown");
+        self.root.join(shard).join(file_name)
     }
 
     /// Store `bytes` by content hash and return a [`BlobRef`] describing it.
@@ -62,11 +66,39 @@ impl BlobStore {
         // Dedup: identical content addresses the same file, so only write if it
         // is not already present (the bytes are immutable for a given hash).
         if !path.exists() {
-            std::fs::create_dir_all(&self.root)?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             std::fs::write(&path, bytes)?;
+            set_readonly(&path)?;
         }
 
         Ok(BlobRef::new(hash, bytes.len() as u64, media))
+    }
+
+    /// Store an existing file by content hash. The filesystem backend hardlinks
+    /// into the store when possible and falls back to copying across devices.
+    pub fn put_file(
+        &self,
+        source: impl AsRef<Path>,
+        media: impl Into<String>,
+    ) -> Result<BlobRef, TraceError> {
+        let source = source.as_ref();
+        let (hash, len) = hash_file(source)?;
+        let path = self.path_for(&hash);
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            match std::fs::hard_link(source, &path) {
+                Ok(()) => {}
+                Err(_) => {
+                    std::fs::copy(source, &path)?;
+                }
+            }
+            set_readonly(&path)?;
+        }
+        Ok(BlobRef::new(hash, len, media))
     }
 
     /// Fetch the bytes for a content hash, or [`TraceError::BlobNotFound`] if the
@@ -86,6 +118,33 @@ impl BlobStore {
     pub fn contains(&self, hash: &str) -> bool {
         self.path_for(hash).exists()
     }
+
+    pub fn path_of(&self, hash: &str) -> PathBuf {
+        self.path_for(hash)
+    }
+}
+
+fn hash_file(path: &Path) -> Result<(String, u64), TraceError> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut len = 0u64;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        len += n as u64;
+    }
+    Ok((format!("sha256:{:x}", hasher.finalize()), len))
+}
+
+fn set_readonly(path: &Path) -> Result<(), TraceError> {
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(path, perms)?;
+    Ok(())
 }
 
 #[cfg(test)]

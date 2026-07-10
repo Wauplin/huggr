@@ -11,7 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hugr_agent::{
     Agent, AgentLimits, AgentToolResolver, AgentToolSpec, Answer, AnswerHook, Ask, AskHook,
-    FsScratch, Pricing, StorageOverrides, TraceStore, depth_exceeded_resolver,
+    BlobRef, FsBlobStore, FsScratch, Pricing, StorageOverrides, TraceStore,
+    depth_exceeded_resolver,
 };
 use hugr_core::{ModelSelector, SamplingParams};
 use hugr_host::mcp::{McpError, McpServerConfig, load_stdio};
@@ -29,6 +30,10 @@ pub const DEFAULT_TRACE_DIRNAME: &str = "traces";
 
 /// Default scratchpad directory under the per-agent home.
 pub const DEFAULT_SCRATCH_DIRNAME: &str = "scratch";
+
+pub const DEFAULT_GLOBAL_BLOB_DIRNAME: &str = "blobs";
+
+pub const BLOB_STORE_ENV: &str = "HUGR_BLOB_STORE";
 
 /// The trace store a definition reads/writes, resolved the same way
 /// [`build_agent`] resolves it. Trace tooling (`hugr traces`/`replay`/`verify`)
@@ -53,6 +58,32 @@ pub fn agent_home_dir(agent_name: &str) -> PathBuf {
         |key| std::env::var_os(key),
         std::env::temp_dir(),
     )
+}
+
+pub fn global_blob_store_dir() -> PathBuf {
+    global_blob_store_dir_from(|key| std::env::var_os(key), std::env::temp_dir())
+}
+
+fn global_blob_store_dir_from(
+    env: impl Fn(&str) -> Option<OsString>,
+    temp_dir: PathBuf,
+) -> PathBuf {
+    if let Some(explicit) = env(BLOB_STORE_ENV)
+        && !explicit.is_empty()
+    {
+        return PathBuf::from(explicit);
+    }
+    if let Some(base) = env("HUGR_HOME")
+        && !base.is_empty()
+    {
+        return PathBuf::from(base).join(DEFAULT_GLOBAL_BLOB_DIRNAME);
+    }
+    if let Some(home) = env("HOME") {
+        return PathBuf::from(home)
+            .join(".hugr")
+            .join(DEFAULT_GLOBAL_BLOB_DIRNAME);
+    }
+    temp_dir.join(".hugr").join(DEFAULT_GLOBAL_BLOB_DIRNAME)
 }
 
 fn agent_home_dir_from(
@@ -364,6 +395,7 @@ pub async fn build_agent_with_options(
             .unwrap_or_else(|| home.join(DEFAULT_SCRATCH_DIRNAME));
         agent.scratch = Arc::new(FsScratch::new(&scratch_root));
         agent.scratch_scope = serde_json::json!({ "root": scratch_root.display().to_string() });
+        agent.set_blob_store(FsBlobStore::new(global_blob_store_dir()));
     }
 
     Ok((agent, warnings))
@@ -467,8 +499,25 @@ async fn run_subprocess_agent(bin: &Path, ask: Ask, depth: u32) -> Result<Answer
     let mut cmd = tokio::process::Command::new(bin);
     cmd.arg(&ask.question).arg("--json");
     cmd.env(AGENT_DEPTH_ENV, depth.to_string());
+    cmd.env(BLOB_STORE_ENV, global_blob_store_dir());
     if let Some(trace_id) = &ask.trace_id {
         cmd.arg("--trace").arg(trace_id.as_str());
+    }
+    for blob in &ask.blobs {
+        match &blob.blob_ref {
+            BlobRef::Sha256 { sha256 } => {
+                cmd.arg("--blob").arg(sha256);
+            }
+            BlobRef::Path { path } => {
+                cmd.arg("--blob").arg(path);
+            }
+            BlobRef::Bytes { .. } => {
+                return Err(
+                    "agent-as-tool subprocess forwarding only supports Path and Sha256 blobs"
+                        .to_string(),
+                );
+            }
+        }
     }
     let output = cmd
         .output()
@@ -635,6 +684,39 @@ root = "."
         );
     }
 
+    #[test]
+    fn global_blob_store_resolution_precedence() {
+        let temp = PathBuf::from("/tmp/fallback");
+        let env = |pairs: &[(&str, &str)], key: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| OsString::from(v))
+        };
+        assert_eq!(
+            global_blob_store_dir_from(
+                |key| env(&[(BLOB_STORE_ENV, "/blob-store")], key),
+                temp.clone()
+            ),
+            PathBuf::from("/blob-store")
+        );
+        assert_eq!(
+            global_blob_store_dir_from(
+                |key| env(&[("HUGR_HOME", "/hugr-home"), ("HOME", "/home/me")], key),
+                temp.clone()
+            ),
+            PathBuf::from("/hugr-home/blobs")
+        );
+        assert_eq!(
+            global_blob_store_dir_from(|key| env(&[("HOME", "/home/me")], key), temp.clone()),
+            PathBuf::from("/home/me/.hugr/blobs")
+        );
+        assert_eq!(
+            global_blob_store_dir_from(|_| None, temp),
+            PathBuf::from("/tmp/fallback/.hugr/blobs")
+        );
+    }
+
     #[tokio::test]
     async fn builds_an_agent_with_library_tools() {
         // Use a real, existing dir so fs_read's root canonicalizes.
@@ -690,6 +772,51 @@ root = "."
             .map(|t| t.name.clone())
             .collect();
         assert!(names.contains(&"agent_helper".to_string()), "{names:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn subprocess_agent_forwards_sha256_blobs() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = write_def("subprocess-blob", "");
+        let artifact = dir.join("child.sh");
+        let args_file = dir.join("args.txt");
+        std::fs::write(
+            &artifact,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {:?}\nprintf '%s\\n' '{{\"status\":\"success\",\"response\":{{\"ok\":true}},\"trace_id\":\"child-trace\",\"blobs\":[{{\"ref\":{{\"kind\":\"sha256\",\"sha256\":\"sha256:abc\"}},\"media_type\":\"text/plain\",\"name\":\"out.txt\"}}],\"metadata\":{{\"duration_ms\":0,\"cost_micro_usd\":0,\"tokens_in\":0,\"tokens_out\":0,\"model_calls\":0,\"tool_calls\":0}},\"extra\":{{}}}}'\n",
+                args_file.display().to_string()
+            ),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&artifact).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&artifact, perms).unwrap();
+
+        let answer = run_subprocess_agent(
+            &artifact,
+            Ask {
+                blobs: vec![hugr_agent::BlobHandle {
+                    blob_ref: BlobRef::Sha256 {
+                        sha256: "sha256:abc".to_string(),
+                    },
+                    media_type: "text/plain".to_string(),
+                    name: Some("input.txt".to_string()),
+                }],
+                ..Ask::new("child question")
+            },
+            2,
+        )
+        .await
+        .unwrap();
+
+        let args = std::fs::read_to_string(&args_file).unwrap();
+        assert!(args.contains("child question"));
+        assert!(args.contains("--blob"));
+        assert!(args.contains("sha256:abc"));
+        assert_eq!(answer.blobs.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

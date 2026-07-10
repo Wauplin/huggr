@@ -136,6 +136,13 @@ async fn file_handed_in_as_bytes_is_read_then_produced_out_as_a_sha256_blob() {
     };
     let bytes = agent.blob_store().get(sha256).unwrap();
     assert_eq!(bytes, b"# derived from input");
+    assert_same_inode(
+        &agent.blob_store().path_of(sha256),
+        &dir.path()
+            .join("scratch")
+            .join(answer.trace_id.as_str())
+            .join("out/report.md"),
+    );
 }
 
 #[tokio::test]
@@ -175,6 +182,47 @@ async fn file_handed_in_as_path_is_materialized_and_read() {
 }
 
 #[tokio::test]
+async fn sha256_blob_hardlinks_into_scratch_when_filesystem_backed() {
+    let dir = tempdir();
+    let store = TraceStore::new(dir.path());
+    let agent = agent(
+        store.clone(),
+        vec![
+            ModelOutput::tool_calls(vec![read_call("c1", "shared.txt")]),
+            ModelOutput::text("done"),
+        ],
+    );
+    let stored = agent
+        .blob_store()
+        .put(b"shared bytes", "text/plain")
+        .unwrap();
+
+    let answer = agent
+        .ask(Ask {
+            blobs: vec![handle(
+                BlobRef::Sha256 {
+                    sha256: stored.hash.clone(),
+                },
+                "text/plain",
+                "shared.txt",
+            )],
+            ..Ask::new("read shared")
+        })
+        .await
+        .unwrap();
+
+    let reads = tool_results(&store, &answer.trace_id, "scratch_read");
+    assert_eq!(reads[0]["content"], serde_json::json!("shared bytes"));
+    assert_same_inode(
+        &agent.blob_store().path_of(&stored.hash),
+        &dir.path()
+            .join("scratch")
+            .join(answer.trace_id.as_str())
+            .join("shared.txt"),
+    );
+}
+
+#[tokio::test]
 async fn identical_outbound_blobs_dedupe_by_hash() {
     let dir = tempdir();
     let store = TraceStore::new(dir.path());
@@ -208,8 +256,33 @@ async fn identical_outbound_blobs_dedupe_by_hash() {
 
     // And the deduped content is stored exactly once on disk.
     let blobs_dir = dir.path().join(".blobs");
-    let count = std::fs::read_dir(&blobs_dir).unwrap().count();
+    let count = count_files(&blobs_dir);
     assert_eq!(count, 2, "two distinct objects for three files (dedup)");
+}
+
+#[cfg(unix)]
+fn assert_same_inode(a: &std::path::Path, b: &std::path::Path) {
+    use std::os::unix::fs::MetadataExt;
+    let a = std::fs::metadata(a).unwrap();
+    let b = std::fs::metadata(b).unwrap();
+    assert_eq!((a.dev(), a.ino()), (b.dev(), b.ino()));
+}
+
+#[cfg(not(unix))]
+fn assert_same_inode(_a: &std::path::Path, _b: &std::path::Path) {}
+
+fn count_files(root: &std::path::Path) -> usize {
+    let mut count = 0;
+    for entry in std::fs::read_dir(root).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.is_dir() {
+            count += count_files(&path);
+        } else if path.is_file() {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// All tool results recorded under `name` in the trace stored at `id`.

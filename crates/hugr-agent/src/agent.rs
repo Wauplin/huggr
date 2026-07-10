@@ -245,6 +245,11 @@ impl Agent {
         self.blobs.clone()
     }
 
+    pub fn set_blob_store(&mut self, store: FsBlobStore) {
+        self.blobs = Arc::new(store.clone());
+        self.fs_blob_store = Some(store);
+    }
+
     /// Describe this agent's public card: identity, tools + privileges, model tiers, pricing, and declared limits.
     pub fn describe(&self) -> AgentCard {
         let mut tools: Vec<ToolCard> = scratch_tool_schemas()

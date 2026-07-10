@@ -147,7 +147,7 @@ These change defaults and introduce the seams that Phase 2/3 build on. Order: 1.
 - Tests: scripted ask with a fake adapter asserting the exact event sequence; conformance test extended with `--stream`.
 - Invariant check: events are derived host-side observations; nothing new enters the core or the trace.
 
-### 1.5 `[ ]` Shared blob store, zero-copy exchange, parent↔child forwarding (idea 6) — L
+### 1.5 `[x]` Shared blob store, zero-copy exchange, parent↔child forwarding (idea 6) — L
 
 - Why: blobs can be huge (datasets). Today every agent has a private store at `store.root()/.blobs` (`agent.rs:112`); inbound blobs are byte-copied into scratch (`blobs.rs:materialize_inbound:70`), outbound files are read+rewritten into the store (`blobs.rs:sweep_outbound:93`), and agent-as-tool forwards no blobs at all (explicit TODO, `runtime.rs:394`). A parent handing a 10 GB dataset to a child currently can't, and would copy it if it could.
 - Design (three independent pieces):

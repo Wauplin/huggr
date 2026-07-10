@@ -25,7 +25,7 @@
 //! [`BlobStore::get`] — inbound and outbound speak the same address form.
 
 use std::collections::BTreeMap;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -53,6 +53,10 @@ pub trait BlobBackend: Send + Sync {
     async fn get(&self, hash: &str) -> Result<Vec<u8>, TraceError>;
 
     async fn contains(&self, hash: &str) -> bool;
+
+    async fn local_path(&self, _hash: &str) -> Option<PathBuf> {
+        None
+    }
 }
 
 pub type FsBlobStore = BlobStore;
@@ -64,8 +68,7 @@ impl BlobBackend for BlobStore {
     }
 
     async fn put_file(&self, path: &Path, media: String) -> Result<StoredBlobRef, TraceError> {
-        let bytes = std::fs::read(path).map_err(TraceError::Io)?;
-        BlobStore::put(self, &bytes, media)
+        BlobStore::put_file(self, path, media)
     }
 
     async fn get(&self, hash: &str) -> Result<Vec<u8>, TraceError> {
@@ -74,6 +77,10 @@ impl BlobBackend for BlobStore {
 
     async fn contains(&self, hash: &str) -> bool {
         BlobStore::contains(self, hash)
+    }
+
+    async fn local_path(&self, hash: &str) -> Option<PathBuf> {
+        self.contains(hash).then(|| self.path_of(hash))
     }
 }
 
@@ -156,12 +163,27 @@ pub(crate) async fn materialize_inbound(
     store: &dyn BlobBackend,
 ) -> Result<(), BlobError> {
     for (index, handle) in blobs.iter().enumerate() {
-        let bytes = load_bytes(handle, store).await?;
+        let store_path = match &handle.blob_ref {
+            BlobRef::Sha256 { sha256 } => store.local_path(sha256).await,
+            _ => None,
+        };
+        let bytes = if store_path.is_some() {
+            Vec::new()
+        } else {
+            load_bytes(handle, store).await?
+        };
         let name = inbound_name(handle, index, &bytes)?;
-        scratch
-            .write_bytes(&name, &bytes)
-            .await
-            .map_err(BlobError::Scratch)?;
+        if let Some(path) = store_path {
+            scratch
+                .import_file(&name, &path)
+                .await
+                .map_err(BlobError::Scratch)?;
+        } else {
+            scratch
+                .write_bytes(&name, &bytes)
+                .await
+                .map_err(BlobError::Scratch)?;
+        }
     }
     Ok(())
 }
@@ -188,12 +210,16 @@ pub(crate) async fn sweep_outbound(
 
     let mut handles = Vec::new();
     for rel_path in files {
-        let bytes = scratch
-            .read_bytes(&rel_path)
-            .await
-            .map_err(BlobError::Scratch)?;
         let media = guess_media(&rel_path);
-        let stored = store.put(&bytes, media.clone()).await?;
+        let stored = if let Some(path) = scratch.local_path(&rel_path).await {
+            store.put_file(&path, media.clone()).await?
+        } else {
+            let bytes = scratch
+                .read_bytes(&rel_path)
+                .await
+                .map_err(BlobError::Scratch)?;
+            store.put(&bytes, media.clone()).await?
+        };
         let rel = rel_path
             .strip_prefix(&format!("{OUT_DIRNAME}/"))
             .unwrap_or(&rel_path)
@@ -237,7 +263,10 @@ fn inbound_name(handle: &BlobHandle, index: usize, bytes: &[u8]) -> Result<Strin
             }
         }
     }
-    let digest = BlobStore::hash(bytes);
+    let digest = match &handle.blob_ref {
+        BlobRef::Sha256 { sha256 } => sha256.clone(),
+        _ => BlobStore::hash(bytes),
+    };
     let short = digest.strip_prefix("sha256:").unwrap_or(&digest);
     let short = &short[..short.len().min(12)];
     Ok(format!("blob-{index}-{short}"))

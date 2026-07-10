@@ -14,9 +14,13 @@ mod config;
 
 #[cfg(target_arch = "wasm32")]
 mod exports;
+#[cfg(target_arch = "wasm32")]
+mod session;
 
 pub use capabilities::{BrowserCapability, browser_capabilities, browser_tool_schemas};
 pub use config::{BrowserAgentConfig, DEFAULT_BASE_URL, DEFAULT_MODEL};
 
 #[cfg(target_arch = "wasm32")]
 pub use exports::HugrWasm;
+#[cfg(target_arch = "wasm32")]
+pub use session::{AgentSession, verify_trace_json};

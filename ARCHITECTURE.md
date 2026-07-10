@@ -85,6 +85,8 @@ Two complementary shapes exist, and both are host layers over the same runtime: 
 
 **Runtime embedding (Python).** The `hugr-agents` package (PyO3 crate `crates/hugr-python`, pure-Python layer `bindings/python`) exposes `hugr_agents.Agent(name=..., system=..., models={...}, tools=[...], grants={...}, limits={...}, context={...})` — config keys mirror `hugr.toml` sections 1:1, and assembly goes through the same `hugr_toolkit::runtime::build_agent` path as `hugr run`, so a Python-defined agent behaves exactly like a manifest-defined one (same `~/.hugr/<name>/` home, same trace format, same limits/pricing/compaction). Python callables (sync or async, with explicit JSON schemas) register as ordinary host `Capability`s; exceptions become semantic tool errors. `agent.ask()` blocks; `async for event in agent.run(...)` streams the shared `AgentEvent` vocabulary. The FFI boundary is JSON strings both ways — the narrow waist crosses unchanged. Replay never imports Python: capability results are recorded events, so Python-recorded traces verify with the Rust CLI. Threat note: Python tool callables are **trusted host code** — Hugr jails what the model can invoke (sandbox-by-registration), not what trusted Python does once invoked; the same holds for any operator-written Rust capability.
 
+**Runtime embedding (TypeScript).** The `hugr-agents` npm package (`bindings/typescript`) is the same shape for TS, in Node and the browser: one WASM core artifact (`crates/hugr-wasm`'s `AgentSession` — brain + recorder over JSON) plus a typed TS host that owns every effect. `new Agent({ name, system, models, tools, limits, context }, runtime)` uses the same config keys as the manifest and the Python API; tools are `{ name, description, schema, invoke }` objects; `agent.ask()` returns the typed `Answer` and `for await (const event of agent.run(...))` streams the shared event vocabulary. Storage sits behind `TraceStore`/`FeedbackStore` interfaces with node-fs impls (writing the portable trace format into `~/.hugr/<name>/`, so the Rust CLI reads them directly) and IndexedDB impls for browsers. The model adapter is the generic fetch-based OpenAI-compatible client with the same retry rules as `hugr-providers` (429/5xx only, exponential backoff). Traces verify cross-language in both directions: `agent.verify(id)` calls the wasm-exported `verify_trace_json` (the `hugr-replay` fold compiled to wasm), and `hugr verify` replays TS-recorded traces. `[context]` config passes through to the core `BudgetPolicy`, so compaction runs inside the WASM brain. The same trust note applies: TS tool functions are trusted host code.
+
 **Generated wrapper (Python).** `hugr build --surface python` generates, alongside the CLI binary, a native **PyO3 + maturin** package so an orchestrator can `import <agent>; <agent>.ask(...)` in-process instead of shelling out. Surfaces are additive and open-ended (`python` today; `kotlin`/`ts`/… later) — each is a *generated wrapper crate*, exactly like the CLI shim, so the agent crate stays clean (just its response contract) and the toolkit owns surface generation. There is still one runtime and one Ask/Answer contract; a surface is only a typed doorway to it.
 
 The design rule that keeps this scalable: **validation stays on the Rust side; every surface is a thin typed-deserialization layer, never a second validator.** Hugr already casts model output into the agent's response type before it reaches `Answer.response` (§18.2), so a surface only needs to *deserialize* the already-valid JSON into native typed values. Re-validating per surface would mean re-implementing the same schema in Python, then Kotlin, then TS — exactly the duplication the narrow-waist rule (§14) rejects.
@@ -248,12 +250,13 @@ examples/hugr-docs/     # the reference subagent crate (docs Q&A): hugr.toml + S
 examples/hugr-weather/  # the self-contained beginner agent; single source of truth for the
                         #   `hugr new --template weather` scaffold (embedded at compile time).
 crates/hugr-wasm/       # generic WASM bindings around hugr-core for browser/JS hosts: submit/poll
-                        #   over JSON plus the browser tool schemas. No Chrome APIs, nothing baked in.
+                        #   over JSON, the portable-trace AgentSession + verify_trace_json (the
+                        #   hugr-replay fold compiled to wasm), and the browser tool schemas.
 bindings/python/        # the `hugr-agents` Python package: pyproject (maturin), typed pure-Python
                         #   layer over crates/hugr-python, pytest suite with a mock provider.
-bindings/typescript/    # generic JS host layer: agent driver (injected capability dispatcher),
-                        #   OpenAI-compatible fetch adapter, IndexedDB stores. Grows into the typed
-                        #   TypeScript runtime API.
+bindings/typescript/    # the `hugr-agents` TS package (§4.1): typed Agent over the WASM brain with
+                        #   node/browser storage + the OpenAI-compatible fetch adapter; also hosts the
+                        #   plain-JS extension driver modules the chrome-extension example vendors.
 examples/chrome-extension/ # a concrete browser host: chrome.* capability dispatcher, content
                         #   script, side-panel UI, MV3 manifest; vendors the generic JS at build time.
 ```

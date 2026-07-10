@@ -1,0 +1,178 @@
+import assert from "node:assert/strict";
+import { after, before, beforeEach, test } from "node:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { Agent, MemTraceStore, MemFeedbackStore } from "../dist/index.js";
+import { loadWasm, FsTraceStore, FsFeedbackStore, createAgent } from "../dist/node.js";
+import { MockOpenAi } from "./mock_openai.mjs";
+
+let server;
+before(async () => {
+  server = await new MockOpenAi().listen();
+});
+after(() => server.close());
+beforeEach(() => {
+  server.outputs.length = 0;
+  server.requests.length = 0;
+});
+
+function memRuntime() {
+  return { loadWasm, traces: new MemTraceStore(), feedback: new MemFeedbackStore() };
+}
+
+function makeAgent({ tools = [], limits, context, runtime = memRuntime() } = {}) {
+  return new Agent(
+    {
+      name: "ts-test-agent",
+      system: "Answer as JSON.",
+      models: {
+        base_url: server.baseUrl,
+        api_key: "test-key",
+        default: "medium",
+        medium: { model: "mock-model", input_usd_per_m_tokens: 1.0, output_usd_per_m_tokens: 2.0 },
+      },
+      tools,
+      limits,
+      context,
+    },
+    runtime,
+  );
+}
+
+function lookupTool(calls) {
+  return {
+    name: "lookup",
+    description: "Look a word up.",
+    schema: { type: "object", properties: { word: { type: "string" } }, required: ["word"] },
+    invoke: async (args) => {
+      calls.push(args);
+      return { definition: `meaning of ${args.word}` };
+    },
+  };
+}
+
+test("tool round-trip with accounting", async () => {
+  const calls = [];
+  const agent = makeAgent({ tools: [lookupTool(calls)] });
+  server.scriptToolCall("lookup", { word: "hugr" });
+  server.scriptText(JSON.stringify({ answer: "hugr is a toolkit" }));
+
+  const answer = await agent.ask("What is hugr?");
+
+  assert.equal(answer.status, "success");
+  assert.deepEqual(answer.response, { answer: "hugr is a toolkit" });
+  assert.deepEqual(calls, [{ word: "hugr" }]);
+  assert.equal(answer.metadata.model_calls, 2);
+  assert.equal(answer.metadata.tool_calls, 1);
+  assert.ok(answer.metadata.cost_micro_usd > 0);
+  const second = server.requests[1];
+  assert.ok(second.messages.some((m) => m.role === "tool"));
+});
+
+test("tool exceptions are semantic errors", async () => {
+  const agent = makeAgent({
+    tools: [{ name: "boom", description: "d", schema: { type: "object" }, invoke: () => { throw new Error("kaput"); } }],
+  });
+  server.scriptToolCall("boom", {});
+  server.scriptText('{"answer": "recovered"}');
+  const answer = await agent.ask("q");
+  assert.equal(answer.status, "success");
+  const toolMsg = server.requests[1].messages.find((m) => m.role === "tool");
+  assert.ok(toolMsg.content.includes("kaput"));
+});
+
+test("errors are answers", async () => {
+  const agent = makeAgent();
+  // Nothing scripted → HTTP 500 (retried, still failing) → error answer.
+  const answer = await agent.ask("q");
+  assert.equal(answer.status, "error");
+  assert.ok(String(answer.response.error).length > 0);
+  assert.ok(answer.trace_id);
+});
+
+test("event stream ordering", async () => {
+  const calls = [];
+  const agent = makeAgent({ tools: [lookupTool(calls)] });
+  server.scriptToolCall("lookup", { word: "hugr" });
+  server.scriptText('{"answer": "ok"}');
+  const events = [];
+  for await (const event of agent.run("q")) events.push(event);
+  const types = events.map((e) => e.type);
+  assert.equal(types[0], "ask_started");
+  assert.equal(types.at(-1), "answer_ready");
+  assert.ok(types.includes("model_started") && types.includes("text_delta"));
+  assert.ok(types.indexOf("tool_started") < types.indexOf("tool_ended"));
+  assert.equal(events.at(-1).answer.status, "success");
+});
+
+test("resume and fork with fs store; verify via wasm", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "hugr-ts-test-"));
+  const runtime = {
+    loadWasm,
+    traces: new FsTraceStore(path.join(home, "traces")),
+    feedback: new FsFeedbackStore(path.join(home, "feedback")),
+  };
+  const agent = makeAgent({ runtime });
+
+  server.scriptText('{"answer": "first"}');
+  const first = await agent.ask("first question");
+  assert.equal(first.status, "success");
+
+  server.scriptText('{"answer": "second"}');
+  const second = await agent.ask("follow-up", { traceId: first.trace_id });
+  assert.equal(second.status, "success");
+  assert.notEqual(second.trace_id, first.trace_id);
+  // The resumed turn re-fed the parent conversation to the model.
+  const resumed = server.requests.at(-1).messages;
+  assert.ok(resumed.some((m) => JSON.stringify(m).includes("first question")));
+
+  const heads = await agent.traces();
+  const byId = Object.fromEntries(heads.map((h) => [h.trace_id, h]));
+  assert.equal(byId[second.trace_id].depends_on, first.trace_id);
+
+  // Both traces replay bit-for-bit through the wasm verify fold.
+  await agent.verify(first.trace_id);
+  await agent.verify(second.trace_id);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("limits trip to error answers", async () => {
+  const agent = makeAgent({ limits: { max_model_calls: 1 }, tools: [lookupTool([])] });
+  server.scriptToolCall("lookup", { word: "x" });
+  server.scriptText('{"answer": "never reached"}');
+  const answer = await agent.ask("q");
+  assert.equal(answer.status, "error");
+  assert.ok(String(answer.response.error).includes("max_model_calls"));
+});
+
+test("feedback round-trip", async () => {
+  const agent = makeAgent();
+  server.scriptText('{"answer": "x"}');
+  const answer = await agent.ask("q");
+  const fb = await agent.feedback(answer.trace_id, { score: 5 });
+  assert.equal(fb.trace_id, answer.trace_id);
+  const stored = await agent.feedbackFor(answer.trace_id);
+  assert.deepEqual(stored.map((f) => f.payload), [{ score: 5 }]);
+  await assert.rejects(() => agent.feedback("no-such-trace", { score: 0 }));
+});
+
+test("createAgent defaults to the agent home layout", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "hugr-ts-home-"));
+  process.env.HUGR_HOME = home;
+  try {
+    const agent = createAgent({
+      name: "ts-home-agent",
+      system: "s",
+      models: { base_url: server.baseUrl, api_key: "k", default: "medium", medium: { model: "m" } },
+    });
+    server.scriptText('{"answer": "hi"}');
+    const answer = await agent.ask("q");
+    assert.equal(answer.status, "success");
+    assert.ok(fs.existsSync(path.join(home, "ts-home-agent", "traces", `${answer.trace_id}.json`)));
+  } finally {
+    delete process.env.HUGR_HOME;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

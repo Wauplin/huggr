@@ -1,11 +1,48 @@
-# hugr TypeScript bindings
+# hugr-agents — the TypeScript runtime API
 
-The generic JS/TS host layer for the Hugr WASM brain (`crates/hugr-wasm`). Nothing in this folder touches `chrome.*` — a concrete host injects its own capability dispatcher, storage, and prompt.
+Define a Hugr subagent entirely in TypeScript — tools as functions, config as data — driving the WASM brain (`crates/hugr-wasm`) in Node or the browser. Same config keys as `hugr.toml` and the Python API, same `Answer` contract, same event vocabulary, same trace format.
 
-- `agent_driver.js` — `runAgent(question, host, hooks)`: drives the WASM brain's submit/poll loop. `host` provides `loadWasm()`, `invokeCapability(name, args)`, `loadSettings()`, `saveSession(record)`, `systemPrompt`, and optional `defaults`.
-- `openai_adapter.js` — OpenAI-compatible streaming `/chat/completions` client over `fetch`; request shaping comes from the WASM brain's core context policy, not adapter-side pruning.
-- `indexed_db.js` — IndexedDB-backed settings/sessions/files stores for browser hosts.
+```ts
+import { createAgent } from "hugr-agents/node";
 
-`examples/chrome-extension/` is the reference host: it implements the capability dispatcher over Chrome APIs and vendors these files at build time (extensions can only load modules from inside their own folder).
+const agent = createAgent({
+  name: "policy-helper",
+  system: "Answer from the policy tools. Return JSON.",
+  models: {
+    default: "medium",
+    base_url: "https://router.huggingface.co/v1",
+    api_key_env: "POLICY_API_KEY",
+    medium: { model: "moonshotai/Kimi-K2-Instruct", temperature: 0.2,
+              input_usd_per_m_tokens: 1.0, output_usd_per_m_tokens: 1.5 },
+  },
+  tools: [{
+    name: "lookup_policy",
+    description: "Search policy text.",
+    schema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
+    invoke: async (args) => ({ matches: await searchPolicyText(args.query) }),
+  }],
+  limits: { max_model_calls: 10, timeout_s: 60 },
+});
 
-This package becomes the full typed TypeScript runtime API (define agents and tools in TS, in Node and the browser) in plan step 3.2.
+const answer = await agent.ask("Can I expense a train ticket?");
+for await (const event of agent.run("Follow-up?", { traceId: answer.trace_id })) { /* stream */ }
+```
+
+- `hugr-agents` (root export) — the platform-neutral `Agent`, contract types, the OpenAI-compatible fetch adapter (429/5xx retries), and in-memory reference stores.
+- `hugr-agents/node` — fs `TraceStore`/`FeedbackStore` under `~/.hugr/<name>/` (same resolution and layout as the Rust runtime — `hugr verify`/`hugr traces` read TS-recorded traces directly), wasm loader from `./pkg`, `api_key_env` from `process.env`.
+- `hugr-agents/browser` — IndexedDB stores and a fetch-based wasm loader.
+- `agent.verify(traceId)` replays a stored trace bit-for-bit through the wasm `verify_trace_json` fold — the same gate as `hugr verify`, cross-language in both directions.
+- `context` passes through to the core `BudgetPolicy`, so compaction runs inside the WASM brain.
+
+Tool functions are **trusted host code**: Hugr jails what the model can invoke (sandbox-by-registration), not what your TS does once invoked.
+
+The plain-JS extension host modules (`agent_driver.js`, `openai_adapter.js`, `indexed_db.js`) remain here for `examples/chrome-extension`, which vendors them at build time; the example migrates onto this typed package next.
+
+## Development
+
+```bash
+cd bindings/typescript
+npm install
+npm run build:wasm   # cargo + wasm-bindgen → ./pkg
+npm test             # tsc → dist, then node --test against a mock provider
+```

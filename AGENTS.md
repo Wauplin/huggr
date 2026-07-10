@@ -68,8 +68,8 @@ crates/hugr-python/     # PyO3 runtime embedding (outside the cargo workspace;
                         #   built by maturin from bindings/python)
 bindings/python/        # the `hugr-agents` Python package: typed pure-Python
                         #   layer + pytest suite over crates/hugr-python
-bindings/typescript/    # generic JS host layer: agent driver, fetch model adapter,
-                        #   IndexedDB stores (grows into the typed TS runtime API)
+bindings/typescript/    # the `hugr-agents` TS package: typed Agent over the WASM
+                        #   brain (node + browser) + the vendored extension JS modules
 examples/hugr-docs/     # the reference subagent crate (docs Q&A): hugr.toml +
                         #   SYSTEM.md plus typed response contract using hugr-toolkit
 examples/hugr-weather/  # the self-contained beginner example; also the source of

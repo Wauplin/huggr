@@ -19,4 +19,4 @@
 - (at some point) Hugr on the Hub:
   - Store traces in buckets
   - Run agents in Jobs / Sandbox
-  - GitHub action to generate a binary for each commit on a repo (or at least on main) => binary saved to bucket => xet dedup for more efficiency + save with commit hash + duplicate with tag and/or branch name
+  - GitHub action to generate a binary for each commit on a repo (or at least on main) => binary saved to bucket => xet dedup for more efficiency + save with commit hash + duplicate with tag and/or branch name- migrate examples/chrome-extension onto the typed hugr-agents TS package (Agent + browser runtime) and delete the plain-JS driver modules

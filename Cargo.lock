@@ -570,6 +570,7 @@ name = "hugr-wasm"
 version = "0.0.2"
 dependencies = [
  "hugr-core",
+ "hugr-replay",
  "serde",
  "serde_json",
  "wasm-bindgen",

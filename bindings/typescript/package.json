@@ -1,8 +1,34 @@
 {
-  "name": "hugr-typescript",
+  "name": "hugr-agents",
   "private": true,
   "type": "module",
   "version": "0.0.2",
-  "description": "Generic JS/TS host for the Hugr WASM brain: agent driver, OpenAI-compatible fetch adapter, IndexedDB storage.",
-  "main": "index.js"
+  "description": "Define Hugr subagents in TypeScript — tools as functions, config as data — running on the WASM brain (Node and browser).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "default": "./dist/browser.js"
+    }
+  },
+  "files": [
+    "dist",
+    "pkg"
+  ],
+  "scripts": {
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test tests/"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  }
 }

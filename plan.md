@@ -247,7 +247,7 @@ These change defaults and introduce the seams that Phase 2/3 build on. Order: 1.
 - Tests: fake-adapter suite driving Python tools (sync + async), resume/fork from Python, errors-as-answers, event-stream ordering, trace parity (same session via Python API and via manifest produces equivalent logs), wheel smoke test in CI.
 - Depends on: 1.3, 1.4; benefits from 1.1, 2.1.
 
-### 3.2 `[ ]` TypeScript runtime API (idea 14) — XL
+### 3.2 `[x]` TypeScript runtime API (idea 14) — XL
 
 - Why: same as 3.1 for TS — full agent definition in TypeScript (not just shelling to a binary), for both Node and the browser. The wasm split (0.3) is the foundation: one WASM core artifact + a TS host.
 - Design:

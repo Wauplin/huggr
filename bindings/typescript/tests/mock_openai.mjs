@@ -1,0 +1,79 @@
+// A scripted OpenAI-compatible streaming mock: each /chat/completions request
+// pops the next scripted output.
+
+import http from "node:http";
+
+export class MockOpenAi {
+  constructor() {
+    this.outputs = [];
+    this.requests = [];
+    this.server = http.createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        this.requests.push(JSON.parse(body));
+        const output = this.outputs.shift();
+        if (!output) {
+          res.writeHead(500);
+          res.end("mock ran out of scripted outputs");
+          return;
+        }
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        for (const chunk of sseChunks(output)) {
+          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+        }
+        res.write("data: [DONE]\n\n");
+        res.end();
+      });
+    });
+  }
+
+  listen() {
+    return new Promise((resolve) => {
+      this.server.listen(0, "127.0.0.1", () => resolve(this));
+    });
+  }
+
+  get baseUrl() {
+    return `http://127.0.0.1:${this.server.address().port}/v1`;
+  }
+
+  scriptText(text) {
+    this.outputs.push({ text });
+  }
+
+  scriptToolCall(name, args, callId = "call_1") {
+    this.outputs.push({ tool: { id: callId, name, args } });
+  }
+
+  close() {
+    this.server.close();
+  }
+}
+
+function sseChunks(output) {
+  let deltas;
+  let finish;
+  if (output.tool) {
+    deltas = [
+      {
+        tool_calls: [
+          {
+            index: 0,
+            id: output.tool.id,
+            function: { name: output.tool.name, arguments: JSON.stringify(output.tool.args) },
+          },
+        ],
+      },
+    ];
+    finish = "tool_calls";
+  } else {
+    const mid = Math.max(1, Math.floor(output.text.length / 2));
+    deltas = [{ content: output.text.slice(0, mid) }, { content: output.text.slice(mid) }];
+    finish = "stop";
+  }
+  const chunks = deltas.map((delta) => ({ choices: [{ delta }] }));
+  chunks.push({ choices: [{ delta: {}, finish_reason: finish }] });
+  chunks.push({ choices: [], usage: { prompt_tokens: 7, completion_tokens: 3 } });
+  return chunks;
+}

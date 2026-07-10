@@ -16,4 +16,7 @@ serde_json.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true
+# Pure-data trace format + replay/verify fold; compiles to wasm because its fs
+# helpers are never called from here.
+hugr-replay.workspace = true
 

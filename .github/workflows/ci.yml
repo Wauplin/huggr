@@ -47,6 +47,29 @@ jobs:
           maturin develop --release
           python -m pytest tests -q
 
+  # The TypeScript runtime API: build the wasm brain, compile the typed
+  # package, run the node test suite against the mock provider.
+  typescript-bindings:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build and test hugr-agents (TS)
+        working-directory: bindings/typescript
+        run: |
+          npm install
+          npm run build:wasm
+          npm test
+
   # The sans-IO canary: hugr-core must build with no environmental deps
   # (no tokio/reqwest/fs), which a wasm target enforces at compile time.
   sans-io-canary:

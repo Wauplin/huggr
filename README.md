@@ -95,7 +95,7 @@ crates/
   hugr-python/        # PyO3 runtime embedding: define agents and tools in Python (built via bindings/python).
 bindings/
   python/             # the `hugr-agents` Python package: typed layer + tests over hugr-python.
-  typescript/         # generic JS host layer: agent driver, fetch model adapter, IndexedDB stores.
+  typescript/         # the `hugr-agents` TS package: typed Agent over the WASM brain (node + browser).
 examples/
   hugr-docs/          # the reference subagent crate (docs Q&A): manifest, prompt, and typed response contract.
   hugr-weather/       # the self-contained beginner agent; source of the `hugr new --template weather` scaffold.
@@ -127,9 +127,11 @@ The docs root is runtime config, not a compiled-in scope: `hugr run examples/hug
 
 Runs for this reference agent land in `~/.hugr/hugr-docs/traces` unless `HUGR_AGENT_HOME`, `HUGR_HOME`, or an explicit `[traces].store` override is set.
 
-## Define an agent in Python
+## Define an agent in Python or TypeScript
 
-The `hugr-agents` package (`bindings/python`) embeds the same runtime: config as Python data (keys mirror `hugr.toml` 1:1), tools as sync/async Python callables with explicit JSON schemas, `agent.ask(...)` returning the standard typed `Answer`, and `async for event in agent.run(...)` streaming the shared event vocabulary. Traces land in `~/.hugr/<name>/` and verify with the Rust CLI. See `bindings/python/README.md`.
+The `hugr-agents` Python package (`bindings/python`) embeds the same runtime: config as Python data (keys mirror `hugr.toml` 1:1), tools as sync/async Python callables with explicit JSON schemas, `agent.ask(...)` returning the standard typed `Answer`, and `async for event in agent.run(...)` streaming the shared event vocabulary. Traces land in `~/.hugr/<name>/` and verify with the Rust CLI. See `bindings/python/README.md`.
+
+The `hugr-agents` TypeScript package (`bindings/typescript`) is the same shape for Node and the browser, driving the WASM brain: tools as `{name, description, schema, invoke}` objects, the same config keys and events, node-fs or IndexedDB trace stores, and cross-language `verify` in both directions. See `bindings/typescript/README.md`.
 
 ## Building & testing
 

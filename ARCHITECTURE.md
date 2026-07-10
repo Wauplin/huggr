@@ -198,7 +198,7 @@ crates/hugr-agent/      # the subagent runtime: Ask/Answer, TraceStore (trace_id
 crates/hugr-toolkit/    # agent crate manifests (hugr.toml + SYSTEM.md), the tool library,
                         #   the `hugr` CLI (new / run / build / traces / replay / verify), and
                         #   the language-surface generators (CLI shim, PyO3/maturin — §4.1).
-crates/hugr-docs/       # the reference subagent crate (docs Q&A): hugr.toml + SYSTEM.md plus
+examples/hugr-docs/     # the reference subagent crate (docs Q&A): hugr.toml + SYSTEM.md plus
                         #   typed response contract, run/buildable by hugr-toolkit.
 crates/hugr-wasm/       # Chrome-extension host scaffold: WASM-facing browser agent package,
                         #   Chrome capabilities, side-panel UI, IndexedDB-backed trace/file stores.

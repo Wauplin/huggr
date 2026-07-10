@@ -10,7 +10,7 @@ A **subagent** is, at its essence, a small Rust crate plus a system prompt and a
 - **Token-efficient by design.** A handful of domain tools and a focused prompt, not fifty generic ones. Small agents are cheaper, faster, and more reliable — and an orchestrator pays one tool call to use them.
 - **Agents compose.** A built Hugr agent *is* a tool: grant one to another with a manifest line (`[tools.agent.<name>] artifact = "..."`) and it's called like any capability — delegation never widens privileges, and the child's cost folds into the caller's metadata.
 
-The reference agent, [`hugr-docs`](crates/hugr-docs/), is a checked-in docs-Q&A agent crate: `hugr.toml` + `SYSTEM.md` live beside the Rust response contract. `hugr-toolkit` does not depend on it. The generic `hugr run` path still works for typed agents by compiling a cached dev shim that links the current agent crate.
+The reference agent, [`hugr-docs`](examples/hugr-docs/), is a checked-in docs-Q&A agent crate: `hugr.toml` + `SYSTEM.md` live beside the Rust response contract. `hugr-toolkit` does not depend on it. The generic `hugr run` path still works for typed agents by compiling a cached dev shim that links the current agent crate.
 
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) (design, architecture, threat model — the spec) for more details.
 
@@ -89,6 +89,7 @@ crates/
   hugr-replay/        # trace format + content-addressed blob store + replay/verify/inspect.
   hugr-agent/         # the subagent runtime: Ask/Answer, trace store with trace_id/depends_on + fork, scratchpad, blobs, limits, cost accounting, agent-as-tool (subprocess).
   hugr-toolkit/       # agent manifests (hugr.toml + SYSTEM.md), the tool library, and the `hugr` CLI: new/run/build/traces/replay/verify.
+examples/
   hugr-docs/          # the reference subagent crate (docs Q&A): manifest, prompt, and typed response contract.
 ```
 
@@ -98,7 +99,7 @@ One folder in, one question in, one JSON response out — with cost metadata. No
 
 ```bash
 export HUGR_DOCS_API_KEY=hf_...   # or any OpenAI-compatible endpoint key
-cargo run -p hugr-toolkit --bin hugr -- run crates/hugr-docs ./docs "What is the narrow-waist rule?" | jq
+cargo run -p hugr-toolkit --bin hugr -- run examples/hugr-docs ./docs "What is the narrow-waist rule?" | jq
 ```
 
 ```json
@@ -113,7 +114,7 @@ cargo run -p hugr-toolkit --bin hugr -- run crates/hugr-docs ./docs "What is the
 }
 ```
 
-The docs root is runtime config, not a compiled-in scope: `hugr run crates/hugr-docs ./docs "..."` and `hugr run crates/hugr-docs ./other-docs "..."` use the same agent crate with different read jails. Because `hugr-docs` exposes `RESPONSE_RUST_TYPE` and a typed Rust response contract, generic `hugr run` compiles and reuses a cached dev shim under the temp dir so `hugr-toolkit` still does not depend on `hugr-docs`. Build it with `hugr build crates/hugr-docs`; the generated standalone shim links the current agent crate inferred from `Cargo.toml`, then Python and other languages consume the built binary via subprocess or `--mcp-serve`.
+The docs root is runtime config, not a compiled-in scope: `hugr run examples/hugr-docs ./docs "..."` and `hugr run examples/hugr-docs ./other-docs "..."` use the same agent crate with different read jails. Because `hugr-docs` exposes `RESPONSE_RUST_TYPE` and a typed Rust response contract, generic `hugr run` compiles and reuses a cached dev shim under the temp dir so `hugr-toolkit` still does not depend on `hugr-docs`. Build it with `hugr build examples/hugr-docs`; the generated standalone shim links the current agent crate inferred from `Cargo.toml`, then Python and other languages consume the built binary via subprocess or `--mcp-serve`.
 
 ## Building & testing
 

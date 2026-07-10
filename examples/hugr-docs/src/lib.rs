@@ -34,7 +34,7 @@ pub struct Document {
 /// hook deterministically derives URLs after the response casts successfully.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct  {
+pub struct DocsModelResponse {
     /// User-facing answer grounded in the retrieved documents.
     pub response: String,
     /// Source documents relative to the runtime docs root, excluding AI_INDEX.md.

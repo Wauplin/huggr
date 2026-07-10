@@ -17,7 +17,7 @@ use hugr_toolkit::manifest::AgentDefinition;
 #[test]
 #[ignore = "compiles a detached cdylib + runs maturin; slow, needs maturin + python"]
 fn real_python_build_generates_typed_package_and_wheel() {
-    let agent_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../hugr-docs");
+    let agent_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/hugr-docs");
     let mut def = AgentDefinition::load(&agent_dir).expect("load hugr-docs manifest");
     def.source_dir = Some(agent_dir);
 

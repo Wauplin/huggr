@@ -85,7 +85,7 @@ pub fn scaffold_files(name: &str, template: Template) -> Vec<ScaffoldFile> {
         },
         ScaffoldFile {
             rel_path: PathBuf::from("SYSTEM.md"),
-            contents: system_for(name, template),
+            contents: system_for(template),
         },
     ];
     if template == Template::Weather {
@@ -227,25 +227,22 @@ fn sanitize_rust_name(name: &str, separator: char) -> String {
     out
 }
 
-fn system_for(name: &str, template: Template) -> String {
+fn system_for(template: Template) -> String {
     if template == Template::Weather {
-        // The self-contained example prompt. Keeps the {{agent_name}}, {{tools}},
-        // and {{date}} template vars `hugr run` substitutes.
-        return format!(
-            "You are **{name}**, a simple weather assistant. When the user asks \
+        // Uses the {{agent_name}} template var `hugr run` substitutes at assembly.
+        return "You are **{{agent_name}}**, a simple weather assistant. When the user asks \
              “what’s the weather in …?”, use the `web_fetch` tool to call the Open-Meteo API. \
              First geocode the city with `https://geocoding-api.open-meteo.com/v1/search?name=<city>`, \
              then fetch current weather with \
              `https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>&current=temperature_2m,weather_code,wind_speed_10m`. \
              Reply in one short sentence with the city, temperature, conditions, and wind speed. \
              If the city is missing or ambiguous, ask a short clarification."
-        );
+            .to_string();
     }
     // Blank template.
-    format!(
-        "You are **{name}**. You are a focused subagent. Answer the user's question. TODO: describe your task and how to \
+    "You are **{{agent_name}}**. You are a focused subagent. Answer the user's question. TODO: describe your task and how to \
          use your tools."
-    )
+        .to_string()
 }
 
 /// Minimal README for the self-contained `weather` example (mentions next steps).

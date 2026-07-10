@@ -23,7 +23,16 @@ fn scaffold_bundle(name: &str, template: Template) -> (Vec<u8>, PathBuf) {
     for file in scaffold_files(name, template) {
         let path = src.join(&file.rel_path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, file.contents).unwrap();
+        // Keep the tests hermetic: the scaffolded default is HUGR_API_KEY,
+        // which may be set on a developer machine and would turn the expected
+        // "no key" error answers into live model calls.
+        let contents = if file.rel_path == Path::new("hugr.toml") {
+            file.contents
+                .replace("HUGR_API_KEY", "HUGR_BCLI_TEST_UNSET_KEY")
+        } else {
+            file.contents
+        };
+        std::fs::write(path, contents).unwrap();
     }
     let bytes = bundle::pack(&src, &[".hugr-traces", ".scratch"]).unwrap();
     (bytes, src)

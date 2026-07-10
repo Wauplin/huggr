@@ -714,6 +714,7 @@ model = "small-m"
 model = "big-m"
 input_usd_per_m_tokens = 1.0
 output_usd_per_m_tokens = 1.5
+temperature = 0.2
 "#;
         let def = AgentDefinition::parse(src, "hugr.toml").unwrap();
         assert_eq!(

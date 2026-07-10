@@ -470,7 +470,8 @@ name = "docs"
 model = "m"
 "#;
         let mut def = AgentDefinition::parse(src, "hugr.toml").unwrap();
-        def.source_dir = Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../hugr-docs"));
+        def.source_dir =
+            Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/hugr-docs"));
         let dep = response_dependency(&def).unwrap().unwrap();
         let toml = cli_cargo_toml("docs", &Some(dep.clone()));
         assert!(toml.contains("hugr_docs = { package = \"hugr-docs\", path ="));

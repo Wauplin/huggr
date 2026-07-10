@@ -62,7 +62,7 @@ crates/hugr-agent/      # the subagent runtime: Ask/Answer, TraceStore
 crates/hugr-toolkit/    # agent crate manifests (hugr.toml + SYSTEM.md), the tool library
                         #   (fs_read, http_fetch, sqlite_query), and the `hugr`
                         #   CLI: new / run / build / traces / replay / verify
-crates/hugr-docs/       # the reference subagent crate (docs Q&A): hugr.toml +
+examples/hugr-docs/     # the reference subagent crate (docs Q&A): hugr.toml +
                         #   SYSTEM.md plus typed response contract using hugr-toolkit
 ```
 

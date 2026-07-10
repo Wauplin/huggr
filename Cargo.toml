@@ -7,8 +7,8 @@ members = [
     "crates/hugr-replay",
     "crates/hugr-agent",
     "crates/hugr-toolkit",
-    "crates/hugr-docs",
     "crates/hugr-wasm",
+    "examples/hugr-docs",
 ]
 
 # Crate layout (see ARCHITECTURE.md §10): `hugr-core` is the pure, sans-IO

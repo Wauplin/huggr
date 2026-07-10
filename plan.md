@@ -43,7 +43,7 @@ Status legend: each task starts `[ ]`; flip to `[x]` when merged (code + tests +
 
 Do these first: they move files around, and every later phase touches the moved files. Order inside the phase: 0.1 → 0.2 → 0.3 → 0.4 (cleanup sweeps the final layout) → 0.5.
 
-### 0.1 `[ ]` Move `hugr-docs` to `examples/hugr-docs` (idea 11) — S
+### 0.1 `[x]` Move `hugr-docs` to `examples/hugr-docs` (idea 11) — S
 
 - Why: `hugr-docs` is a reference *user* of the framework, not part of it; keeping it under `crates/` blurs the library boundary.
 - Today: workspace member `crates/hugr-docs` (root `Cargo.toml:10`); referenced by path in `hugr-toolkit/src/build.rs:473` (test), `hugr-toolkit/tests/build_python.rs:20-35`, `README.md:53,92,95,101,116`, `ARCHITECTURE.md` §9; carries checked-in traces in `crates/hugr-docs/.hugr-docs-traces/` and a `[traces] store = ".hugr-docs-traces"` override in its manifest.

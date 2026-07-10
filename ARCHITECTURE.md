@@ -199,7 +199,9 @@ crates/hugr-toolkit/    # agent crate manifests (hugr.toml + SYSTEM.md), the too
                         #   the `hugr` CLI (new / run / build / traces / replay / verify), and
                         #   the language-surface generators (CLI shim, PyO3/maturin — §4.1).
 examples/hugr-docs/     # the reference subagent crate (docs Q&A): hugr.toml + SYSTEM.md plus
-                        #   typed response contract, run/buildable by hugr-toolkit.
+                        #   typed response contract, run/buildable by hugr-toolkit
+examples/hugr-weather/  # the self-contained beginner agent; single source of truth for the
+                        #   `hugr new --template weather` scaffold (embedded at compile time).
 crates/hugr-wasm/       # Chrome-extension host scaffold: WASM-facing browser agent package,
                         #   Chrome capabilities, side-panel UI, IndexedDB-backed trace/file stores.
 ```

@@ -1,16 +1,15 @@
-//! `hugr new`: scaffold a working agent crate folder (ROADMAP T1.4).
+//! `hugr new`: scaffold a working agent crate folder.
 //!
-//! Emits a folder with a minimal Rust crate, a commented `hugr.toml`, a
-//! `SYSTEM.md` prompt (using the template vars `hugr run` substitutes), and any
-//! scaffolding a template needs to be runnable immediately (e.g. the `docs`
-//! template creates the `docs/` folder its `fs_read` root points at). The goal
-//! (exit criterion): `hugr new` → edit one path → `hugr run` answers within
-//! minutes.
+//! Emits a folder with a minimal Rust crate, a commented `hugr.toml`, and a
+//! `SYSTEM.md` prompt (using the template vars `hugr run` substitutes). The
+//! goal: `hugr new` → edit one path → `hugr run` answers within minutes.
 //!
 //! The default `weather` template is the self-contained beginner example: it
 //! grants only the allowlisted `web_fetch` tool (scoped to the Open-Meteo API
 //! hosts in `hugr.toml`), so it needs no local data folder — `hugr new` → set
-//! the key → `hugr run` answers immediately.
+//! the key → `hugr run` answers immediately. Its one source of truth is the
+//! checked-in `examples/hugr-weather` crate: the files are embedded at compile
+//! time and the agent name is substituted on scaffold.
 
 use std::path::{Path, PathBuf};
 
@@ -70,31 +69,67 @@ pub enum ScaffoldError {
 /// The files a template emits for an agent named `name` (pure — no IO). Callers
 /// can preview these before [`write_scaffold`] commits them to disk.
 pub fn scaffold_files(name: &str, template: Template) -> Vec<ScaffoldFile> {
-    let mut files = vec![
+    match template {
+        Template::Weather => weather_files(name),
+        Template::Blank => vec![
+            ScaffoldFile {
+                rel_path: PathBuf::from("Cargo.toml"),
+                contents: cargo_toml_for(name),
+            },
+            ScaffoldFile {
+                rel_path: PathBuf::from("src/lib.rs"),
+                contents: lib_rs_for(name),
+            },
+            ScaffoldFile {
+                rel_path: PathBuf::from("hugr.toml"),
+                contents: blank_manifest_for(name),
+            },
+            ScaffoldFile {
+                rel_path: PathBuf::from("SYSTEM.md"),
+                contents: blank_system().to_string(),
+            },
+        ],
+    }
+}
+
+/// The `weather` template: the checked-in `examples/hugr-weather` crate,
+/// embedded at compile time, with the agent name substituted.
+fn weather_files(name: &str) -> Vec<ScaffoldFile> {
+    const CARGO_TOML: &str = include_str!("../../../examples/hugr-weather/Cargo.toml");
+    const LIB_RS: &str = include_str!("../../../examples/hugr-weather/src/lib.rs");
+    const MANIFEST: &str = include_str!("../../../examples/hugr-weather/hugr.toml");
+    const SYSTEM: &str = include_str!("../../../examples/hugr-weather/SYSTEM.md");
+    const README: &str = include_str!("../../../examples/hugr-weather/README.md");
+
+    let package = sanitize_rust_name(name, '-');
+    let crate_name = package.replace('-', "_");
+    let substitute = |source: &str| {
+        source
+            .replace("hugr_weather", &crate_name)
+            .replace("hugr-weather", &package)
+    };
+    vec![
         ScaffoldFile {
             rel_path: PathBuf::from("Cargo.toml"),
-            contents: cargo_toml_for(name),
+            contents: substitute(CARGO_TOML),
         },
         ScaffoldFile {
             rel_path: PathBuf::from("src/lib.rs"),
-            contents: lib_rs_for(name),
+            contents: substitute(LIB_RS),
         },
         ScaffoldFile {
             rel_path: PathBuf::from("hugr.toml"),
-            contents: manifest_for(name, template),
+            contents: substitute(MANIFEST),
         },
         ScaffoldFile {
             rel_path: PathBuf::from("SYSTEM.md"),
-            contents: system_for(template),
+            contents: SYSTEM.to_string(),
         },
-    ];
-    if template == Template::Weather {
-        files.push(ScaffoldFile {
+        ScaffoldFile {
             rel_path: PathBuf::from("README.md"),
-            contents: weather_readme(name),
-        });
-    }
-    files
+            contents: substitute(README),
+        },
+    ]
 }
 
 /// Scaffold `name` under `parent`, returning the created agent folder. Refuses
@@ -124,24 +159,7 @@ pub fn write_scaffold(
     Ok(dir)
 }
 
-fn tool_block(template: Template) -> &'static str {
-    match template {
-        Template::Weather => {
-            // Network egress jailed to the Open-Meteo API hosts. Edit
-            // `allow_hosts` to point this agent at other APIs. `geocoding-api`
-            // is needed for the city -> lat/lon step; `api` for the forecast.
-            "# GET-only HTTP, jailed to an allowlist of hosts (the sandbox boundary).\n\
-             [tools.web_fetch]\n\
-             allow_hosts = [\"api.open-meteo.com\", \"geocoding-api.open-meteo.com\"]\n"
-        }
-        Template::Blank => {
-            "# No external tools — this agent has only its scratchpad. Add a\n\
-             # library grant here, e.g. [tools.fs_read] root = \"./data\".\n"
-        }
-    }
-}
-
-fn manifest_for(name: &str, template: Template) -> String {
+fn blank_manifest_for(name: &str) -> String {
     format!(
         "# Hugr agent definition — edit, then run with:\n\
          #   {name} <question>            (a built binary)\n\
@@ -163,13 +181,13 @@ fn manifest_for(name: &str, template: Template) -> String {
          input_usd_per_m_tokens = 1.0\n\
          output_usd_per_m_tokens = 1.5\n\
          \n\
-         {tools}\n\
+         # No external tools — this agent has only its scratchpad. Add a\n\
+         # library grant here, e.g. [tools.fs_read] root = \"./data\".\n\
+         \n\
          [limits]\n\
          max_model_calls = 20\n\
          max_cost_micro_usd = 50000\n\
          timeout_s = 120\n",
-        name = name,
-        tools = tool_block(template),
     )
 }
 
@@ -227,45 +245,10 @@ fn sanitize_rust_name(name: &str, separator: char) -> String {
     out
 }
 
-fn system_for(template: Template) -> String {
-    if template == Template::Weather {
-        // Uses the {{agent_name}} template var `hugr run` substitutes at assembly.
-        return "You are **{{agent_name}}**, a simple weather assistant. When the user asks \
-             “what’s the weather in …?”, use the `web_fetch` tool to call the Open-Meteo API. \
-             First geocode the city with `https://geocoding-api.open-meteo.com/v1/search?name=<city>`, \
-             then fetch current weather with \
-             `https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>&current=temperature_2m,weather_code,wind_speed_10m`. \
-             Reply in one short sentence with the city, temperature, conditions, and wind speed. \
-             If the city is missing or ambiguous, ask a short clarification."
-            .to_string();
-    }
-    // Blank template.
+fn blank_system() -> &'static str {
+    // Uses the {{agent_name}} template var `hugr run` substitutes at assembly.
     "You are **{{agent_name}}**. You are a focused subagent. Answer the user's question. TODO: describe your task and how to \
          use your tools."
-        .to_string()
-}
-
-/// Minimal README for the self-contained `weather` example (mentions next steps).
-fn weather_readme(name: &str) -> String {
-    format!(
-        "# {name}\n\n\
-         A tiny, self-contained Hugr weather agent. It uses only the allowlisted\n\
-         `web_fetch` tool (jailed to the Open-Meteo API hosts in `hugr.toml`), so\n\
-         there is nothing to set up beyond a provider key.\n\n\
-         ## Run it\n\n\
-         ```bash\n\
-         export HUGR_API_KEY=...            # your model provider key\n\
-         hugr run . \"what's the weather in Paris?\"\n\
-         ```\n\n\
-         The answer is the standard Hugr `Answer` JSON; `response.response` is the\n\
-         one-sentence weather summary.\n\n\
-         ## Next steps\n\n\
-         - Edit `SYSTEM.md` to change the assistant's behavior or output style.\n\
-         - Edit `allow_hosts` in `hugr.toml` to point `web_fetch` at other APIs.\n\
-         - Adjust the response contract in `src/lib.rs` (currently a single string).\n\
-         - Build a standalone binary: `hugr build . --release`.\n\
-         - Inspect runs: `hugr traces .`, then `hugr replay`/`hugr verify`.\n"
-    )
 }
 
 #[cfg(test)]
@@ -317,6 +300,33 @@ mod tests {
                 .iter()
                 .any(|file| file.rel_path == Path::new("src/lib.rs"))
         );
+    }
+
+    #[test]
+    fn weather_template_substitutes_the_agent_name_everywhere() {
+        let files = scaffold_files("sky", Template::Weather);
+        for file in &files {
+            assert!(
+                !file.contents.contains("hugr-weather") && !file.contents.contains("hugr_weather"),
+                "leftover template token in {}",
+                file.rel_path.display()
+            );
+        }
+        let lib = files
+            .iter()
+            .find(|f| f.rel_path == Path::new("src/lib.rs"))
+            .unwrap();
+        assert!(
+            lib.contents.contains("\"sky::Response\""),
+            "{}",
+            lib.contents
+        );
+        let manifest = files
+            .iter()
+            .find(|f| f.rel_path == Path::new("hugr.toml"))
+            .unwrap();
+        let def = AgentDefinition::parse(&manifest.contents, "hugr.toml").unwrap();
+        assert_eq!(def.agent.name, "sky");
     }
 
     #[test]

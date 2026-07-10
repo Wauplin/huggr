@@ -64,6 +64,9 @@ crates/hugr-toolkit/    # agent crate manifests (hugr.toml + SYSTEM.md), the too
                         #   CLI: new / run / build / traces / replay / verify
 examples/hugr-docs/     # the reference subagent crate (docs Q&A): hugr.toml +
                         #   SYSTEM.md plus typed response contract using hugr-toolkit
+examples/hugr-weather/  # the self-contained beginner example; also the source of
+                        #   the `hugr new --template weather` scaffold (embedded
+                        #   at compile time, name substituted)
 ```
 
 `hugr-replay` is a host-side **persistence** crate — it may use `std::fs`, but it depends on `hugr-core` as *pure data only*. The layers stack strictly: `hugr-agent` on `hugr-host` + `hugr-replay`; `hugr-toolkit` on `hugr-agent`. Nothing reaches into `hugr-core` internals — they are hosts like any other. **Never add environmental dependencies to `hugr-core`** to make a host easier; put them in the host crate.

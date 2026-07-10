@@ -9,6 +9,7 @@ members = [
     "crates/hugr-toolkit",
     "crates/hugr-wasm",
     "examples/hugr-docs",
+    "examples/hugr-weather",
 ]
 
 # Crate layout (see ARCHITECTURE.md §10): `hugr-core` is the pure, sans-IO

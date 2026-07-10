@@ -534,6 +534,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hugr-weather"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+]
+
+[[package]]
 name = "hyper"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

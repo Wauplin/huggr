@@ -91,6 +91,7 @@ crates/
   hugr-toolkit/       # agent manifests (hugr.toml + SYSTEM.md), the tool library, and the `hugr` CLI: new/run/build/traces/replay/verify.
 examples/
   hugr-docs/          # the reference subagent crate (docs Q&A): manifest, prompt, and typed response contract.
+  hugr-weather/       # the self-contained beginner agent; source of the `hugr new --template weather` scaffold.
 ```
 
 ## The reference subagent: `hugr-docs`

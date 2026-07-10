@@ -54,7 +54,7 @@ Do these first: they move files around, and every later phase touches the moved 
   - Update `README.md`, `ARCHITECTURE.md` §9 crate layout, `AGENTS.md` project layout.
 - Acceptance: `cargo test --workspace` green; `hugr run examples/hugr-docs ./docs "..."` works; no `crates/hugr-docs` references left (grep).
 
-### 0.2 `[ ]` Materialize the weather template as `examples/hugr-weather` (idea 11) — M
+### 0.2 `[x]` Materialize the weather template as `examples/hugr-weather` (idea 11) — M
 
 - Why: the weather agent exists only as embedded format-string generators in `hugr-toolkit/src/scaffold.rs` (`manifest_for:144`, `lib_rs_for:190`, `system_for:230`, `weather_readme:252`). An on-disk example is browsable, runnable, and testable; generators drift silently.
 - Design: one source of truth — check in `examples/hugr-weather/` as a real agent crate (Cargo.toml, hugr.toml, SYSTEM.md, src/lib.rs, README.md), and make `hugr new --template weather` emit those files via `include_str!("../../../examples/hugr-weather/...")` with the crate/agent name substituted. The `blank` template stays a small generator. Delete the per-file generator functions.

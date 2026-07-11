@@ -1,10 +1,10 @@
 # An agent entirely in TypeScript
 
-This tutorial defines a Hugr subagent entirely in TypeScript, with config as a plain object and tools as functions. It drives the same sans-IO brain as every other surface, compiled to WebAssembly and running in Node or the browser.
+This guide defines a Hugr subagent entirely in TypeScript, with config as a plain object and tools as functions. It drives the same sans-IO brain as every other surface, compiled to WebAssembly and running in Node or the browser.
 
 Topics include the `Agent` class, the `ToolSpec` shape, the `ask`/`run` pair and event stream, Node and browser entry points, and cross-compatible trace verification with the Rust CLI.
 
-The config keys mirror `hugr.toml`, and the `Answer` contract is identical to the Rust and Python surfaces. The [runtime documentation](../runtime.md) explains why the brain is sans-IO and every effect is injected. This tutorial covers assembly.
+The config keys mirror `hugr.toml`, and the `Answer` contract is identical to the Rust and Python surfaces. The [runtime documentation](../runtime.md) explains why the brain is sans-IO and every effect is injected. This guide covers assembly.
 
 ## What the package is
 
@@ -41,7 +41,7 @@ const config: AgentConfig = {
   system: "Answer from the policy tools. Return JSON.",
   models: {
     base_url: "https://router.huggingface.co/v1",
-    api_key_env: "POLICY_API_KEY",
+    api_key_env: "HUGR_API_KEY",
     default: "medium",
     medium: { model: "moonshotai/Kimi-K2-Instruct", temperature: 0.2,
               input_usd_per_m_tokens: 1.0, output_usd_per_m_tokens: 1.5 },
@@ -271,7 +271,7 @@ To run a typed browser agent, use `createAgent` and `IndexedDbTraceStore` from `
 
 Chrome-specific capabilities still need a dispatcher, equivalent to `invokeCapability`, and registration in `config.tools`. The typed `Agent` is platform-neutral; only its runtime knows about Chrome.
 
-See [tutorial 3](03-first-chrome-extension.md) for the full extension build.
+See [guide 3](03-first-chrome-extension.md) for the full extension build.
 
 ## 10. Putting it together
 
@@ -285,7 +285,7 @@ const agent = createAgent({
   system: "Answer from the lookup_policy tool. Return { answer: string } as JSON.",
   models: {
     base_url: "https://router.huggingface.co/v1",
-    api_key_env: "POLICY_API_KEY",
+    api_key_env: "HUGR_API_KEY",
     default: "medium",
     medium: { model: "moonshotai/Kimi-K2-Instruct", temperature: 0.2,
               input_usd_per_m_tokens: 1.0, output_usd_per_m_tokens: 1.5 },

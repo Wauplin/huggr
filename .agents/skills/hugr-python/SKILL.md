@@ -8,7 +8,7 @@ description: Define and run Hugr subagents in Python with typed contract objects
 Select the surface based on where the agent is defined:
 
 - To define the system prompt, model config, and tools in Python, use the `hugr-agents` runtime API below.
-- To consume an existing Rust-defined agent as a typed Python package, keep its definition in Rust and run `hugr build <agent-dir> --surface python --release`; follow [tutorial 04](../../../docs/tutorials/04-agent-binary-from-python.md).
+- To consume an existing Rust-defined agent as a typed Python package, keep its definition in Rust and run `hugr build <agent-dir> --surface python --release`; follow [guide 04](../../../docs/guides/04-agent-binary-from-python.md).
 
 ## Prepare the runtime package
 
@@ -41,7 +41,7 @@ agent = hugr.Agent(
     system="Use lookup_policy, then return a JSON object with an answer field.",
     models={
         "base_url": "https://router.huggingface.co/v1",
-        "api_key_env": "POLICY_API_KEY",
+        "api_key_env": "HUGR_API_KEY",
         "default": "medium",
         "medium": {"model": "google/gemma-4-31B-it:cerebras"},
     },
@@ -100,4 +100,4 @@ hugr verify <matching-agent-dir> <trace-id>
 hugr replay <matching-agent-dir> <trace-id> --step
 ```
 
-Read [tutorial 05](../../../docs/tutorials/05-agent-entirely-in-python.md) for the full API. If native import fails, rerun `maturin develop --release` inside the active venv. If model auth fails, set the variable named by `api_key_env`. If a callable throws, fix the tool's input validation or implementation; do not turn a semantic error into a process crash.
+Read [guide 05](../../../docs/guides/05-agent-entirely-in-python.md) for the full API. If native import fails, rerun `maturin develop --release` inside the active venv. If model auth fails, set the variable named by `api_key_env`. If a callable throws, fix the tool's input validation or implementation; do not turn a semantic error into a process crash.

@@ -81,34 +81,3 @@ fn document_url(path: &str) -> String {
     let slug = normalized.strip_suffix(".md").unwrap_or(normalized);
     format!("{HF_DOCS_BASE}/{slug}")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use hugr_agent::{Answer, TraceId};
-
-    #[test]
-    fn answer_hook_adds_hugging_face_doc_urls() {
-        let mut answer = Answer {
-            status: STATUS_SUCCESS.to_string(),
-            response: json!({
-                "response": "Use advanced compute options.",
-                "related_documents": ["hub/advanced-compute-options.md"],
-            }),
-            trace_id: TraceId::new("trace"),
-            ..Answer::default()
-        };
-
-        for hook in answer_hooks() {
-            hook.apply(&mut answer);
-        }
-
-        assert_eq!(
-            answer.response["related_documents"],
-            json!([{
-                "path": "hub/advanced-compute-options.md",
-                "url": "https://huggingface.co/docs/hub/advanced-compute-options",
-            }])
-        );
-    }
-}

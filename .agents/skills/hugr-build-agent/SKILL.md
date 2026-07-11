@@ -5,7 +5,7 @@ description: Build, configure, run, test, and package manifest-defined Hugr suba
 
 # Build a Hugr agent
 
-Create a focused agent for one domain. Grant only the capabilities it needs and return a stable structured response. Use [tutorial 01](../../../docs/tutorials/01-first-agent-cli.md) for a narrative walkthrough and [the reference documentation](../../../docs/README.md) for the design rationale.
+Create a focused agent for one domain. Grant only the capabilities it needs and return a stable structured response. Use [guide 01](../../../docs/guides/01-first-agent-cli.md) for a narrative walkthrough and [the reference documentation](../../../docs/README.md) for the design rationale.
 
 ## Workflow
 
@@ -40,7 +40,7 @@ description = "Answers questions about travel policy."
 
 [models]
 base_url = "https://router.huggingface.co/v1"
-api_key_env = "POLICY_DOCS_API_KEY"
+api_key_env = "HUGR_API_KEY"
 default = "medium"
 
 [models.medium]
@@ -147,7 +147,7 @@ pub struct Response {
 }
 ```
 
-Add `MODEL_RESPONSE_RUST_TYPE` only when the model should fill a simpler shape than callers receive. Export `answer_hooks() -> Vec<AnswerHook>` for deterministic, IO-free final transformations. Export `storage() -> StorageOverrides` only for trusted host-side custom backends. See [tutorial 02](../../../docs/tutorials/02-typed-responses-and-hooks.md).
+Add `MODEL_RESPONSE_RUST_TYPE` only when the model should fill a simpler shape than callers receive. Export `answer_hooks() -> Vec<AnswerHook>` for deterministic, IO-free final transformations. Export `storage() -> StorageOverrides` only for trusted host-side custom backends. See [guide 02](../../../docs/guides/02-typed-responses-and-hooks.md).
 
 ## Validate and package
 
@@ -160,7 +160,7 @@ hugr build ./my-agent --release
 
 Use `--stream` on a built binary for newline-delimited lifecycle events. Use `--blob <path>` for inbound files. Treat `status: "error"` as contract data: ask paths exit 0 even on missing keys, limits, or model failures.
 
-For composition and accounting, read [tutorial 07](../../../docs/tutorials/07-composition-and-cost.md). For replay diagnosis, use `$hugr-debug-traces` or [tutorial 08](../../../docs/tutorials/08-traces-replay-debugging.md).
+For composition and accounting, read [guide 07](../../../docs/guides/07-composition-and-cost.md). For replay diagnosis, use `$hugr-debug-traces` or [guide 08](../../../docs/guides/08-traces-replay-debugging.md).
 
 ## Troubleshoot
 

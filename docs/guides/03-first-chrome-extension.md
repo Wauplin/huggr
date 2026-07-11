@@ -1,10 +1,10 @@
 # Your first Chrome extension
 
-This tutorial builds a browser-agent Chrome extension with custom tools and a custom UI. It uses the same three reusable pieces as the shipped example: the generic WASM brain bindings in `crates/hugr-wasm`, the generic JavaScript host modules in `bindings/typescript`, and a thin Chrome-specific layer.
+This guide builds a browser-agent Chrome extension with custom tools and a custom UI. It uses the same three reusable pieces as the shipped example: the generic WASM brain bindings in `crates/hugr-wasm`, the generic JavaScript host modules in `bindings/typescript`, and a thin Chrome-specific layer.
 
 You will see what each layer provides, how `examples/chrome-extension` connects them, and which files to copy, keep, and replace.
 
-The [runtime documentation](../runtime.md) explains why the brain is sans-IO and every effect is injected. This tutorial covers assembly.
+The [runtime documentation](../runtime.md) explains why the brain is sans-IO and every effect is injected. This guide covers assembly.
 
 ## The three layers
 

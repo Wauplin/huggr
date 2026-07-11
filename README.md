@@ -2,23 +2,15 @@
 
 > Build a subagent and ship it anywhere as a small, self-contained artifact on a runtime-free, sans-IO Rust core.
 
-A **subagent** is a small Rust crate plus a system prompt and a set of tools with declared privileges. Hugr turns that agent crate folder into **one self-contained binary**, which also serves MCP through `--mcp-serve`, and includes the shared infrastructure used by every subagent:
+Hugr is a toolkit for building **small, domain-specific subagents**. A subagent is a small Rust crate: a `hugr.toml` manifest (model tiers, tool grants, limits), a `SYSTEM.md` system prompt, and optionally a typed Rust response contract. Hugr turns that folder into one standalone binary that answers questions over a JSON contract and serves MCP through `--mcp-serve`.
 
-- **One invocation contract.** The input is a question string. The output is a structured response object with mandatory status, **cost**, **duration**, token, and **trace id** metadata. Every Hugr agent and surface uses this shape. Errors are answers (`status: "error"`, exit 0), so callers branch on data instead of exceptions.
-- **Resumable and forkable traces.** Every run persists an immutable trace. Pass its `trace_id` back to continue the conversation, or pass an older id to fork a sibling branch. Orchestrators can explore multiple directions without growing one shared context. Replay is immediate and bit-for-bit deterministic.
-- **Sandboxed by construction.** An agent registers only the tools granted by its manifest. If the manifest does not grant a shell, the binary has no shell capability; the tool library is exec-free. Each agent also gets a private, jailed scratchpad and explicit blob exchange with the caller.
-- **Token-efficient by design.** Agents use a focused prompt and a small set of domain tools instead of many generic tools. Small agents are cheaper, faster, and more reliable, and an orchestrator pays one tool call to use them.
-- **Agents compose.** A built Hugr agent is a tool. Grant one to another with a manifest line (`[tools.agent.<name>] artifact = "..."`) and call it like any capability. Delegation never widens privileges, and the child's cost folds into the caller's metadata.
-
-The reference agent, [`hugr-docs`](examples/hugr-docs/), is a checked-in docs-Q&A agent crate: `hugr.toml` + `SYSTEM.md` live beside the Rust response contract. `hugr-toolkit` does not depend on it. The generic `hugr run` path still works for typed agents by compiling a cached dev shim that links the current agent crate.
-
-See [the documentation](docs/README.md) for the design, architecture, and threat model, or start with the [tutorials](docs/tutorials/README.md) for a guided tour of every surface.
+The idea is that a specialist with a focused prompt and five jailed tools is cheaper, faster, and safer than a generalist with fifty, and that an orchestrator (a human, a script, or a larger agent) should pay one tool call to use it.
 
 ## Quickstart
 
 ```bash
 cargo run -p hugr-toolkit --bin hugr -- new my-agent            # scaffold an agent crate
-export HUGR_API_KEY=hf_...                                       # whatever the manifest's api_key_env names
+export HUGR_API_KEY=hf_...                                       # the provider key named by the manifest
 cargo run -p hugr-toolkit --bin hugr -- run my-agent "question" # interpret it (dev loop)
 cargo run -p hugr-toolkit --bin hugr -- build my-agent          # ship it: one standalone binary
 ./my-agent/dist/my-agent "question"                              # answers; --trace <id> resumes; --mcp-serve serves MCP
@@ -26,15 +18,15 @@ cargo run -p hugr-toolkit --bin hugr -- build my-agent          # ship it: one s
 
 Every built binary self-describes: `--describe` (tools, privileges, tiers, pricing, limits), `--config` (the parsed manifest, secrets redacted), `--traces` (stored lineage).
 
-By default, both `hugr run` and built binaries store agent state under `~/.hugr/<agent-name>/`: immutable traces in `traces/` and per-lineage scratch state in `scratch/`. Override the full home with `HUGR_AGENT_HOME`, or the base with `HUGR_HOME`.
+Agent state lives under `~/.hugr/<agent-name>/` by default: immutable traces in `traces/`, per-lineage scratch state in `scratch/`. Override with `HUGR_AGENT_HOME` or `HUGR_HOME`.
 
-## What An Agent Crate Looks Like
+## What an agent crate looks like
 
 ```
 my-agent/
   Cargo.toml          # Rust crate metadata; typed contracts and hooks live here
-  hugr.toml          # name, model tiers + pricing, tool grants + scopes, limits
-  SYSTEM.md          # the system prompt
+  hugr.toml           # name, model tiers + pricing, tool grants + scopes, limits
+  SYSTEM.md           # the system prompt
   src/lib.rs          # optional typed response / hooks / custom Rust wiring
 ```
 
@@ -42,6 +34,10 @@ my-agent/
 [agent]
 name = "policy-docs"
 description = "Answers questions about the company travel policy."
+
+[models]
+base_url = "https://router.huggingface.co/v1"
+api_key_env = "HUGR_API_KEY"
 
 [models.medium]
 model = "google/gemma-4-31B-it:cerebras"
@@ -52,71 +48,24 @@ output_usd_per_m_tokens = 1.5
 root = "./policies"        # read-only, jailed to this folder
 ```
 
-Runtime invocation config can patch manifest targets before the agent is assembled. For example, `hugr-docs` declares `docs_path` once and the toolkit exposes it in both the CLI and MCP `ask` schema:
+The manifest defines the agent's blast radius and is the document to audit. A tool that is not granted is not registered, so there is no code path to it. Unknown keys are hard errors, so a typo cannot silently widen or narrow the grant.
 
-```toml
-[runtime.args.docs_path]
-target = "tools.fs_read.root"
-positional = true
-required = true
-env = "HUGR_DOCS_PATH"
-help = "Folder containing the documentation to search."
-```
+The tool library is exec-free by design: `fs_read` (six read-only `fs_*` tools), `web_fetch`, `memory`, `traces_read`, and the scratchpad. `[tools.mcp.<name>]` is the one external-process escape hatch, and `[tools.agent.<name>]` grants another built Hugr agent as a tool. There is no shell.
 
-The manifest defines the agent's blast radius and is the document to audit. Unknown keys are hard errors, so a typo cannot silently widen or narrow it.
+## What every agent gets
 
-The current tool library includes `fs_read` (six read-only `fs_*` tools), `web_fetch`, `memory`, `traces_read` (read-only trace and feedback mining), and the scratchpad.
+- **One invocation contract.** The input is a question string. The output is a structured response with mandatory status, cost, duration, token, and trace-id metadata. Errors are answers (`status: "error"`, exit 0), so callers branch on data instead of exceptions.
+- **Resumable and forkable traces.** Every run persists an immutable trace. Pass its `trace_id` back to continue the conversation, or pass an older id to fork a sibling branch. Replay is bit-for-bit deterministic.
+- **Sandboxing by construction.** An agent registers only the tools granted by its manifest, each jailed to its declared scope. Every agent also gets a private, jailed scratchpad and explicit blob exchange with the caller.
+- **Cost accounting.** Every response carries cost (from per-tier pricing config), duration, and token counts, folded from the trace. `hugr stats` aggregates them across runs.
+- **Composition.** A built Hugr agent is a tool: grant it with `[tools.agent.<name>] artifact = "..."` and call it like any capability. Delegation never widens privileges, and the child's cost folds into the caller's metadata.
 
-It also supports `[tools.mcp.<name>]`, the one external-process escape hatch, and `[tools.agent.<name>]`, another built agent used as a tool.
+## Example: the reference docs agent
 
-## The core underneath
-
-The runtime is built on `hugr-core`, a pure, **sans-IO**, single-threaded reducer over an append-only event log. The brain and host communicate through two enums and two methods:
-
-```rust
-loop {
-    for cmd in brain.poll() {        // drain commands the brain wants performed
-        host.perform(cmd);
-    }
-    let event = host.next_event().await;  // the only await; host-side only
-    brain.submit(event);             // pure, instant, no IO
-}
-```
-
-Hugr separates four concerns that many harnesses combine: durable state (the event log), model context (a projection), IO (the host), and permissions (externalized policy).
-
-A **trace** is a durable log. **Resume** re-folds a trace, a **fork** copies a log prefix, and **cost** is calculated from per-op metadata in the log.
-
-All nondeterminism is injected as events, so replay is bit-for-bit deterministic.
-
-## Crate layout
-
-```
-crates/
-  hugr-core/          # the sans-IO brain; log, projection, op table, reducer. NO tokio, NO reqwest, NO fs.
-  hugr-host/          # native tokio host: engine driver loop, capability/model registries, MCP stdio client, JSON-line framing.
-  hugr-providers/     # OpenAI-compatible streaming adapter (retries inside).
-  hugr-replay/        # trace format + content-addressed blob store + replay/verify/inspect.
-  hugr-agent/         # the subagent runtime: Ask/Answer, trace store with trace_id/depends_on + fork, scratchpad, blobs, limits, cost accounting, agent-as-tool (subprocess).
-  hugr-toolkit/       # agent manifests (hugr.toml + SYSTEM.md), the tool library, and the `hugr` CLI: new/run/build/traces/replay/verify.
-  hugr-wasm/          # generic WASM bindings around hugr-core for browser/JS hosts.
-  hugr-python/        # PyO3 runtime embedding: define agents and tools in Python (built via bindings/python).
-bindings/
-  python/             # the `hugr-agents` Python package: typed layer + tests over hugr-python.
-  typescript/         # the `hugr-agents` TS package: typed Agent over the WASM brain (node + browser).
-examples/
-  hugr-docs/          # the reference subagent crate (docs Q&A): manifest, prompt, and typed response contract.
-  hugr-weather/       # the self-contained beginner agent; source of the `hugr new --template weather` scaffold.
-  hugr-insights/      # offline self-improvement agent: mines an agent's traces + feedback via `traces_read`.
-  chrome-extension/   # a browser host built on hugr-wasm + bindings/typescript: chrome.* capabilities, side-panel UI.
-```
-
-## The reference subagent: `hugr-docs`
-
-The agent accepts one folder and one question, then returns one JSON response with cost metadata. It has no shell, write, or network tools; it uses the read-only, folder-jailed `fs_*` tools.
+[`examples/hugr-docs`](examples/hugr-docs/) answers questions about a documentation folder. It has no shell, write, or network tools; only the read-only, folder-jailed `fs_*` family.
 
 ```bash
-export HUGR_DOCS_API_KEY=hf_...   # or any OpenAI-compatible endpoint key
+export HUGR_API_KEY=hf_...   # or any OpenAI-compatible endpoint key
 cargo run -p hugr-toolkit --bin hugr -- run examples/hugr-docs ./docs "What is the narrow-waist rule?" | jq
 ```
 
@@ -132,25 +81,82 @@ cargo run -p hugr-toolkit --bin hugr -- run examples/hugr-docs ./docs "What is t
 }
 ```
 
-The docs root is runtime config, not a compiled-in scope. `hugr run examples/hugr-docs ./docs "..."` and `hugr run examples/hugr-docs ./other-docs "..."` use the same agent crate with different read jails.
+The docs folder is runtime config, not a compiled-in scope: the same agent crate runs against `./docs` or any other folder, each invocation jailed to the folder it was given. Build it with `hugr build examples/hugr-docs` to get a standalone binary that any language can call as a subprocess or through `--mcp-serve`.
 
-Because `hugr-docs` exposes `RESPONSE_RUST_TYPE` and a typed Rust response contract, generic `hugr run` compiles and reuses a cached development shim under the temporary directory. `hugr-toolkit` therefore does not depend on `hugr-docs`.
+## Python and TypeScript
 
-Build it with `hugr build examples/hugr-docs`. The generated standalone shim links the current agent crate inferred from `Cargo.toml`. Python and other languages can then consume the binary through a subprocess or `--mcp-serve`.
+The same runtime is available without writing Rust:
 
-Runs for this reference agent land in `~/.hugr/hugr-docs/traces` unless `HUGR_AGENT_HOME`, `HUGR_HOME`, or an explicit `[traces].store` override is set.
+- **Consume a built agent from Python.** `hugr build <agent> --surface python` wraps the agent into a typed wheel: `ask()` in-process, dataclasses out. See [guide 4](docs/guides/04-agent-binary-from-python.md).
+- **Define an agent in Python.** The [`hugr-agents` package](bindings/python/README.md) embeds the runtime: tools are decorated callables, config is data, `agent.ask(...)` returns the standard `Answer`. See [guide 5](docs/guides/05-agent-entirely-in-python.md).
+- **Define an agent in TypeScript.** The [`hugr-agents` TS package](bindings/typescript/README.md) drives the same brain compiled to WASM, in Node and the browser. See [guide 6](docs/guides/06-agent-entirely-in-typescript.md).
 
-## Define an agent in Python or TypeScript
+Traces written from any surface verify with the Rust CLI.
 
-The `hugr-agents` Python package in `bindings/python` embeds the same runtime. Fixed-shape config inputs are `TypedDict`s, and tools are synchronous or asynchronous Python callables with explicit JSON schemas.
+## The core underneath
 
-`agent.ask(...)` returns the standard `Answer` dataclass. `async for event in agent.run(...)` streams a union of event dataclasses. Introspection, trace, feedback, and stats outputs are recursive dataclass graphs; only domain-owned opaque JSON stays as JSON.
+The runtime is built on `hugr-core`, a pure, sans-IO, single-threaded reducer over an append-only event log. The brain and host communicate through two enums and two methods:
 
-Traces land in `~/.hugr/<name>/` and verify with the Rust CLI. See `bindings/python/README.md`.
+```rust
+loop {
+    for cmd in brain.poll() {        // drain commands the brain wants performed
+        host.perform(cmd);
+    }
+    let event = host.next_event().await;  // the only await; host-side only
+    brain.submit(event);             // pure, instant, no IO
+}
+```
 
-The `hugr-agents` TypeScript package (`bindings/typescript`) is the same shape for Node and the browser, driving the WASM brain: tools as `{name, description, schema, invoke}` objects, the same config keys and events, node-fs or IndexedDB trace stores, and cross-language `verify` in both directions. See `bindings/typescript/README.md`.
+All nondeterminism (time, model output, tool results) is injected as events, so any session replays bit-for-bit. A trace is the durable log; resume re-folds it, a fork copies a prefix, and cost is computed from per-op metadata in it. This is what lets the same brain run natively, in Python, and in the browser.
 
-## Building & testing
+## What Hugr is not
+
+- **Not a general-purpose coding or browser agent.** Hugr defines the callee side; generalists are usually the orchestrators that call Hugr agents.
+- **Not a hosted runtime or marketplace.** Hugr ships artifacts; you choose where to run them (locally, CI, a container).
+- **Not an agent-to-agent wire protocol.** MCP is the adapter for exposing an agent to orchestrators; A2A and others could be added at the edge but are not foundations.
+- **Not multimodal-first.** Text in, text out, with blob attachments that a specific agent's tools may interpret.
+- **Not stable.** This is a hobby prototype with no external users. Breaking changes land without deprecation shims or compatibility ceremony.
+
+## Repository layout
+
+```
+hugr/
+├── crates/
+│   ├── hugr-core/          # the sans-IO brain: log, projection, op table, reducer (no tokio, reqwest, or fs)
+│   ├── hugr-host/          # native tokio host: driver loop, capability/model registries, MCP client
+│   ├── hugr-providers/     # OpenAI-compatible streaming model adapter
+│   ├── hugr-replay/        # trace format, content-addressed blob store, replay/verify/inspect
+│   ├── hugr-agent/         # subagent runtime: Ask/Answer, resume/fork, scratchpad, blobs, limits, cost
+│   ├── hugr-toolkit/       # manifests, the tool library, and the `hugr` CLI (new/run/build/traces/replay/verify)
+│   ├── hugr-wasm/          # WASM bindings around hugr-core for browser/JS hosts
+│   └── hugr-python/        # PyO3 runtime embedding (built by maturin from bindings/python)
+├── bindings/
+│   ├── python/             # the `hugr-agents` Python package
+│   └── typescript/         # the `hugr-agents` TypeScript package (Node + browser)
+├── examples/
+│   ├── hugr-docs/          # the reference docs-Q&A agent crate with a typed response contract
+│   ├── hugr-weather/       # the beginner agent; source of the `hugr new --template weather` scaffold
+│   ├── hugr-insights/      # offline self-improvement agent over traces and feedback
+│   ├── hugr-datasmith/     # docs-QA dataset synthesizer with a typed QaDataset contract
+│   ├── hf-librarian/       # Python pipeline: datasmith wheel, jailed Hub publisher, judge-graded eval
+│   └── chrome-extension/   # a concrete browser host: chrome.* capabilities, side-panel UI, MV3
+└── docs/                   # reference documentation, guides, and tutorials
+```
+
+## Documentation
+
+- [Overview](docs/overview.md): vision, goals, non-goals, and the subagent model.
+- [Agents](docs/agents.md): defining, running, building, composing, and embedding agents; the manifest; tools vs capabilities.
+- [Runtime](docs/runtime.md): the sans-IO design, core and host contract, determinism, and replay.
+- [Security](docs/security.md): the security model and threat notes for each capability.
+- [Project structure](docs/project-structure.md): crate boundaries, dependency rules, and standards positioning.
+- [Reference](docs/reference.md): open questions, glossary, and naming.
+
+The [guides](docs/guides/README.md) are runnable introductions to each surface: [the CLI](docs/guides/01-first-agent-cli.md), [typed responses](docs/guides/02-typed-responses-and-hooks.md), [a Chrome extension](docs/guides/03-first-chrome-extension.md), [an agent binary from Python](docs/guides/04-agent-binary-from-python.md), [agents in pure Python](docs/guides/05-agent-entirely-in-python.md), [agents in TypeScript](docs/guides/06-agent-entirely-in-typescript.md), [composition and cost](docs/guides/07-composition-and-cost.md), and [traces and replay](docs/guides/08-traces-replay-debugging.md).
+
+The [tutorials](docs/tutorials/README.md) are self-contained, end-to-end walkthroughs with real outputs. Start with [a docs Q&A dataset, published to the Hub](docs/tutorials/docs-qa-dataset-pipeline.md).
+
+## Building and testing
 
 ```bash
 cargo build --workspace

@@ -1,39 +1,38 @@
 # Project structure
 
-## Crate layout
+## Project layout
 
 ```
-crates/hugr-core/       # the sans-IO brain. NO tokio, NO reqwest, NO fs.
-crates/hugr-host/       # native tokio host: driver loop, capability/model registries, MCP client.
-crates/hugr-providers/  # OpenAI-compatible streaming model adapter.
-crates/hugr-replay/     # the trace format + fs content-addressed blob store + replay/verify/inspect.
-crates/hugr-agent/      # the subagent runtime: Ask/Answer/Feedback, storage backends (trace/blob/scratch),
-                        #   resume/fork, blob exchange, limits, cost accounting, agent-as-tool.
-crates/hugr-toolkit/    # agent crate manifests (hugr.toml + SYSTEM.md), the tool library,
-                        #   the `hugr` CLI (new / run / build / traces / replay / verify), and
-                        #   the language-surface generators (CLI shim, PyO3/maturin).
-crates/hugr-python/     # PyO3 runtime embedding: define agents/tools in Python on the same
-                        #   runtime. Outside the cargo workspace; built by maturin from bindings/python.
-examples/hugr-docs/     # the reference subagent crate (docs Q&A): hugr.toml + SYSTEM.md plus
-                        #   typed response contract, run/buildable by hugr-toolkit
-examples/hugr-weather/  # the self-contained beginner agent; single source of truth for the
-                        #   `hugr new --template weather` scaffold (embedded at compile time).
-examples/hugr-insights/ # offline self-improvement agent: mines another agent's traces +
-                        #   feedback via `traces_read` and reports improvement suggestions.
-examples/hugr-datasmith/ # docs-QA dataset synthesizer: fs_read-jailed, typed QaDataset
-                        #   contract, buildable as a typed Python wheel.
-examples/hf-librarian/  # Python-surface pipeline: the datasmith wheel in-process, a jailed
-                        #   Hub publisher, and a judge-graded eval of hugr-docs.
-crates/hugr-wasm/       # generic WASM bindings around hugr-core for browser/JS hosts: submit/poll
-                        #   over JSON, the portable-trace AgentSession + verify_trace_json (the
-                        #   hugr-replay fold compiled to wasm), and the browser tool schemas.
-bindings/python/        # the `hugr-agents` Python package: pyproject (maturin), typed pure-Python
-                        #   layer over crates/hugr-python, pytest suite with a mock provider.
-bindings/typescript/    # the `hugr-agents` TS package: typed Agent over the WASM brain with
-                        #   node/browser storage + the OpenAI-compatible fetch adapter; also hosts the
-                        #   plain-JS extension driver modules the chrome-extension example vendors.
-examples/chrome-extension/ # a concrete browser host: chrome.* capability dispatcher, content
-                        #   script, side-panel UI, MV3 manifest; vendors the generic JS at build time.
+hugr/
+├── crates/
+│   ├── hugr-core/          # the sans-IO brain: log, projection, op table, reducer (no tokio, reqwest, or fs)
+│   ├── hugr-host/          # native tokio host: driver loop, capability/model registries, MCP client
+│   ├── hugr-providers/     # OpenAI-compatible streaming model adapter
+│   ├── hugr-replay/        # trace format, fs content-addressed blob store, replay/verify/inspect
+│   ├── hugr-agent/         # subagent runtime: Ask/Answer/Feedback, storage backends (trace/blob/scratch),
+│   │                       #   resume/fork, blob exchange, limits, cost accounting, agent-as-tool
+│   ├── hugr-toolkit/       # agent crate manifests (hugr.toml + SYSTEM.md), the tool library, the `hugr` CLI
+│   │                       #   (new/run/build/traces/replay/verify), and the language-surface generators
+│   ├── hugr-wasm/          # generic WASM bindings around hugr-core for browser/JS hosts: submit/poll over
+│   │                       #   JSON, AgentSession + verify_trace_json, browser tool schemas
+│   └── hugr-python/        # PyO3 runtime embedding: define agents/tools in Python on the same runtime
+│                           #   (outside the cargo workspace; built by maturin from bindings/python)
+├── bindings/
+│   ├── python/             # the `hugr-agents` Python package: typed pure-Python layer over
+│   │                       #   crates/hugr-python, pytest suite with a mock provider
+│   └── typescript/         # the `hugr-agents` TS package: typed Agent over the WASM brain with node/browser
+│                           #   storage + fetch adapter; hosts the JS modules the chrome-extension vendors
+├── examples/
+│   ├── hugr-docs/          # the reference subagent crate (docs Q&A) with a typed response contract
+│   ├── hugr-weather/       # the beginner agent; source of the `hugr new --template weather` scaffold
+│   ├── hugr-insights/      # offline self-improvement agent: mines traces + feedback via `traces_read`
+│   ├── hugr-datasmith/     # docs-QA dataset synthesizer: fs_read-jailed, typed QaDataset contract
+│   ├── hf-librarian/       # Python-surface pipeline: the datasmith wheel in-process, a jailed Hub
+│   │                       #   publisher, and a judge-graded eval of hugr-docs
+│   └── chrome-extension/   # a concrete browser host: chrome.* capability dispatcher, side-panel UI,
+│                           #   MV3 manifest; vendors the generic JS at build time
+├── docs/                   # reference documentation, per-surface guides, end-to-end tutorials
+└── .agents/skills/         # coding-agent cheat sheets kept in sync with the docs
 ```
 
 **`hugr-core` depends on nothing environmental.** Verify this with `cargo tree -p hugr-core`.

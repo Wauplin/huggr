@@ -5,7 +5,7 @@
 ## Usage
 
 ```bash
-export HUGR_DOCS_API_KEY=hf_...
+export HUGR_API_KEY=hf_...
 cargo run -p hugr-toolkit --bin hugr -- run crates/hugr-docs ./docs "What is the narrow-waist rule?" | jq
 ```
 

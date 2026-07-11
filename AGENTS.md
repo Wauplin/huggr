@@ -10,7 +10,7 @@ A subagent is a small Rust crate plus a system prompt and a set of tools with de
 
 The documentation under `docs/` contains the design, architecture, and threat model. Read it before non-trivial changes and keep it in sync with reality.
 
-`docs/tutorials/` contains teaching material that links to the reference documentation instead of restating it; `docs/guides/` contains self-contained end-to-end walkthroughs whose command outputs come from real runs. A behavior change is not complete until the reference documentation matches reality and every tutorial or guide that shows the changed behavior still works.
+`docs/guides/` contains per-surface teaching material that links to the reference documentation instead of restating it; `docs/tutorials/` contains self-contained end-to-end walkthroughs whose command outputs come from real runs. A behavior change is not complete until the reference documentation matches reality and every tutorial or guide that shows the changed behavior still works.
 
 ## The one rule that matters most
 
@@ -134,3 +134,17 @@ hugr cron <agent-dir>       # run configured [cron.<name>] recurring asks
 - When you add a `Command`/`Event`/`Record` variant: update the reducer's match and add a scripted test that pins the resulting command sequence.
 - Determinism is testable: any new control-flow path should have a replay test asserting identical commands on a re-fed event stream; `verify()` is the release gate.
 - **Ideas flow: `new_ideas.md` → `plan.md` → implementation.** While implementing, drop short one-line ideas (not designs or TODO lists) into `new_ideas.md` so the owner can review them; when an idea is promoted into the structured roadmap `plan.md`, remove it from `new_ideas.md`.
+
+## Documentation writing guidelines
+
+These apply whenever you create or update any Markdown file in this repository: the README, `docs/`, example READMEs, and skills.
+
+- **Write like an experienced engineer.** Clear, natural, precise, understated. A page exists to help a reader complete a task or understand the system, not to impress them.
+- **Preserve accuracy.** Do not invent behavior, guarantees, examples, or constraints. Keep commands, code samples, links, API names, and identifiers exactly as they are unless they are incorrect. Prefer concrete explanations over broad claims, and do not overstate the importance of a result or design decision.
+- **No AI-style or promotional writing.** Avoid dramatic, suspenseful, or marketing phrasing: "this changes everything", "let's dive in", "here's the catch", "this unlocks...", "at its core", "it is worth noting that", "seamless", "robust", "powerful", "game-changing". Do not describe ordinary behavior as "critical", "major", or "remarkable" unless objectively justified. State the fact and let the reader judge its importance.
+- **Avoid recurring rhetorical patterns.** No "not only X, but Y", "it's not about X, it's about Y", "this isn't just X; it's Y", "the result? ...", "the key takeaway is...", forced contrast, punchlines, rhetorical questions, or one-sentence paragraphs written only for emphasis.
+- **Punctuation and emphasis.** Avoid em dashes; use commas, periods, colons, or parentheses instead. Keep hyphens where grammar requires them (compound adjectives, flags, identifiers). Use italics sparingly and bold only where it improves scanning. Do not overuse colons, semicolons, parentheses, or exclamation marks.
+- **Plain word choice.** "uses" over "leverages", "shows" over "demonstrates", "before" over "prior to", "about" over "with regard to". Remove unnecessary adjectives and adverbs, and do not repeat the same point in slightly different words.
+- **Structure.** Start each page with a short statement of what it covers, put the information readers need first, use headings that describe the content directly, prefer short sections, use lists only for genuinely list-like information, include limitations and failure cases where relevant, and end when the topic is covered without a generic conclusion.
+- **Markdown formatting.** One physical line per paragraph or bullet, as stated in the conventions above; never hard-wrap prose.
+- **Before finishing a page,** reread it and remove dramatic claims, canned transitions, em dashes, exaggerated adjectives, repeated contrast formulas, duplicated explanations, and anything that reads like marketing copy.

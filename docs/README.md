@@ -11,10 +11,10 @@ Hugr is a toolkit for building small, self-contained, domain-specific subagents 
 - [Security](security.md): the security model and threat notes for each capability and host extension point.
 - [Reference](reference.md): open questions, glossary, and naming.
 
-## Tutorials
-
-The [tutorials](tutorials/README.md) provide runnable introductions to each supported surface.
-
 ## Guides
 
-Self-contained, end-to-end walkthroughs that compose multiple agents into working pipelines. Start with [a docs Q&A dataset, published to the Hub](guides/docs-qa-dataset-pipeline.md): a Rust data-synthesis specialist, a jailed Python publisher, and a judge-graded eval, with real outputs from a full run.
+The [guides](guides/README.md) provide runnable introductions to each supported surface.
+
+## Tutorials
+
+Self-contained, end-to-end [tutorials](tutorials/README.md) that compose multiple agents into working pipelines. Start with [a docs Q&A dataset, published to the Hub](tutorials/docs-qa-dataset-pipeline.md): a Rust data-synthesis specialist, a jailed Python publisher, and a judge-graded eval, with real outputs from a full run.

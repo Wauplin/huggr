@@ -2,9 +2,9 @@
 
 ## What you'll build
 
-Every Hugr ask writes an immutable trace to `~/.hugr/<agent>/traces`. This tutorial reads a trace, replays it event by event with `hugr replay --step`, verifies it bit-for-bit with `hugr verify`, schedules recurring asks with `[cron.<name>]`, and passes traces to an offline agent for improvement suggestions. It explains how the trace acts as the source of truth.
+Every Hugr ask writes an immutable trace to `~/.hugr/<agent>/traces`. This guide reads a trace, replays it event by event with `hugr replay --step`, verifies it bit-for-bit with `hugr verify`, schedules recurring asks with `[cron.<name>]`, and passes traces to an offline agent for improvement suggestions. It explains how the trace acts as the source of truth.
 
-This assumes [01](01-first-agent-cli.md) (you can run/build an agent) and [07](07-composition-and-cost.md) (you know where cost and feedback live). The trace format is specified in [the runtime documentation](../runtime.md#determinism-replay-and-traces). This tutorial provides the hands-on workflow.
+This assumes [01](01-first-agent-cli.md) (you can run/build an agent) and [07](07-composition-and-cost.md) (you know where cost and feedback live). The trace format is specified in [the runtime documentation](../runtime.md#determinism-replay-and-traces). This guide provides the hands-on workflow.
 
 ## Where traces live
 
@@ -95,7 +95,7 @@ The scheduler and config are in `crates/hugr-toolkit/src/cron.rs`.
 
 ## Close the loop with the insights agent
 
-Traces and the feedback filed in tutorial 07 provide the input for offline improvement analysis. The `examples/hugr-insights` agent is granted the read-only `traces_read` tool family (`trace_list`, `trace_ops`, `trace_transcript`, `feedback_list`), jailed to a target agent's home. Point it at one:
+Traces and the feedback filed in guide 07 provide the input for offline improvement analysis. The `examples/hugr-insights` agent is granted the read-only `traces_read` tool family (`trace_list`, `trace_ops`, `trace_transcript`, `feedback_list`), jailed to a target agent's home. Point it at one:
 
 ```bash
 hugr run ./examples/hugr-insights ~/.hugr/hugr-weather "What should hugr-weather improve?"
@@ -116,4 +116,4 @@ The `InsightsResponse` it returns (`patterns` with evidence trace ids, `prompt_s
 
 ## That's the tour
 
-Tutorial 01 built an agent, and this tutorial completed the workflow: run → trace → replay/verify → analyze → improve. The [reference documentation](../README.md) and [AGENTS.md](../../AGENTS.md) cover the sans-IO contract, narrow-waist rule, storage, and policy details that the tutorials do not repeat. Back to the [tutorial index](README.md).
+Guide 01 built an agent, and this guide completed the workflow: run → trace → replay/verify → analyze → improve. The [reference documentation](../README.md) and [AGENTS.md](../../AGENTS.md) cover the sans-IO contract, narrow-waist rule, storage, and policy details that the guides do not repeat. Back to the [guide index](README.md).

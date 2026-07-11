@@ -7,6 +7,8 @@ An end-to-end pipeline on Hugr's Python surface, in two scripts:
 
 The point of using Hugr specialists instead of one generic agent: the datasmith can read only the docs folder it is pointed at, the librarian's entire tool surface is three Python functions bound to one dataset repo (your Hub credentials never become a general-purpose capability), and every ask leaves a replayable trace with itemized cost.
 
+[The docs-QA pipeline tutorial](../../docs/tutorials/docs-qa-dataset-pipeline.md) is the full end-to-end walkthrough of this example, with the Hugr concepts involved and real outputs from a complete run.
+
 ## Setup
 
 You need Rust, [`uv`](https://docs.astral.sh/uv/), and [`maturin`](https://maturin.rs) (`uv tool install maturin`). Install the `hugr` CLI once: `cargo install --path ../../crates/hugr-toolkit`.
@@ -41,4 +43,4 @@ hf auth login                  # Hub credentials (librarian uploads, eval downlo
 .venv/bin/python eval.py       # download → hugr-docs answers → judge grades
 ```
 
-Both scripts print per-agent cost and trace ids; inspect any run with `hugr traces`, `hugr stats`, and `hugr replay --step` against the agent folder. The full walkthrough — including the Hugr concepts involved — is [the docs-QA pipeline guide](../../docs/guides/docs-qa-dataset-pipeline.md).
+Both scripts print per-agent cost and trace ids; inspect any run with `hugr traces`, `hugr stats`, and `hugr replay --step` against the agent folder. For the step-by-step walkthrough, see [the docs-QA pipeline tutorial](../../docs/tutorials/docs-qa-dataset-pipeline.md).

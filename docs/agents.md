@@ -163,7 +163,7 @@ description = "Answers questions about the company travel policy."
 
 [models]
 base_url = "https://router.huggingface.co/v1"
-api_key_env = "POLICY_DOCS_API_KEY"
+api_key_env = "HUGR_API_KEY"
 [models.default]                      # tier names are free-form strings; one tier is the common case
 model = "google/gemma-4-31B-it:cerebras"
 input_usd_per_m_tokens = 1.0
@@ -248,6 +248,18 @@ Response repair uses the runtime's fixed default attempt limit for now, not mani
 ### Limits
 
 `[limits]` is enforced host-side on every ask. An exceeded limit yields an ordinary `status: "error"` answer with a persisted partial trace that still verifies.
+
+## Tools and capabilities
+
+The two words name the two sides of the same mechanism.
+
+A **tool** is the model-facing view: a manifest grant (`[tools.fs_read]`, `[tools.mcp.<name>]`, `[tools.agent.<name>]`) that puts one or more named, schema-described functions in front of the model. The manifest is where tools are granted, scoped, and audited.
+
+A **capability** is the host-side implementation behind that view: a Rust `Capability` (a name, the JSON schema advertised to the model, permission and background flags, and an `invoke` method) registered in the host's `CapabilityRegistry`. The brain never executes anything itself; it emits `StartCapability { name, args }` and the host looks the name up in the registry. There are no privileged built-ins: `fs_read`, an MCP bridge, a granted child agent, and even the model adapter at the host level all register through the same interface.
+
+The mapping is not always one-to-one. One `fs_read` grant registers six `fs_*` capabilities; one `[tools.agent.<name>]` grant registers `agent_<name>` and `agent_<name>_feedback`. Sandbox-by-registration ties the two sides together: a tool that is not granted in the manifest has no capability registered, so there is no code path to it.
+
+In short: you grant tools in the manifest and the model calls tools; the host registers and invokes capabilities. When a sentence works with either word, the model-facing side is a tool and the host-facing side is a capability.
 
 ## The tool library
 

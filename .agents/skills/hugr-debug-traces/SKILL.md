@@ -5,7 +5,7 @@ description: Inspect, replay, verify, compare, and analyze Hugr traces, lineage,
 
 # Debug Hugr traces
 
-Treat trace files as immutable evidence and never repair a failure by editing a stored trace. Read [tutorial 08](../../../docs/tutorials/08-traces-replay-debugging.md) for trace anatomy and [the runtime documentation](../../../docs/runtime.md#determinism-replay-and-traces) for the determinism contract.
+Treat trace files as immutable evidence and never repair a failure by editing a stored trace. Read [guide 08](../../../docs/guides/08-traces-replay-debugging.md) for trace anatomy and [the runtime documentation](../../../docs/runtime.md#determinism-replay-and-traces) for the determinism contract.
 
 ## Locate the right store
 
@@ -67,4 +67,4 @@ Cron runs are ordinary traces tagged in `extra` with the job name and fire time.
 
 ## Finish a trace-related code change
 
-Run the focused crate tests, then `cargo test`, `cargo clippy --all-targets`, and `cargo tree -p hugr-core`. Any new `Command`, `Event`, or `Record` variant needs a reducer match, a scripted command-sequence test, and replay coverage. Update the relevant reference documentation, affected tutorials, and the relevant `.agents/skills/*/SKILL.md` cheat sheet before calling the change done.
+Run the focused crate tests, then `cargo test`, `cargo clippy --all-targets`, and `cargo tree -p hugr-core`. Any new `Command`, `Event`, or `Record` variant needs a reducer match, a scripted command-sequence test, and replay coverage. Update the relevant reference documentation, affected guides and tutorials, and the relevant `.agents/skills/*/SKILL.md` cheat sheet before calling the change done.

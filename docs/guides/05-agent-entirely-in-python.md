@@ -1,10 +1,10 @@
 # An agent entirely in Python
 
-This tutorial defines a Hugr subagent from scratch in pure Python. The system prompt is a string, model config is a dict, and tools are ordinary callables. The agent runs on the same Rust runtime as every other surface. It is a natural fit when the useful capabilities already live in a Python SDK, data pipeline, notebook, or internal library.
+This guide defines a Hugr subagent from scratch in pure Python. The system prompt is a string, model config is a dict, and tools are ordinary callables. The agent runs on the same Rust runtime as every other surface. It is a natural fit when the useful capabilities already live in a Python SDK, data pipeline, notebook, or internal library.
 
-The tutorial covers the `hugr-agents` package end to end. Topics include the `@hugr.tool` decorator for sync and async tools, standard-library dataclasses alongside explicit JSON Schemas, the `Agent` constructor and its manifest-shaped config, `agent.ask()` for blocking runs, and `async for event in agent.run(...)` for streaming. It closes with an optional Pydantic example for applications that already use it, as well as `agent.feedback()`, `agent.stats()`, and Rust CLI verification of traces stored under `~/.hugr/<name>/`.
+The guide covers the `hugr-agents` package end to end. Topics include the `@hugr.tool` decorator for sync and async tools, standard-library dataclasses alongside explicit JSON Schemas, the `Agent` constructor and its manifest-shaped config, `agent.ask()` for blocking runs, and `async for event in agent.run(...)` for streaming. It closes with an optional Pydantic example for applications that already use it, as well as `agent.feedback()`, `agent.stats()`, and Rust CLI verification of traces stored under `~/.hugr/<name>/`.
 
-Prerequisite: [tutorial 01](01-first-agent-cli.md) for the ask/answer/trace vocabulary. For the design rationale behind runtime embedding and its distinction from `hugr build --surface python`, see [the language surfaces documentation](../agents.md#language-surfaces).
+Prerequisite: [guide 01](01-first-agent-cli.md) for the ask/answer/trace vocabulary. For the design rationale behind runtime embedding and its distinction from `hugr build --surface python`, see [the language surfaces documentation](../agents.md#language-surfaces).
 
 ## Install the package
 
@@ -23,7 +23,7 @@ maturin develop --release
 import hugr_agents as hugr
 ```
 
-Pydantic is not required to define or run a Python agent; the base tutorial uses only the standard library. Install it only for the optional schema-generation example later in this page.
+Pydantic is not required to define or run a Python agent; the base guide uses only the standard library. Install it only for the optional schema-generation example later in this page.
 
 The native crate (`hugr_agents._native`) embeds a tokio runtime and drives the real `hugr-agent` assembly path. A Python-defined agent therefore behaves like a manifest-defined one.
 
@@ -76,7 +76,7 @@ Sync and async tools are interchangeable from the agent's perspective, so choose
 
 ### The `requires_permission` and `background` flags
 
-`requires_permission=True` marks a tool as gated. The model can call it, but the host's permission policy must approve it before execution. `background=True` marks a tool as fire-and-forget, so the result is not fed back to the model. Both are advanced flags for specific trust models; leave them at their defaults (`False`) for this tutorial.
+`requires_permission=True` marks a tool as gated. The model can call it, but the host's permission policy must approve it before execution. `background=True` marks a tool as fire-and-forget, so the result is not fed back to the model. Both are advanced flags for specific trust models; leave them at their defaults (`False`) for this guide.
 
 ## Assemble the agent
 
@@ -89,7 +89,7 @@ agent = hugr.Agent(
     models={
         "default": "medium",
         "base_url": "https://router.huggingface.co/v1",
-        "api_key_env": "POLICY_API_KEY",
+        "api_key_env": "HUGR_API_KEY",
         "medium": {
             "model": "moonshotai/Kimi-K2-Instruct",
             "temperature": 0.2,
@@ -104,7 +104,7 @@ agent = hugr.Agent(
 
 The full signature is `Agent(*, name, system=None, models=None, tools=(), grants=None, limits=None, context=None, response_schema=None, version="0.0.0", description="", traces=None, scratchpad=None)`.
 
-Each config key mirrors the corresponding `hugr.toml` section with the same names and shapes. The manifest details from [tutorial 01](01-first-agent-cli.md) therefore transfer directly.
+Each config key mirrors the corresponding `hugr.toml` section with the same names and shapes. The manifest details from [guide 01](01-first-agent-cli.md) therefore transfer directly.
 
 The package exports `TierConfig`, `LimitsConfig`, `ContextConfig`, `GrantsConfig`, and the individual grant shapes as `TypedDict`s for static checking. `ModelsConfig` and the nested `mcp`/`agent` instance tables are typed mappings because tier selectors and external grant instance names are deliberately open strings.
 
@@ -140,7 +140,7 @@ Tools you define in Python (the `tools=[...]` list) are registered as capabiliti
 
 `response_schema` is an optional JSON Schema dict. When set, the schema rides the provider request as `response_format`, so a compatible provider can constrain the model's final JSON.
 
-This is the pure-Python counterpart to the Rust `RESPONSE_RUST_TYPE` contract from [tutorial 02](02-typed-responses-and-hooks.md). The generic Python path preserves the final value as a JSON object; it does not return a domain dataclass or locally validate it against this schema. A small application can keep using a raw schema dict and construct its own standard-library dataclass from `answer.response`. The optional Pydantic example below shows how an existing Pydantic application can generate the schema and validate the final object from one set of types.
+This is the pure-Python counterpart to the Rust `RESPONSE_RUST_TYPE` contract from [guide 02](02-typed-responses-and-hooks.md). The generic Python path preserves the final value as a JSON object; it does not return a domain dataclass or locally validate it against this schema. A small application can keep using a raw schema dict and construct its own standard-library dataclass from `answer.response`. The optional Pydantic example below shows how an existing Pydantic application can generate the schema and validate the final object from one set of types.
 
 ```python
 from dataclasses import dataclass
@@ -163,7 +163,7 @@ answer = agent.ask("Can I expense a train ticket?")
 policy_answer = PolicyAnswer(**answer.response)
 ```
 
-This keeps small contracts easy to inspect and has no dependency beyond Python itself. A standard-library dataclass rejects missing or unexpected constructor fields, but it does not perform runtime type validation; add explicit checks when needed, or choose the optional Pydantic pattern later in this tutorial.
+This keeps small contracts easy to inspect and has no dependency beyond Python itself. A standard-library dataclass rejects missing or unexpected constructor fields, but it does not perform runtime type validation; add explicit checks when needed, or choose the optional Pydantic pattern later in this guide.
 
 ### `traces` and `scratchpad`
 
@@ -240,7 +240,7 @@ The stream is guaranteed to start with `AskStartedEvent` and end with `AnswerRea
 
 ## File feedback
 
-Feedback is the asynchronous back-channel for recording, beside an immutable trace, whether an answer helped. It is never read during a live ask and is intended for offline analysis (see [tutorial 08](08-traces-replay-debugging.md)).
+Feedback is the asynchronous back-channel for recording, beside an immutable trace, whether an answer helped. It is never read during a live ask and is intended for offline analysis (see [guide 08](08-traces-replay-debugging.md)).
 
 ```python
 answer = agent.ask("Can I expense a train ticket?")
@@ -252,7 +252,7 @@ assert fb.trace_id == answer.trace_id
 
 ## Inspect and aggregate
 
-Two methods give you the same audit views as the CLI flags from [tutorial 01](01-first-agent-cli.md):
+Two methods give you the same audit views as the CLI flags from [guide 01](01-first-agent-cli.md):
 
 ```python
 card = agent.describe()
@@ -290,7 +290,7 @@ hugr verify ~/.hugr/policy-helper <trace_id>
 hugr replay ~/.hugr/policy-helper <trace_id> --step
 ```
 
-This works because capability results (your Python tools' return values) are recorded as events in the trace; the replayed brain re-folds them without calling Python. The brain is sans-IO and pure, so its output is a pure function of the recorded input log. (See [tutorial 08](08-traces-replay-debugging.md) for the full replay/verify workflow.)
+This works because capability results (your Python tools' return values) are recorded as events in the trace; the replayed brain re-folds them without calling Python. The brain is sans-IO and pure, so its output is a pure function of the recorded input log. (See [guide 08](08-traces-replay-debugging.md) for the full replay/verify workflow.)
 
 ## Optional: derive schemas with Pydantic in a data-analysis agent
 
@@ -304,7 +304,7 @@ If you choose this variant, install its application dependencies next to `hugr-a
 pip install pandas "pydantic>=2"
 ```
 
-Save the following as `run.py`. Set `RETENTION_API_KEY` to a key for the configured OpenAI-compatible endpoint before running it:
+Save the following as `run.py`. Set `HUGR_API_KEY` to a key for the configured OpenAI-compatible endpoint before running it:
 
 ```python
 from typing import Literal
@@ -391,7 +391,7 @@ Return a RetentionReport JSON object and no additional fields.
     models={
         "default": "medium",
         "base_url": "https://router.huggingface.co/v1",
-        "api_key_env": "RETENTION_API_KEY",
+        "api_key_env": "HUGR_API_KEY",
         "medium": {
             "model": "moonshotai/Kimi-K2-Instruct",
             "input_usd_per_m_tokens": 1.0,

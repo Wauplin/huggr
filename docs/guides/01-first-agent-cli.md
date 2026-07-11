@@ -1,6 +1,6 @@
 # Your first agent from the CLI
 
-This tutorial scaffolds a weather-answering subagent with `hugr new` and explains every generated file. It then asks a question with `hugr run`, resumes and forks conversations by trace id, inspects the agent card with `--describe`, and compiles one self-contained binary with `hugr build`.
+This guide scaffolds a weather-answering subagent with `hugr new` and explains every generated file. It then asks a question with `hugr run`, resumes and forks conversations by trace id, inspects the agent card with `--describe`, and compiles one self-contained binary with `hugr build`.
 
 No prior Hugr knowledge is assumed. For the design rationale behind any step, see [the subagent overview](../overview.md#what-a-subagent-is).
 
@@ -80,7 +80,7 @@ pub struct Response {
 }
 ```
 
-`hugr run` and `hugr build` read `RESPONSE_RUST_TYPE`, derive a JSON Schema from the type with `schemars`, ask the provider for that structured output, and cast the final JSON with `serde` before it lands in `Answer.response`. Right now it is a single string; tutorial 2 shows how to grow it.
+`hugr run` and `hugr build` read `RESPONSE_RUST_TYPE`, derive a JSON Schema from the type with `schemars`, ask the provider for that structured output, and cast the final JSON with `serde` before it lands in `Answer.response`. Right now it is a single string; guide 2 shows how to grow it.
 
 ## 3. Ask a question
 
@@ -163,4 +163,4 @@ The workflow is: scaffold the agent, edit two text files, run it, inspect it, an
 
 ## Next
 
-[Tutorial 2: Typed responses and answer hooks](02-typed-responses-and-hooks.md): grow the response contract beyond a single string, give the model a different schema than your users see, and post-process answers deterministically with `answer_hooks()`.
+[Guide 2: Typed responses and answer hooks](02-typed-responses-and-hooks.md): grow the response contract beyond a single string, give the model a different schema than your users see, and post-process answers deterministically with `answer_hooks()`.

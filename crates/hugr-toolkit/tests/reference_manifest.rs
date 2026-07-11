@@ -15,10 +15,7 @@ fn reference_manifest_parses_without_warnings() {
         def.models.base_url.as_deref(),
         Some("https://router.huggingface.co/v1")
     );
-    assert_eq!(
-        def.models.api_key_env.as_deref(),
-        Some("POLICY_DOCS_API_KEY")
-    );
+    assert_eq!(def.models.api_key_env.as_deref(), Some("HUGR_API_KEY"));
     assert_eq!(def.default_tier(), Some("medium"));
     let medium = &def.models.tiers["medium"];
     assert_eq!(medium.input_usd_per_m_tokens, Some(1.0));

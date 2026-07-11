@@ -1,10 +1,10 @@
 # Typed responses and answer hooks
 
-This tutorial explains how a Hugr agent's response contract works. `RESPONSE_RUST_TYPE` turns a Rust struct into the provider's structured-output schema. The optional `MODEL_RESPONSE_RUST_TYPE` lets the model fill a simpler schema than the one users receive. `answer_hooks()` bridges the two with deterministic post-processing.
+This guide explains how a Hugr agent's response contract works. `RESPONSE_RUST_TYPE` turns a Rust struct into the provider's structured-output schema. The optional `MODEL_RESPONSE_RUST_TYPE` lets the model fill a simpler schema than the one users receive. `answer_hooks()` bridges the two with deterministic post-processing.
 
 The worked example is the checked-in reference agent `examples/hugr-docs`. It enriches model-cited document paths into public Hugging Face documentation URLs.
 
-Prerequisite: [tutorial 1](01-first-agent-cli.md). For the design background, see [language surfaces](../agents.md#language-surfaces).
+Prerequisite: [guide 1](01-first-agent-cli.md). For the design background, see [language surfaces](../agents.md#language-surfaces).
 
 ## How the contract is discovered
 
@@ -98,7 +98,7 @@ The hook is unit-testable like any function; build an `Answer`, apply `answer_ho
 From the repo root:
 
 ```bash
-export HUGR_DOCS_API_KEY=hf_...
+export HUGR_API_KEY=hf_...
 hugr run examples/hugr-docs ./docs "What is the narrow-waist rule?"
 ```
 
@@ -106,7 +106,7 @@ hugr run examples/hugr-docs ./docs "What is the narrow-waist rule?"
 
 ## Growing your own contract
 
-Take the weather agent from tutorial 1 and evolve it the same way:
+Take the weather agent from guide 1 and evolve it the same way:
 
 1. Widen `Response` in `src/lib.rs` with the fields you want callers to rely on (say `temperature_c: f64`, `conditions: String`). That alone changes the provider schema on the next run; no manifest edit, no rebuild command beyond `hugr run`/`hugr build` as usual.
 2. If a field is mechanical (units conversion, formatting, canonical links), move it out of the model's schema: declare a leaner model type, point `MODEL_RESPONSE_RUST_TYPE` at it, and compute the field in a hook.
@@ -116,4 +116,4 @@ The rule of thumb: **the model fills in what only the model knows; hooks fill in
 
 ## Next
 
-Continue with [tutorial 3](03-first-chrome-extension.md), read `examples/hugr-docs/README.md` for runtime arguments and MCP serving, or see [agents as tools](../agents.md#agents-as-tools) to compose the binary into a larger agent.
+Continue with [guide 3](03-first-chrome-extension.md), read `examples/hugr-docs/README.md` for runtime arguments and MCP serving, or see [agents as tools](../agents.md#agents-as-tools) to compose the binary into a larger agent.

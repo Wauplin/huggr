@@ -11,7 +11,7 @@ const agent = createAgent({
   models: {
     default: "medium",
     base_url: "https://router.huggingface.co/v1",
-    api_key_env: "POLICY_API_KEY",
+    api_key_env: "HUGR_API_KEY",
     medium: { model: "moonshotai/Kimi-K2-Instruct", temperature: 0.2,
               input_usd_per_m_tokens: 1.0, output_usd_per_m_tokens: 1.5 },
   },

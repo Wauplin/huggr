@@ -5,7 +5,7 @@ description: Define and run Hugr subagents in TypeScript or JavaScript through t
 
 # Build Hugr agents with TypeScript
 
-Use the root package for platform-neutral types and in-memory stores. Use `hugr-agents/node` for filesystem-backed Node agents and `hugr-agents/browser` for IndexedDB-backed browser agents. Read [tutorial 06](../../../docs/tutorials/06-agent-entirely-in-typescript.md) for the complete surface.
+Use the root package for platform-neutral types and in-memory stores. Use `hugr-agents/node` for filesystem-backed Node agents and `hugr-agents/browser` for IndexedDB-backed browser agents. Read [guide 06](../../../docs/guides/06-agent-entirely-in-typescript.md) for the complete surface.
 
 ## Build the package
 
@@ -28,7 +28,7 @@ const agent = createAgent({
   system: "Use lookup_policy and return a JSON object.",
   models: {
     base_url: "https://router.huggingface.co/v1",
-    api_key_env: "POLICY_API_KEY",
+    api_key_env: "HUGR_API_KEY",
     default: "medium",
     medium: { model: "google/gemma-4-31B-it:cerebras" },
   },

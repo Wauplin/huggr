@@ -17,7 +17,8 @@
 - **Trace:** the durable, replayable event log of one session, identified by `trace_id` and optionally rooted on a parent via `depends_on`.
 - **Fork:** starting a new session from an existing trace's log. The parent is immutable.
 - **Scratchpad:** the agent's private filesystem subtree, writable without gates and jailed to its root.
-- **Capability / tool:** a host-provided implementation of an effect, granted to an agent in its manifest. A built Hugr agent can itself be granted as a tool.
+- **Tool:** the model-facing view of an effect: a manifest grant that advertises one or more named, schema-described functions to the model. A built Hugr agent can itself be granted as a tool.
+- **Capability:** the host-side implementation behind a tool, registered in the host's capability registry and invoked when the brain emits `StartCapability`. See [Tools and capabilities](agents.md#tools-and-capabilities).
 - **Event / Command / Op / Projection / Policy:** the core vocabulary described in [Runtime](runtime.md).
 
 ## Name

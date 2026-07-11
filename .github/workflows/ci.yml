@@ -22,7 +22,38 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --all-targets
+
+  rust-agent-examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example:
+          - hugr-datasmith
+          - hugr-docs
+          - hugr-insights
+          - hugr-weather
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build ${{ matrix.example }} agent
+        run: cargo run -p hugr-toolkit --bin hugr -- build examples/${{ matrix.example }}
+
+  chrome-extension-example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli
+      - name: Build Chrome extension
+        run: ./examples/chrome-extension/build.sh
 
   # The Python runtime API: build the wheel with maturin and run the pytest
   # suite against the mock provider (crates/hugr-python sits outside the
@@ -38,6 +69,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Test hugr-python crate
+        run: cargo test --manifest-path crates/hugr-python/Cargo.toml --all-targets
       - name: Build and test hugr-agents
         working-directory: bindings/python
         run: |

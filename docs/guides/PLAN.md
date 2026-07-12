@@ -4,8 +4,7 @@ This file tracks the guides still to write under `docs/guides/`. Guides 1 throug
 
 ## Planned guides
 
-1. **Runtime arguments** (`16-runtime-args.md`). Invocation-time configuration with `[runtime.args.<name>]`: manifest target patching, positional and required arguments, environment fallbacks, and how each surface exposes them.
-8. **Streaming and events** (`17-streaming-and-events.md`). The shared `AgentEvent` vocabulary: `--stream` on the CLI binary, `ask_events` in Rust, `agent.run(...)` in Python and TypeScript, and why events are host-layer observations outside the trace.
+1. **Streaming and events** (`17-streaming-and-events.md`). The shared `AgentEvent` vocabulary: `--stream` on the CLI binary, `ask_events` in Rust, `agent.run(...)` in Python and TypeScript, and why events are host-layer observations outside the trace.
 
 ## Covered elsewhere, no separate guide
 

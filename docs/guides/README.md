@@ -12,5 +12,6 @@ These hands-on guides cover one surface each. Every guide is standalone and runn
 8. [Traces, replay, and debugging](08-traces-replay-debugging.md); trace anatomy, `huggr replay --step`, `verify`, cron, and the insights workflow.
 9. [Context compaction and pruning](09-context-compaction.md); why contexts grow, forget rules, the deterministic budget pass, summarization, and every `[context]` knob.
 10. [Tool grants and jails](10-tool-grants-and-jails.md); sandbox-by-registration, scoping every grant in the tool library, and where each jail's boundary is.
+11. [Skills](11-skills.md); the Agent Skills folder format, progressive disclosure through `skill_read`, definition versus runtime skills, and the trust model.
 
 For a self-contained, end-to-end walkthrough that composes several agents into a working pipeline, see [the tutorials](../tutorials/README.md).

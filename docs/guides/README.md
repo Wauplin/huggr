@@ -16,5 +16,6 @@ These hands-on guides cover one surface each. Every guide is standalone and runn
 12. [Files and state: blobs, scratchpad, and memory](12-blobs-scratchpad-memory.md); blob exchange and the content-addressed store, per-lineage scratch with copy-on-fork, and durable memory.
 13. [Models, tiers, and pricing](13-models-tiers-pricing.md); the `[models]` block, tier selection, adapter retries versus semantic errors, and cost accounting from the trace.
 14. [Limits and unattended runs](14-limits-and-cron.md); the `[limits]` block, limit trips as error answers, `[cron.<name>]` jobs, lineage modes, and the cost-cap rule.
+15. [Serving and consuming MCP](15-mcp.md); the built binary as an MCP server via `--mcp-serve`, and `[tools.mcp.<name>]` grants with their trust model.
 
 For a self-contained, end-to-end walkthrough that composes several agents into a working pipeline, see [the tutorials](../tutorials/README.md).

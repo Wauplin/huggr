@@ -4,7 +4,7 @@ This file tracks the guides still to write under `docs/guides/`. Guides 1 throug
 
 ## Planned guides
 
-1. **Streaming and events** (`17-streaming-and-events.md`). The shared `AgentEvent` vocabulary: `--stream` on the CLI binary, `ask_events` in Rust, `agent.run(...)` in Python and TypeScript, and why events are host-layer observations outside the trace.
+All guides planned here have been written; see the [guides index](README.md). Add new entries as gaps appear.
 
 ## Covered elsewhere, no separate guide
 

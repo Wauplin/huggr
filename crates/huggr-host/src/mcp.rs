@@ -210,7 +210,7 @@ impl McpClient {
         });
         framing::write_json_line(&mut inner.stdin, &message).await?;
         loop {
-            let response: Value = framing::read_json_line(&mut inner.stdout)
+            let response: Value = framing::read_json_line_lenient(&mut inner.stdout)
                 .await?
                 .ok_or_else(|| McpError::Protocol("MCP server closed stdout".into()))?;
             if response.get("id").and_then(Value::as_u64) != Some(id) {

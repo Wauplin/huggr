@@ -128,7 +128,7 @@ hugr cron <agent-dir>       # run configured [cron.<name>] recurring asks
 
   Any change to those public Python mirrors must update the corresponding Rust type, serde wire shape, and tests.
 - **Prefer deletion over abstraction.** One way to do each thing; if two mechanisms do the same job, keep the one the live stack uses and delete the other.
-- **Markdown is single-line.** Use one physical line per paragraph or bullet. Do not hard-wrap prose; rely on soft wrapping. Fenced code blocks and table rows are exempt.
+- **Markdown is single-line.** Do not hard-wrap prose; rely on soft wrapping. Fenced code blocks and table rows are exempt. Basically: no "break line after XX characters" rule.
 - **Comments state what the code cannot.** No references to numbered documentation sections, no "how it works" narration, no comments restating the signature or the next line, no section banners. A comment is justified only for a non-obvious constraint, failure mode, or safety/jail invariant; public items keep one concise doc line stating the contract.
 - Keep event handlers O(1)-ish (append to a buffer); no heavy work in the reducer.
 - When you add a `Command`/`Event`/`Record` variant: update the reducer's match and add a scripted test that pins the resulting command sequence.
@@ -146,5 +146,4 @@ These apply whenever you create or update any Markdown file in this repository: 
 - **Punctuation and emphasis.** Avoid em dashes; use commas, periods, colons, or parentheses instead. Keep hyphens where grammar requires them (compound adjectives, flags, identifiers). Use italics sparingly and bold only where it improves scanning. Do not overuse colons, semicolons, parentheses, or exclamation marks.
 - **Plain word choice.** "uses" over "leverages", "shows" over "demonstrates", "before" over "prior to", "about" over "with regard to". Remove unnecessary adjectives and adverbs, and do not repeat the same point in slightly different words.
 - **Structure.** Start each page with a short statement of what it covers, put the information readers need first, use headings that describe the content directly, prefer short sections, use lists only for genuinely list-like information, include limitations and failure cases where relevant, and end when the topic is covered without a generic conclusion.
-- **Markdown formatting.** One physical line per paragraph or bullet, as stated in the conventions above; never hard-wrap prose.
 - **Before finishing a page,** reread it and remove dramatic claims, canned transitions, em dashes, exaggerated adjectives, repeated contrast formulas, duplicated explanations, and anything that reads like marketing copy.

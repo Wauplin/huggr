@@ -18,10 +18,7 @@ use huggr_toolkit::surface::{error_answer, print_answer, run_definition_args};
 use huggr_toolkit::traces::render_lineage_with_feedback;
 
 #[derive(Parser)]
-#[command(
-    name = "huggr",
-    about = "Build and run tiny, self-contained huglets."
-)]
+#[command(name = "huggr", about = "Build and run tiny, self-contained huglets.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -40,8 +37,6 @@ enum Command {
     Traces(TracesArgs),
     /// Aggregate an agent's stored trace analytics.
     Stats(StatsArgs),
-    /// Run configured cron jobs until stopped.
-    Cron(CronArgs),
     /// Verify a stored trace replays bit-for-bit.
     Verify(TraceArgs),
     /// Replay a stored trace (optionally step-by-step).
@@ -73,15 +68,6 @@ struct StatsArgs {
     /// Emit JSON instead of a compact table.
     #[arg(long)]
     json: bool,
-}
-
-#[derive(Parser)]
-struct CronArgs {
-    /// Path to the agent crate folder (containing Cargo.toml and huggr.toml).
-    agent_dir: PathBuf,
-    /// Allow cron jobs without max_cost_micro_usd.
-    #[arg(long)]
-    allow_uncapped: bool,
 }
 
 #[derive(Parser)]
@@ -149,7 +135,6 @@ async fn main() {
         Command::Build(args) => build(args),
         Command::Traces(args) => traces(args).await,
         Command::Stats(args) => stats(args).await,
-        Command::Cron(args) => cron(args).await,
         Command::Verify(args) => verify(args),
         Command::Replay(args) => replay(args),
     }
@@ -239,21 +224,6 @@ async fn stats(args: StatsArgs) {
         }
     } else {
         println!("{}", render_stats(&stats));
-    }
-}
-
-async fn cron(args: CronArgs) {
-    let def = match AgentDefinition::load(&args.agent_dir) {
-        Ok(def) => def,
-        Err(err) => {
-            eprintln!("error: {err}");
-            std::process::exit(1);
-        }
-    };
-    let code =
-        huggr_toolkit::cron::serve_definition(def, Default::default(), args.allow_uncapped).await;
-    if code != 0 {
-        std::process::exit(code);
     }
 }
 

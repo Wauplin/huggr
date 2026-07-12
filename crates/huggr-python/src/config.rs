@@ -33,7 +33,6 @@ pub fn definition_from_config(cfg: &Value) -> Result<AgentDefinition, String> {
         tools: grants_from(obj.get("grants"))?,
         skills: Vec::new(),
         limits: section(obj.get("limits"), "limits")?,
-        cron: Vec::new(),
         context: section(obj.get("context"), "context")?,
         scratchpad: ScratchpadConfig::default(),
         traces: TracesConfig::default(),

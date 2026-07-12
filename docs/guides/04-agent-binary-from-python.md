@@ -22,10 +22,10 @@ From the repo root:
 huggr build examples/huglet-docs --surface python --release
 ```
 
-This first builds the ordinary CLI binary. The `python` surface runs that binary with `--config --json` to read the compiled response schema, so the Python types come from the same schemars output seen by the model. It then creates a maturin "mixed" project under `examples/huglet-docs/dist/huglet_docs-python/` and builds a wheel:
+This first builds the ordinary CLI binary. The `python` surface runs that binary with `--config --json` to read the compiled response schema, so the Python types come from the same schemars output seen by the model. It then creates a maturin "mixed" project under `examples/huglet-docs/dist/huglet-docs-python/` and builds a wheel:
 
 ```text
-huglet_docs-python/
+huglet-docs-python/
   Cargo.toml           # cdylib `_native`, links huggr-toolkit + the agent crate
   pyproject.toml       # maturin backend, module-name = huglet_docs._native
   bundle.bin           # the embedded agent bundle (same bytes as the CLI shim)
@@ -39,7 +39,7 @@ huglet_docs-python/
 The build prints the wheel path; install it:
 
 ```bash
-pip install examples/huglet-docs/dist/huglet_docs-python/target/wheels/huglet_docs-*.whl
+pip install examples/huglet-docs/dist/huglet-docs-python/target/wheels/huglet_docs-*.whl
 ```
 
 The module name is the agent name with dashes mapped to underscores (`huglet-docs` → `huglet_docs`). Use it:
@@ -79,21 +79,21 @@ huggr build examples/huglet-docs --release   # the default `cli` surface
 import json, subprocess
 
 proc = subprocess.run(
-    ["./examples/huglet-docs/dist/huglet-docs", "./docs", "How do I resume a trace?", "--json"],
+    ["./examples/huglet-docs/dist/huglet-docs-cli/target/release/huglet-docs", "./docs", "How do I resume a trace?", "--json"],
     capture_output=True, text=True,
 )
 answer = json.loads(proc.stdout)
 print(answer["status"], answer["trace_id"], answer["metadata"]["cost_micro_usd"])
 ```
 
-This approach returns the response as a plain dict instead of generated types, but provides full process isolation. Huggr uses the same mechanism when one agent grants another as a tool. The binary also has audit subcommands worth knowing: `--describe` (the agent card), `--config` (the parsed manifest + response schema), `--traces`, and `--stats`.
+This approach returns the response as a plain dict instead of generated types, but provides full process isolation. Huggr uses the same mechanism when one agent grants another as a tool. The binary also has audit subcommands worth knowing: `--describe` (the agent card), `--config` (effective runtime configuration + response schema), `--traces`, and `--stats`.
 
 ## Surface 3: `--mcp-serve`
 
 The same binary can serve itself as an MCP server over stdio, so any MCP client (an editor, another agent framework, a Python MCP SDK) can call it as a tool without knowing anything about Huggr:
 
 ```bash
-./examples/huglet-docs/dist/huglet-docs ./docs --mcp-serve
+./examples/huglet-docs/dist/huglet-docs-cli/target/release/huglet-docs ./docs --mcp-serve
 ```
 
 Register that command line in your MCP client's config and the agent shows up as a callable tool; each call is one ask, and traces still accumulate under `~/.huggr/huglet-docs/`.

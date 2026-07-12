@@ -1,6 +1,6 @@
 # Skills
 
-This guide explains how a huglet uses Agent Skills: what a skill folder looks like, how progressive disclosure keeps skills out of the context until needed, how to bundle skills with an agent definition versus attaching them at invocation time, and where the trust boundary sits. It applies to every surface: the manifest, the built CLI binary, MCP, and the Python and TypeScript runtime APIs.
+This guide explains how a huglet uses Agent Skills: what a skill folder looks like, how progressive disclosure keeps skills out of the context until needed, how to bundle skills with an agent definition versus attaching them at invocation time, and where the trust boundary sits. It applies to manifest-defined agents, the built CLI binary, MCP, and the Python runtime API.
 
 ## The problem
 
@@ -61,7 +61,7 @@ Each entry may point at one skill folder, a `SKILL.md` file directly, or a direc
 my-agent --skill ./skills/incident-runbook "Summarize yesterday's incidents"
 ```
 
-The flag is repeatable. The same field exists on every surface: `Ask.skills` in Rust, the `skills` array on the MCP `ask` tool, and `skills=` in the generated Python wrapper and TypeScript `Ask`. Runtime and definition skills are merged before discovery, so a runtime skill whose name collides with a bundled one is an error, not an override.
+The flag is repeatable. The same field exists on `Ask.skills` in Rust, the `skills` array on the MCP `ask` tool, and `skills=` in the generated and runtime Python APIs. The TypeScript contract type mirrors the field, but its `Agent.ask` and `Agent.run` options do not currently accept skills. Runtime and definition skills are merged before discovery, so a runtime skill whose name collides with a bundled one is an error, not an override.
 
 Use definition skills for instructions the agent always might need; use runtime skills when the caller owns the procedure, for example an orchestrator that hands each specialist the runbook for the current job.
 

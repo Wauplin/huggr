@@ -118,7 +118,6 @@ cargo clippy --all-targets  # lint (keep it clean)
 cargo fmt --all             # format before committing
 cargo tree -p huggr-core    # audit: must stay free of tokio/reqwest/fs
 huggr stats <agent-dir>      # aggregate trace costs/tokens/tools/feedback
-huggr cron <agent-dir>       # run configured [cron.<name>] recurring asks
 ```
 
 ## Conventions

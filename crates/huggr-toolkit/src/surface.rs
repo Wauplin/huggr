@@ -55,8 +55,6 @@ pub struct SurfaceArgs {
     feedback: Option<String>,
     feedback_payload: Option<String>,
     mcp_serve: bool,
-    cron_serve: bool,
-    allow_uncapped: bool,
     runtime: RuntimeValues,
 }
 
@@ -148,14 +146,6 @@ where
         }
         return crate::mcp_serve::serve_definition_with_options(def, options).await;
     }
-    if args.cron_serve {
-        if let Err(err) = apply_optional_runtime_values(&mut def, &args.runtime) {
-            eprintln!("error: {err}");
-            return 1;
-        }
-        return crate::cron::serve_definition(def, options, args.allow_uncapped).await;
-    }
-
     let runtime_result = if mode == Mode::Ask {
         apply_runtime_values(&mut def, &args.runtime)
     } else {
@@ -270,8 +260,6 @@ where
         feedback: matches.get_one::<String>("feedback").cloned(),
         feedback_payload: matches.get_one::<String>("feedback-payload").cloned(),
         mcp_serve: matches.get_flag("mcp-serve"),
-        cron_serve: matches.get_flag("cron-serve"),
-        allow_uncapped: matches.get_flag("allow-uncapped"),
         runtime,
     }
 }
@@ -359,18 +347,6 @@ fn surface_command(def: &AgentDefinition) -> Command {
             Arg::new("mcp-serve")
                 .long("mcp-serve")
                 .help("Run as a stdio MCP server exposing an ask tool.")
-                .action(ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("cron-serve")
-                .long("cron-serve")
-                .help("Run configured [cron.<name>] jobs until the process is stopped.")
-                .action(ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("allow-uncapped")
-                .long("allow-uncapped")
-                .help("Allow cron jobs without max_cost_micro_usd.")
                 .action(ArgAction::SetTrue),
         );
 
@@ -614,7 +590,6 @@ pub fn config_json_with_options(
         "skills": def.skills,
         "runtime": def.runtime,
         "limits": def.limits,
-        "cron": def.cron,
         "scratchpad": def.scratchpad,
         "traces": def.traces,
     });

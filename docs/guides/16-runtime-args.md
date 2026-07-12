@@ -39,7 +39,7 @@ One declaration fans out to every surface the toolkit generates:
 - **MCP.** Each argument becomes a string property on the `ask` tool's schema, listed as required when declared required, so an MCP client can re-scope each call (see [serving and consuming MCP](15-mcp.md)).
 - **Generated Python wrapper.** Positional args become leading positional `str` parameters of `ask(...)`, before `question`; optional ones become keyword `Optional[str]` parameters; `help` lands in the docstring. A type checker enforces them like any other typed API.
 
-A missing required argument on the ask path produces the standard `status: "error"` answer at exit 0. Introspection surfaces (`--describe`, `--config`, `--traces`, `--stats`) and server startup (`--mcp-serve`, `--cron-serve`) treat every argument as optional, because describing or starting the agent should not require ask-time values; MCP enforces required arguments per `ask` call instead.
+A missing required argument on the ask path produces the standard `status: "error"` answer at exit 0. Introspection surfaces (`--describe`, `--config`, `--traces`, `--stats`) and server startup (`--mcp-serve`) treat every argument as optional, because describing or starting the agent should not require ask-time values; MCP enforces required arguments per `ask` call instead.
 
 Names must not collide with the built-in surface flags (`question`, `trace`, `json`, `blob`, and the rest), and validation rejects unknown keys in the declaration, so a typo fails the build rather than silently doing nothing.
 

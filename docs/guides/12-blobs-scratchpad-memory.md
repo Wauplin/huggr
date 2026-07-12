@@ -51,7 +51,7 @@ Scratch contents never enter the log; tool results carry only relative paths. Wh
 
 ```toml
 [tools.memory]
-readonly = false     # readonly = true registers only reads; writes become semantic errors
+readonly = false     # readonly = true makes writes return semantic errors
 ```
 
 That persistence is both the feature and the risk. A support agent that records "the staging URL changed" once stops re-asking; equally, a prompt-injected write under one ask can steer unrelated future asks. The runtime guidance therefore instructs the model to write only stable, reusable facts and to treat stored content as untrusted data, not instructions. Grant `readonly = true` when the operator curates memory out of band, and wipe it by deleting the `memory/` directory. Writes are last-write-wins behind a process mutex plus an advisory lock file; memory is a notes folder, not a coordination database.

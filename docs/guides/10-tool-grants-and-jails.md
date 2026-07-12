@@ -6,11 +6,11 @@ This guide explains how a huglet gets its tools and why it cannot use anything e
 
 An agent's power is exactly its tool set. Give a docs-answering agent a shell and it can exfiltrate credentials the moment a prompt injection lands; give it nothing but a jailed read of one folder and the worst a hostile input can do is read that folder. The question every agent author has to answer is: what is the smallest set of tools that still does the job, and what is the blast radius if the model misuses every one of them?
 
-Huggr makes that question answerable by review of one file. The manifest is the complete list of what the agent can do.
+Huggr makes that question answerable by review of one file. The manifest lists every optional tool; the per-lineage scratchpad is part of every ask.
 
 ## Sandbox-by-registration
 
-The core never executes anything. When the model calls a tool, the brain emits `StartCapability { name, args }` and the host looks the name up in its `CapabilityRegistry`. The toolkit only registers capabilities whose grant appears in `huggr.toml`, so a tool that is not granted has no code path: there is nothing to invoke, no policy to bypass, no flag to flip at runtime.
+The core never executes anything. When the model calls a tool, the brain emits `StartCapability { name, args }` and the host looks the name up in its `CapabilityRegistry`. The toolkit only registers grant-driven capabilities whose grant appears in `huggr.toml`; the scratchpad capabilities are registered for every ask. An optional tool that is not granted has no code path: there is nothing to invoke, no policy to bypass, no flag to flip at runtime.
 
 Two consequences are worth internalizing:
 
@@ -78,7 +78,7 @@ An empty allowlist denies everything, only `http(s)` URLs are accepted, methods 
 ## State and introspection grants
 
 - `scratchpad` is always available and needs no grant; `scratch_read`/`scratch_write`/`scratch_list` are jailed to the ask's own scratch subtree.
-- `[tools.memory]` opts into durable agent-wide notes; `readonly = true` registers only the read side. Persistence is the feature and the risk: memory written under one ask influences future asks, which is exactly what stored prompt injection wants, so grant writes only when the agent's job needs them.
+- `[tools.memory]` opts into durable agent-wide notes; `readonly = true` makes write calls return semantic errors. Persistence is the feature and the risk: memory written under one ask influences future asks, which is exactly what stored prompt injection wants, so grant writes only when the agent's job needs them.
 - `[tools.traces_read]` exposes one agent home's stored traces and feedback as paged, size-capped summaries; granting it against another agent's home deliberately makes that agent's full history readable. Everything it returns is untrusted data to analyze, never instructions to follow.
 
 [Guide 12](12-blobs-scratchpad-memory.md) covers these three in depth.

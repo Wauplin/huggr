@@ -31,7 +31,7 @@ The boundary between the two layers is JSON strings. The native module owns the 
 
 ## Define a tool
 
-A tool is an ordinary annotated function. `@huggr.tool` reads the advertised surface straight off it — the name from the function, the description from the docstring, and the JSON Schema from the type annotations, FastAPI-style:
+A tool is an ordinary annotated function. `@huggr.tool` reads the advertised surface straight off it: the name from the function, the description from the docstring, and the JSON Schema from the type annotations, FastAPI-style:
 
 ```python
 import huggr_agents as huggr
@@ -43,7 +43,7 @@ def lookup_policy(query: str, limit: int = 5) -> dict:
     return {"matches": search_policy_text(query)[:limit]}
 ```
 
-This advertises `{"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 5}}, "required": ["query"], "additionalProperties": false}`, and the model's arguments arrive as keyword arguments. Supported annotations: `str`, `int`, `float`, `bool`, `list[...]`, `dict`, and `Optional[...]`; parameters without defaults are required. An unannotated parameter is an error — the advertised surface must stay auditable, so Huggr refuses to guess.
+This advertises `{"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 5}}, "required": ["query"], "additionalProperties": false}`, and the model's arguments arrive as keyword arguments. Supported annotations: `str`, `int`, `float`, `bool`, `list[...]`, `dict`, and `Optional[...]`; parameters without defaults are required. An unannotated parameter is an error; the advertised surface must stay auditable, so Huggr refuses to guess.
 
 The decorator signature is `tool(fn=None, *, name=None, description="", schema=None, requires_permission=False, background=False)`. It works bare (`@huggr.tool`), called (`huggr.tool(fn, ...)`), or as a decorator factory (`@huggr.tool(...)`), and `name`/`description` override the inferred values.
 
@@ -62,7 +62,7 @@ def lookup_policy(args):
 
 ### Async tools
 
-The callable may be `async`. The runtime awaits it inside the tokio worker pool:
+The callable may be `async`. The runtime drives the returned coroutine with `asyncio.run` on a blocking worker thread:
 
 ```python
 @huggr.tool
@@ -72,11 +72,11 @@ async def lookup(word: str) -> dict:
     return {"definition": "async ok"}
 ```
 
-Sync and async tools are interchangeable from the agent's perspective, so choose the form that fits your I/O. A tool that raises an exception does not crash the run. The exception message is sent back to the model as a tool error result, allowing the model to recover and try again or finish the answer.
+Sync and async tools are interchangeable from the agent's perspective, but async callables run on a new event loop and cannot reuse objects bound to the caller's loop. A tool that raises an exception does not crash the run. The exception message is sent back to the model as a tool error result, allowing the model to recover and try again or finish the answer.
 
 ### The `requires_permission` and `background` flags
 
-`requires_permission=True` marks a tool as gated. The model can call it, but the host's permission policy must approve it before execution. `background=True` marks a tool as fire-and-forget, so the result is not fed back to the model. Both are advanced flags for specific trust models; leave them at their defaults (`False`) for this guide.
+`requires_permission=True` marks a tool as gated in the brain's recorded control flow; the current native host approves registered tools automatically. `background=True` marks a tool as fire-and-forget, so the result is not fed back to the model. Both are advanced flags for specific trust models; leave them at their defaults (`False`) for this guide.
 
 ## Assemble the agent
 
@@ -176,17 +176,17 @@ answer = agent.ask("Can I expense a train ticket?")
 print(answer.status, answer.response, answer.trace_id)
 ```
 
-The full signature is `ask(question, *, trace_id=None, blobs=(), extra=None)`.
+The full signature is `ask(question, *, trace_id=None, blobs=(), skills=(), extra=None)`.
 
 `trace_id` resumes a prior conversation. The parent is re-folded into a fresh brain, and a new trace is written with `depends_on` set. Resuming the same parent twice creates a fork.
 
-`blobs` is a sequence of `BlobHandle` objects (see below). `extra` is an opaque JSON-serializable value stamped into the trace header.
+`blobs` is a sequence of `BlobHandle` objects (see below). `skills` is a sequence of caller-local standard Agent Skills paths. `extra` is an opaque JSON-serializable value stamped into the trace header.
 
 ### The `Answer` type
 
 `Answer` is a dataclass with `status`, `response`, `trace_id`, `metadata`, `blobs`, and `extra`. `status` is `huggr.STATUS_SUCCESS` or `huggr.STATUS_ERROR`. `response` is the user-facing payload dict, `metadata` is an `AnswerMeta`, and `blobs` is a list of `BlobHandle` values.
 
-The `.ok` property is shorthand for `status == STATUS_SUCCESS`. Errors are answers, not exceptions. A blown limit, missing key, or model error returns `status == "error"` with `response == {"error": ...}`. The `trace_id` remains set so you can inspect what happened.
+The `.ok` property is shorthand for `status == STATUS_SUCCESS`. Traced turn failures, such as a blown limit or model error, return `status == "error"` with `response == {"error": ...}`. Configuration and infrastructure failures, including assembly with a missing provider key, raise exceptions because no trace-backed answer exists.
 
 ### `AnswerMeta`
 
@@ -234,7 +234,7 @@ Every event dataclass retains its literal `type` attribute for discriminated-uni
 - `done`: a `DoneEvent`; carries a normalized `DoneReason` dataclass (`kind` is `end_turn`, `cancelled`, or `error`, with an optional error `message`).
 - `answer_ready`: an `AnswerReadyEvent`; carries the full `Answer` dataclass.
 
-The stream is guaranteed to start with `AskStartedEvent` and end with `AnswerReadyEvent`; the final answer is already available as `event.answer`.
+A successful stream starts with `AskStartedEvent` and ends with `AnswerReadyEvent`; the final answer is already available as `event.answer`. Infrastructure failures can terminate iteration without an answer and raise from the native stream.
 
 ## File feedback
 
@@ -279,16 +279,9 @@ Override the shared root with `HUGGR_HOME`, or set one agent's home directly wit
 
 The pytest suite in `bindings/python/tests/` sets `HUGGR_HOME` to a temporary directory for each test.
 
-## Verify with the Rust CLI
+## Trace compatibility
 
-A trace written by a Python agent is a plain JSON file in the standard Huggr format. It contains no Python metadata and does not need Python to be read. The Rust CLI verifies it bit-for-bit:
-
-```bash
-huggr verify ~/.huggr/policy-helper <trace_id>
-huggr replay ~/.huggr/policy-helper <trace_id> --step
-```
-
-This works because capability results (your Python tools' return values) are recorded as events in the trace; the replayed brain re-folds them without calling Python. The brain is sans-IO and pure, so its output is a pure function of the recorded input log. (See [guide 08](08-traces-replay-debugging.md) for the full replay/verify workflow.)
+A trace written by a Python agent is a plain JSON file in the standard Huggr format. It contains no Python metadata and does not need Python to be replayed because capability results are recorded as events. The `huggr` CLI currently requires an agent crate folder that resolves to the trace store, so it cannot take a Python-defined agent home or a trace file directly. The `huggr-replay` library can verify the trace bytes without calling Python. (See [guide 08](08-traces-replay-debugging.md) for the replay/verify workflow.)
 
 ## Optional: derive schemas with Pydantic in a data-analysis agent
 
@@ -419,11 +412,7 @@ for head in agent.traces():
     print(head.trace_id, head.depends_on, head.status)
 ```
 
-Run it with `python run.py`. The first run writes a trace to `~/.huggr/retention-analyst/traces/`. Verify it without Python:
-
-```bash
-huggr verify ~/.huggr/retention-analyst <trace_id_from_stdout>
-```
+Run it with `python run.py`. The first run writes a trace to `~/.huggr/retention-analyst/traces/` in the portable `huggr-replay` format.
 
 There are two distinct validation points. Pydantic validates each tool call inside `find_at_risk_accounts`; an invalid threshold raises an exception, which Huggr returns to the model as a semantic tool error it can correct. `response_schema` asks the provider for the same shape, and after a successful answer `retention_report.validate_python(answer.response)` validates the opaque JSON payload and turns it into the application's typed dataclass graph. `extra="forbid"` both rejects unexpected fields in the application and emits `additionalProperties: false` in the generated JSON Schema.
 

@@ -8,7 +8,7 @@ This guide explains how a caller observes an ask while it runs: the shared `Agen
 
 ## The event vocabulary
 
-Every surface speaks the same nine events, tagged by a `type` field in snake_case:
+Rust, Python, and TypeScript event streams use the same nine events, tagged by a `type` field in snake_case:
 
 | Event | Payload | Meaning |
 | --- | --- | --- |
@@ -22,7 +22,7 @@ Every surface speaks the same nine events, tagged by a `type` field in snake_cas
 | `done` | `reason` | the turn reached a terminal state |
 | `answer_ready` | `answer` | the full `Answer`, last event of the stream |
 
-A stream is guaranteed to start with `ask_started` and end with `answer_ready`. The `op` id correlates a start, its deltas, and its end, so an interleaved display can attribute every chunk. Tool args and results are the same opaque JSON the model saw; the events add no interpretation.
+A successful stream starts with `ask_started` and ends with `answer_ready`; an infrastructure failure can end after a `notice`. The `op` id correlates a start, its deltas, and its end, so an interleaved display can attribute every chunk. Tool args and results are the same opaque JSON the model saw; the events add no interpretation.
 
 ## Where events come from, and where they do not go
 
@@ -72,7 +72,7 @@ for await (const event of agent.run("Explain compaction")) {
 }
 ```
 
-TypeScript's `AgentEvent` is a discriminated union on `type` with the identical wire shapes; `ask()` is `run()` with a collector that returns the `answer_ready` payload. In the browser this is what drives a live side panel over the WASM brain ([guide 6](06-agent-entirely-in-typescript.md)).
+TypeScript's `AgentEvent` is a discriminated union on `type` with the identical wire shapes; `ask()` is `run()` with a collector that returns the `answer_ready` payload. Its model text deltas are currently buffered until each model call finishes, while the other events retain their order ([guide 6](06-agent-entirely-in-typescript.md)).
 
 ## Choosing the surface
 

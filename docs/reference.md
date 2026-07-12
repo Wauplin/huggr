@@ -5,7 +5,7 @@
 - **Trace schema migration.** Long-lived traces need a migration story as `Record`/`Event` evolve (`format_version` exists; migrations do not).
 - **Trace garbage collection.** Fork trees accumulate. The pruning policy is undecided; delete traces manually for now.
 - **Concurrent asks on one agent.** By default, each ask is an independent session or process, which traces make safe. A serving mode with a session pool is future work.
-- **Browser packaging.** The split is done (generic `huggr-wasm` bindings + `bindings/typescript` + the Chrome-extension example with a vendor/pkg build script); what remains open is typed TS packaging and store-signed distribution.
+- **Browser packaging.** The split and typed TypeScript package are done; store-signed extension distribution remains open.
 
 ## Glossary
 

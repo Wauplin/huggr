@@ -2,7 +2,7 @@
 
 ## What you'll build
 
-Every Huggr ask writes an immutable trace to `~/.huggr/<agent>/traces`. This guide reads a trace, replays it event by event with `huggr replay --step`, verifies it bit-for-bit with `huggr verify`, schedules recurring asks with `[cron.<name>]`, and passes traces to an offline agent for improvement suggestions. It explains how the trace acts as the source of truth.
+Every Huggr ask writes an immutable trace to `~/.huggr/<agent>/traces`. This guide reads a trace, replays it event by event with `huggr replay --step`, verifies it bit-for-bit with `huggr verify`, and passes traces to an offline agent for improvement suggestions. It explains how the trace acts as the source of truth.
 
 This assumes [01](01-first-agent-cli.md) (you can run/build an agent) and [07](07-composition-and-cost.md) (you know where cost and feedback live). The trace format is specified in [the runtime documentation](../runtime.md#determinism-replay-and-traces). This guide provides the hands-on workflow.
 
@@ -62,36 +62,6 @@ A `verify` failure means the recorded input now produces different output. The u
 `huggr-core` is **sans-IO and pure**: no clock, RNG, or IO. All nondeterminism is injected as events, including `Tick` for time and events for model output and tool results. The brain's output is therefore a pure function of its input log.
 
 Anything that breaks this property is a bug. See the ground rule in `AGENTS.md`.
-
-## Schedule recurring asks with cron
-
-A cron job is one manifest section, scheduled host-side (the brain never sees a clock):
-
-```toml
-[cron.daily-summary]
-schedule = "0 8 * * *"              # 5-field cron: minute hour dom month dow
-question = "Summarize today's watch list."
-lineage = "chain"                   # resume from the last run; "fresh" is default
-# optional limits override [limits] for these unattended asks:
-[cron.daily-summary.limits]
-max_cost_micro_usd = 20000
-```
-
-`schedule` is parsed with `croner` at load time, so a typo is a manifest error before anything runs. Run the scheduler:
-
-```bash
-huggr cron ./examples/huglet-weather --allow-uncapped
-# or on a built binary:
-my-weather --cron-serve --allow-uncapped
-```
-
-The process is the scheduler. It does not daemonize or persist the schedule; `systemd` or `launchd` keeps it running.
-
-Each fire is an ordinary `Ask` with `extra: {"cron": "<name>", "fired_at": …}`. Its trace is persisted like any other. Overlapping runs of the same job are skipped because asks can be slow.
-
-The scheduler **refuses** to start a job with no effective `max_cost_micro_usd` because unattended model calls can spend money without supervision. Use `--allow-uncapped` only when this is intentional.
-
-The scheduler and config are in `crates/huggr-toolkit/src/cron.rs`.
 
 ## Close the loop with the insights agent
 

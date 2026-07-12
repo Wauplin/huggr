@@ -13,10 +13,10 @@ cargo run -p huggr-toolkit --bin huggr -- new my-agent            # scaffold an 
 export HUGGR_API_KEY=hf_...                                       # the provider key named by the manifest
 cargo run -p huggr-toolkit --bin huggr -- run my-agent "question" # interpret it (dev loop)
 cargo run -p huggr-toolkit --bin huggr -- build my-agent          # ship it: one standalone binary
-./my-agent/dist/my-agent "question"                              # answers; --trace <id> resumes; --mcp-serve serves MCP
+./my-agent/dist/my-agent-cli/target/debug/my-agent "question"    # answers; --trace <id> resumes; --mcp-serve serves MCP
 ```
 
-Every built binary self-describes: `--describe` (tools, privileges, tiers, pricing, limits), `--config` (the parsed manifest, secrets redacted), `--traces` (stored lineage).
+Every built binary self-describes: `--describe` (tools, privileges, tiers, pricing, context policy, limits), `--config` (effective identity, models, grants, skills, runtime args, limits, state paths, and response schema, with secrets omitted), `--traces` (stored lineage).
 
 Agent state lives under `~/.huggr/<agent-name>/` by default: immutable traces in `traces/`, per-lineage scratch state in `scratch/`. Override with `HUGGR_AGENT_HOME` or `HUGGR_HOME`.
 
@@ -48,15 +48,15 @@ output_usd_per_m_tokens = 1.5
 root = "./policies"        # read-only, jailed to this folder
 ```
 
-The manifest defines the agent's blast radius and is the document to audit. A tool that is not granted is not registered, so there is no code path to it. Unknown keys are hard errors, so a typo cannot silently widen or narrow the grant.
+The manifest defines the agent's blast radius and is the document to audit. Grant-driven tools that are not declared are not registered; the per-lineage scratchpad is part of every ask. Unknown keys are hard errors, so a typo cannot silently widen or narrow the grant.
 
 The built-in library includes jailed filesystem reads and writes, restricted or full shell execution, allowlisted web fetch, Exa web search, memory, trace inspection, scratch state, and isolated self-delegation. High-privilege tools remain opt-in grants: restricted shell commands execute without shell syntax, while full shell and full-disk roots explicitly hand sandboxing to the operator. See the [built-in capability reference](docs/capabilities.md).
 
 ## What every agent gets
 
 - **One invocation contract.** The input is a question string. The output is a structured response with mandatory status, cost, duration, token, and trace-id metadata. Errors are answers (`status: "error"`, exit 0), so callers branch on data instead of exceptions.
-- **Resumable and forkable traces.** Every run persists an immutable trace. Pass its `trace_id` back to continue the conversation, or pass an older id to fork a sibling branch. Replay is bit-for-bit deterministic.
-- **Sandboxing by construction.** An agent registers only the tools granted by its manifest, each jailed to its declared scope. Every agent also gets a private, jailed scratchpad and explicit blob exchange with the caller.
+- **Resumable and forkable traces.** Every completed turn persists an immutable trace. Pass its `trace_id` back to continue the conversation, or pass an older id to fork a sibling branch. Replay is bit-for-bit deterministic.
+- **Sandboxing by construction.** An agent registers only its manifest-granted tools plus the universal scratchpad, each jailed to its declared scope. Every agent also gets explicit blob exchange with the caller.
 - **Progressively disclosed skills.** Add standard `SKILL.md` folders to `skills = [...]` in the manifest or pass `--skill <path>` for one ask. The model sees the skill catalog and loads matching instructions or referenced files through a jailed reader only when needed.
 - **Cost accounting.** Every response carries cost (from per-tier pricing config), duration, and token counts, folded from the trace. `huggr stats` aggregates them across runs.
 - **Composition.** A built Huggr agent is a tool: grant it with `[tools.agent.<name>] artifact = "..."` and call it like any capability. Delegation never widens privileges, and the child's cost folds into the caller's metadata.
@@ -76,7 +76,7 @@ cargo run -p huggr-toolkit --bin huggr -- run examples/huglet-docs ./docs "What 
   "status": "success",
   "response": {
     "response": "The narrow-waist rule is ...",
-    "related_documents": ["docs/README.md"]
+    "related_documents": [{ "path": "docs/README.md", "url": "https://huggingface.co/docs/docs/README" }]
   },
   "trace_id": "1e4f7d0a9b2c3d44",
   "metadata": { "duration_ms": 1234, "tokens_in": 1000, "tokens_out": 200, "cost_micro_usd": 1300, "model_calls": 2, "tool_calls": 3 }
@@ -93,7 +93,7 @@ The same runtime is available without writing Rust:
 - **Define an agent in Python.** The [`huggr-agents` package](bindings/python/README.md) embeds the runtime: tools are decorated callables, config is data, `agent.ask(...)` returns the standard `Answer`. See [guide 5](docs/guides/05-agent-entirely-in-python.md).
 - **Define an agent in TypeScript.** The [`huggr-agents` TS package](bindings/typescript/README.md) drives the same brain compiled to WASM, in Node and the browser. See [guide 6](docs/guides/06-agent-entirely-in-typescript.md).
 
-Traces written from any surface verify with the Rust CLI.
+Traces use the same `huggr-replay` format across surfaces. The Rust CLI can verify a trace when an agent crate resolves to its store; the TypeScript runtime also exposes `agent.verify()`.
 
 ## The core underneath
 
@@ -169,7 +169,7 @@ cargo fmt --all
 cargo tree -p huggr-core     # audit: must stay free of tokio/reqwest/fs
 ```
 
-Notable tests: `huggr-core/tests` (scripted sessions + deterministic replay), `huggr-host/tests/end_to_end.rs` (real engine, tools, MCP, record/replay/resume), and the ignored slow gates `cargo test -p huggr-toolkit --test conformance -- --ignored` / `--test build_cli -- --ignored` (compile a real agent binary and check every surface agrees).
+Notable tests: `huggr-core/tests` (scripted sessions + deterministic replay), `huggr-host/tests/end_to_end.rs` (real engine, tools, MCP, record/replay/resume), and the ignored slow gates `cargo test -p huggr-toolkit --test conformance -- --ignored` / `--test build_cli -- --ignored` (compile a real agent binary and compare the Rust, CLI, and MCP surfaces they cover).
 
 ## License
 

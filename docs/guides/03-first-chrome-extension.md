@@ -26,7 +26,7 @@ A browser host is a stack, and only the top layer knows about Chrome:
   The driver never touches `chrome.*`; it only calls the supplied `host` object.
 - **Your extension folder** supplies everything Chrome-specific: the MV3 manifest, the service worker, the side-panel UI, the system prompt, and the **capability dispatcher** that maps tool names from the brain's `StartCapability` commands onto real `chrome.*` calls.
 
-## The host interface — the one shape to keep
+## The host interface, the one shape to keep
 
 The whole wiring hangs on a single object. `examples/chrome-extension/host.js` is 30 lines and this is its entire contract:
 
@@ -40,7 +40,7 @@ export const host = {
   async loadWasm() { /* import ./pkg/huggr_wasm.js, await module.default(), return module.HuggrWasm */ },
   invokeCapability: invokeBrowserCapability,  // (name, args) => Promise<result>
   loadSettings,                               // () => Promise<{apiKey, baseUrl, model, ...limits}>
-  saveSession,                                // (record) => Promise  — autosaved during the run
+  saveSession,                                // (record) => Promise; autosaved during the run
   systemPrompt: SYSTEM_PROMPT,
   defaults: { baseUrl: "https://router.huggingface.co/v1", model: "google/gemma-4-31B-it:cerebras",
               maxModelCalls: 20, maxCostMicroUsd: 50000 },

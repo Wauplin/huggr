@@ -4,7 +4,7 @@ This guide defines a huglet entirely in TypeScript, with config as a plain objec
 
 Topics include the `Agent` class, the `ToolSpec` shape, the `ask`/`run` pair and event stream, Node and browser entry points, and cross-compatible trace verification with the Rust CLI.
 
-The config keys mirror `huggr.toml`, and the `Answer` contract is identical to the Rust and Python surfaces. The [runtime documentation](../runtime.md) explains why the brain is sans-IO and every effect is injected. This guide covers assembly.
+The config keys correspond to `huggr.toml`, with flattened context forget maps and a browser-only inline `api_key`; the `Answer` contract uses the same wire fields as the Rust and Python surfaces. The [runtime documentation](../runtime.md) explains why the brain is sans-IO and every effect is injected. This guide covers assembly.
 
 ## What the package is
 
@@ -111,11 +111,11 @@ console.log(answer.metadata.model_calls);      // number
 
 The `Answer` has the same shape on every surface. It contains `status` (`"success"` or `"error"`), `response` (a `Record<string, Json>` object), `trace_id`, optional `blobs`, and `metadata: AnswerMeta`. Metadata contains `duration_ms`, `cost_micro_usd`, `tokens_in`, `tokens_out`, `model_calls`, and `tool_calls`.
 
-Errors are answers and are never thrown. A blown limit, missing final model text, or timeout returns an error answer with `response.error` set.
+Turn failures such as a blown limit, missing final model text, or timeout return an error answer with `response.error` set. Configuration, storage, WASM loading, and runaway-session failures throw exceptions.
 
 ## 4. Stream with `agent.run`
 
-When you want the live timeline, use the async generator instead:
+When you want the event timeline, use the async generator instead:
 
 ```ts
 for await (const event of agent.run("Can I expense a train ticket?")) {
@@ -148,7 +148,7 @@ type AgentEvent =
   | { type: "answer_ready"; answer: Answer };
 ```
 
-This is the same wire vocabulary as the Rust `--stream` surface and the Python `agent.run(...)` events, so a UI rendering these is portable across all three. `ask` is `run` with a collector: it yields every event, captures `answer_ready`, and returns it. Choose the form that matches your UI.
+This is the same wire vocabulary as the Rust `--stream` surface and the Python `agent.run(...)` events, so a UI rendering these is portable across all three. `ask` is `run` with a collector: it yields every event, captures `answer_ready`, and returns it. TypeScript currently buffers a model call's text deltas until that call finishes; tool and turn events retain their order.
 
 ## 5. AskOptions: resume, abort, extra
 
@@ -198,7 +198,7 @@ This wires `loadWasm()` (which reads `./pkg` bytes without fetch), `FsTraceStore
 
 The home resolves in the same order as the Rust runtime: `$HUGGR_AGENT_HOME`, then `$HUGGR_HOME/<name>`, then `~/.huggr/<name>`.
 
-Traces land as `<home>/traces/<id>.json` in the portable `huggr-replay` format. The Rust runtime writes the same layout, so `huggr verify` and `huggr traces` can read TypeScript-recorded traces directly.
+Traces land as `<home>/traces/<id>.json` in the portable `huggr-replay` format. The Rust runtime writes the same layout, so `huggr verify` and `huggr traces` can read Node-written TypeScript traces when the supplied agent crate resolves to the same store.
 
 `FsTraceStore.put` stamps a content-derived id (sha256 of the headed trace JSON, first 16 hex chars) and writes atomically (`flag: "wx"` claims the name, a collision bumps a `-N` suffix; the body goes to a `.tmp` and renames into place); so a put never overwrites, preserving trace immutability.
 
@@ -256,7 +256,7 @@ And from TS, you can re-verify a trace through the exact same wasm fold `huggr v
 await agent.verify(traceId);   // replays bit-for-bit; throws on drift
 ```
 
-`agent.verify(traceId): Promise<void>` loads the stored trace and calls `verify_trace_json`, the wasm export of `huggr-replay::verify` and the same gate as the CLI. A trace recorded by any surface (Rust, Python, TS) verifies on any other; this is the release gate on new control-flow paths and your check after a change.
+`agent.verify(traceId): Promise<void>` loads the stored trace and calls `verify_trace_json`, the wasm export of `huggr-replay::verify` and the same fold as the CLI. A compatible trace placed in the runtime's store verifies without rerunning its original tools; this is the release gate on new control-flow paths and your check after a change.
 
 ## 9. In the browser: the chrome-extension example
 

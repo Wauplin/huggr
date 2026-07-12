@@ -1,6 +1,6 @@
 # Built-in capabilities
 
-This page lists the capabilities provided by `huggr-toolkit`. Nothing is registered unless its manifest grant is present. Relative filesystem roots resolve from the agent crate, and `root = "/"` explicitly grants the full filesystem while tool paths remain relative to that root.
+This page lists the capabilities provided by `huggr-toolkit`. Grant-driven capabilities are registered only when their manifest grant is present; scratchpad capabilities are part of every ask. Relative filesystem roots resolve from the agent crate, and `root = "/"` explicitly grants the full filesystem while tool paths remain relative to that root.
 
 ## Filesystem reads
 
@@ -66,7 +66,7 @@ The default artifact is the current executable, which suits CLI agent binaries a
 
 ## State and inspection
 
-`[tools.scratchpad]` registers per-lineage `scratch_read`, `scratch_write`, and `scratch_list`. `[tools.memory]` registers agent-wide `memory_read`, `memory_write`, and `memory_list`; `readonly = true` omits writes. `[tools.traces_read]` registers `trace_list`, `trace_ops`, `trace_transcript`, and `feedback_list` under one agent home with size and paging caps. Treat persisted content as untrusted data.
+Every ask registers per-lineage `scratch_read`, `scratch_write`, and `scratch_list`; `[tools.scratchpad]` is an optional audit marker. `[tools.memory]` registers agent-wide `memory_read`, `memory_write`, and `memory_list`; with `readonly = true`, writes return a semantic error. `[tools.traces_read]` registers `trace_list`, `trace_ops`, `trace_transcript`, and `feedback_list` under one agent home with size and paging caps. Treat persisted content as untrusted data.
 
 ## External capabilities
 

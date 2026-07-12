@@ -11,7 +11,7 @@ Prerequisite: [guide 1](01-first-agent-cli.md). For the design background, see [
 An agent folder is also a Rust crate, and `huggr build` (and typed `huggr run`, which uses the same shim) reads three things straight out of `src/lib.rs`:
 
 - `pub const RESPONSE_RUST_TYPE: &str = "crate_name::TypeName";` is **required**. The build fails with an explicit error if it is missing, and the value must look like `crate_name::TypeName`. The part before `::` names the dependency linked by the generated shim. If your Cargo package name differs (`huglet-docs` vs `huglet_docs`), the shim handles the rename.
-- `pub const MODEL_RESPONSE_RUST_TYPE: &str = ...;` is **optional**. When present and different from `RESPONSE_RUST_TYPE`, its schema is what the provider produces. The public type remains visible to callers in `Answer.response` and in `--config`/`--describe` output. When absent, one type plays both roles.
+- `pub const MODEL_RESPONSE_RUST_TYPE: &str = ...;` is **optional**. When present and different from `RESPONSE_RUST_TYPE`, its schema is what the provider produces. The public type remains visible to callers in `Answer.response` and in `--config` output. When absent, one type plays both roles.
 - `pub fn answer_hooks() -> Vec<AnswerHook>` is **optional**. If the source contains such a function, the generated shim registers the hooks and runs them on every finished `Answer`.
 
 There is no registration ceremony: export the const(s) and the function, and the build wires everything. Under the hood the shim calls `ResponseContract::from_type::<Model>(...)` (plus `.with_public_type::<Public>()` when the two differ) and `.with_answer_hooks(...)`; you never write that code yourself.
@@ -53,7 +53,7 @@ pub struct DocsModelResponse {
 }
 ```
 
-The model sees the schema of `DocsModelResponse`, where `related_documents` is an array of strings. Users, `--config`, and downstream callers see `DocsResponse`, where each document is a `{path, url}` object. `#[serde(deny_unknown_fields)]` on both keeps the cast strict: extra keys from the model cause a cast failure instead of becoming silent baggage.
+The model sees the schema of `DocsModelResponse`, where `related_documents` is an array of strings. Users, `--config`, and downstream callers see `DocsResponse`, where each document is a `{path, url}` object. `#[serde(deny_unknown_fields)]` on `DocsModelResponse` keeps the model-output cast strict: extra keys cause a cast failure instead of becoming silent baggage. The public type supplies the generated surface schema; Huggr does not cast the hook's post-processed value a second time.
 
 ### The bridge: answer_hooks()
 
@@ -87,9 +87,9 @@ Three habits worth copying:
 
 - **Bail early on non-success.** Error answers carry `{"error": ...}` in `response`; a hook should leave them alone.
 - **Be defensive about shape.** Hooks work on `serde_json::Value`, so match with `get_mut`/`as_array_mut` and skip quietly rather than unwrap; the huglet-docs hook even handles entries that are already objects, making it idempotent.
-- **Give the hook a namespaced name** (`"huglet_docs::document_urls"`): the name identifies the hook in traces and diagnostics.
+- **Give the hook a namespaced name** (`"huglet_docs::document_urls"`): the name identifies the hook in diagnostics.
 
-Hooks must be deterministic pure transformations, such as string processing or lookups against shipped data, with no IO or clock access. Answers are recorded in traces and replayed bit-for-bit. Use a hook for work such as deriving documentation URLs; use a model tool for network calls.
+Hooks must be deterministic pure transformations, such as string processing or lookups against shipped data, with no IO or clock access. They run after trace, blob, and scratch finalization and are not recorded in the trace. Use a hook for work such as deriving documentation URLs; use a model tool for network calls.
 
 The hook is unit-testable like any function; build an `Answer`, apply `answer_hooks()`, assert on `answer.response` (see the test at the bottom of `examples/huglet-docs/src/lib.rs`).
 

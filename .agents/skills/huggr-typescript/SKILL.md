@@ -59,6 +59,8 @@ for await (const event of agent.run("What receipt is needed?", { traceId: answer
 }
 ```
 
+Model text deltas are buffered until each model call finishes; other events retain their order.
+
 Pass `extra` for trace metadata and an `AbortSignal` as `signal` for cancellation. A resumed ask writes a new trace with `depends_on`; it never mutates the parent.
 
 ## Choose Node or browser storage
@@ -95,4 +97,4 @@ npm test
 - Missing target: run `rustup target add wasm32-unknown-unknown`.
 - `wasm-bindgen` schema mismatch: install the version required by the repository build script.
 - Provider auth in Node: set the variable named by `api_key_env`; in browsers, inject `api_key` from a user-controlled settings store.
-- Trace drift: call `agent.verify(id)` and then inspect the same file with `$huggr-debug-traces` or the Rust CLI.
+- Trace drift: call `agent.verify(id)`. Use `$huggr-debug-traces` or the Rust CLI when a matching manifest-defined agent resolves to the same Node trace store.

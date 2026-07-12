@@ -9,13 +9,13 @@ These hands-on guides cover one surface each. Every guide is standalone and runn
 5. [An agent entirely in Python](05-agent-entirely-in-python.md); define agents and tools in Python on the same Rust runtime.
 6. [An agent entirely in TypeScript](06-agent-entirely-in-typescript.md); the TS runtime API in Node and the browser.
 7. [Composition and cost](07-composition-and-cost.md); agents as tools, zero-copy blob passing, feedback, `huggr stats`.
-8. [Traces, replay, and debugging](08-traces-replay-debugging.md); trace anatomy, `huggr replay --step`, `verify`, cron, and the insights workflow.
+8. [Traces, replay, and debugging](08-traces-replay-debugging.md); trace anatomy, `huggr replay --step`, `verify`, and the insights workflow.
 9. [Context compaction and pruning](09-context-compaction.md); why contexts grow, forget rules, the deterministic budget pass, summarization, and every `[context]` knob.
 10. [Tool grants and jails](10-tool-grants-and-jails.md); sandbox-by-registration, scoping every grant in the tool library, and where each jail's boundary is.
 11. [Skills](11-skills.md); the Agent Skills folder format, progressive disclosure through `skill_read`, definition versus runtime skills, and the trust model.
 12. [Files and state: blobs, scratchpad, and memory](12-blobs-scratchpad-memory.md); blob exchange and the content-addressed store, per-lineage scratch with copy-on-fork, and durable memory.
 13. [Models, tiers, and pricing](13-models-tiers-pricing.md); the `[models]` block, tier selection, adapter retries versus semantic errors, and cost accounting from the trace.
-14. [Limits and unattended runs](14-limits-and-cron.md); the `[limits]` block, limit trips as error answers, `[cron.<name>]` jobs, lineage modes, and the cost-cap rule.
+14. [Limits](14-limits.md); the `[limits]` block and limit trips as error answers.
 15. [Serving and consuming MCP](15-mcp.md); the built binary as an MCP server via `--mcp-serve`, and `[tools.mcp.<name>]` grants with their trust model.
 16. [Runtime arguments](16-runtime-args.md); invocation-time configuration with `[runtime.args.<name>]`, patchable targets, and how the CLI, MCP, and Python surfaces expose them.
 17. [Streaming and events](17-streaming-and-events.md); the shared `AgentEvent` vocabulary, `--stream`, `ask_events`, `agent.run(...)`, and why events stay out of the trace.

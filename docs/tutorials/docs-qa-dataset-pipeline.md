@@ -1,6 +1,6 @@
 # A real pipeline: a docs Q&A dataset, published to the Hub
 
-This tutorial composes three Huggr specialists into a pipeline that pays for itself: `huglet-datasmith` mines a documentation folder into grounded question/answer pairs, `hf-librarian` publishes them as a proper Hugging Face dataset, and an eval script scores the `huglet-docs` agent against the result. Run against Huggr's own `docs/`, it produces — and then uses — an evaluation set for the reference docs agent. The finished code is checked in at `examples/huglet-datasmith` and `examples/hf-librarian`.
+This tutorial composes three Huggr specialists into a pipeline that pays for itself: `huglet-datasmith` mines a documentation folder into grounded question/answer pairs, `hf-librarian` publishes them as a proper Hugging Face dataset, and an eval script scores the `huglet-docs` agent against the result. Run against Huggr's own `docs/`, it produces, and then uses, an evaluation set for the reference docs agent. The finished code is checked in at `examples/huglet-datasmith` and `examples/hf-librarian`.
 
 A generic agent with a shell and your `HF_TOKEN` could do this job. The point of the pipeline is what each specialist *cannot* do: the datasmith can read only the docs folder it is pointed at and must return a typed dataset; the librarian's entire tool surface is three Python functions bound to one dataset repo, so the Hub token in your environment never becomes a general-purpose capability. Every ask leaves a replayable trace with itemized cost.
 
@@ -10,15 +10,15 @@ The tutorial is self-contained: the next section covers the Huggr concepts it us
 
 **A huglet is a folder that becomes a binary.** An agent is a small crate: a `huggr.toml` manifest (model tiers, tool grants, limits), a `SYSTEM.md` prompt, and optionally a typed Rust response contract in `src/lib.rs`. `huggr run <dir> "<question>"` runs it in place; `huggr build <dir>` compiles it into one standalone binary. See [guide 1](../guides/01-first-agent-cli.md) and [the overview](../overview.md).
 
-**Ask in, Answer out — and errors are answers.** Every surface speaks the same contract: you ask a question, you get back an `Answer` with a `status`, a JSON `response`, a `trace_id`, and mandatory `metadata` (cost in micro-USD, tokens, model/tool call counts, duration). A failed run is a `status: "error"` answer with the same metadata, never an exception or a non-zero exit. See [agents](../agents.md).
+**Ask in, Answer out, and turn errors are answers.** Completed turns return an `Answer` with a `status`, a JSON `response`, a `trace_id`, and mandatory `metadata` (cost in micro-USD, tokens, model/tool call counts, duration). A traced turn failure is a `status: "error"` answer with the same metadata; configuration and infrastructure failures can fail before an answer exists. The CLI ask path converts those failures to error answers and exits 0. See [agents](../agents.md).
 
-**Every ask leaves an immutable trace.** The full session — every model call, tool call, and result — persists as a trace file under `~/.huggr/<agent>/traces/`. Passing `trace_id=` to a later ask resumes that conversation (the trace is re-folded, nothing re-runs); asking the same parent twice forks it. Traces replay deterministically: `huggr replay --step` reconstructs a run event by event. See [guide 8](../guides/08-traces-replay-debugging.md).
+**Every completed turn leaves an immutable trace.** The full session (every model call, tool call, and result) persists as a trace file under `~/.huggr/<agent>/traces/`. Passing `trace_id=` to a later ask resumes that conversation (the trace is re-folded, nothing re-runs); asking the same parent twice forks it. Traces replay deterministically: `huggr replay --step` reconstructs a run event by event. See [guide 8](../guides/08-traces-replay-debugging.md).
 
 **Tools are granted, not discovered.** An agent can only invoke what its definition registers, such as `[tools.fs_read]` jailed to a declared root or a Python callable supplied by the host. This agent does not grant the optional shell. See [the capability reference](../capabilities.md) and [security model](../security.md).
 
 **Typed response contracts.** A Rust struct exported as `RESPONSE_RUST_TYPE` becomes the provider's structured-output schema, and the final model JSON is cast into it before it reaches you. Downstream code gets dataclasses, not string parsing. See [guide 2](../guides/02-typed-responses-and-hooks.md).
 
-**One runtime, several surfaces.** The same built agent is a CLI binary, an MCP server (`--mcp-serve`), or a typed Python wheel (`--surface python`). Separately, the `huggr-agents` Python package lets you define new agents directly in Python — tools as annotated functions, config as data — on the same Rust runtime. See [guide 4](../guides/04-agent-binary-from-python.md) and [guide 5](../guides/05-agent-entirely-in-python.md).
+**One runtime, several surfaces.** The same built agent is a CLI binary, an MCP server (`--mcp-serve`), or a typed Python wheel (`--surface python`). Separately, the `huggr-agents` Python package lets you define new agents directly in Python, with tools as annotated functions and config as data, on the same Rust runtime. See [guide 4](../guides/04-agent-binary-from-python.md) and [guide 5](../guides/05-agent-entirely-in-python.md).
 
 ## 1. The datasmith: a synthetic-data specialist in Rust
 
@@ -53,7 +53,7 @@ help = "Folder containing the documentation to mine for Q&A pairs."
 
 The runtime argument is the same pattern `huglet-docs` uses: the first positional argument patches `tools.fs_read.root`, so one built agent works on any docs folder while staying read-only inside it.
 
-`SYSTEM.md` is where the domain expertise lives — it is a *generation methodology*, not a persona:
+`SYSTEM.md` is where the domain expertise lives. It is a *generation methodology*, not a persona:
 
 ```markdown
 You are Huggr DataSmith, a synthetic-dataset specialist. Your one job is to mine the
@@ -86,7 +86,7 @@ pub struct QaItem {
 }
 ```
 
-`source_path` forces grounding: every pair must cite the file that supports it, which the system prompt reinforces by requiring the model to skim files before writing pairs and to skip topics rather than guess. `difficulty` is an open string label, as core conventions require — nothing branches on it.
+`source_path` forces grounding: every pair must cite the file that supports it, which the system prompt reinforces by requiring the model to skim files before writing pairs and to skip topics rather than guess. `difficulty` is an open string label, as core conventions require; nothing branches on it.
 
 ## 2. Set up the environment and build the wheels
 
@@ -99,7 +99,7 @@ uv venv --python 3.12
 uv pip install -r requirements.txt
 ```
 
-Then build the three Huggr packages as wheels — the `huggr-agents` runtime package plus the two agents — and install them. Only these come from local builds; everything else is PyPI:
+Then build the three Huggr packages as wheels (the `huggr-agents` runtime package plus the two agents) and install them. Only these come from local builds; everything else is PyPI:
 
 ```bash
 export HUGGR_API_KEY=...                              # provider key for the HF router
@@ -111,7 +111,7 @@ uv pip install ../../crates/huggr-python/target/wheels/*.whl \
                ../huglet-docs/dist/huglet-docs-python/target/wheels/*.whl
 ```
 
-After installing, calling an agent is one typed function call — no subprocess, no JSON parsing. `Answer.response` is a generated `QaDataset` dataclass mirroring the Rust contract; Rust already cast the model output, so Python only deserializes valid JSON into typed objects:
+After installing, calling an agent is one typed function call with no subprocess and no JSON parsing. `Answer.response` is a generated `QaDataset` dataclass mirroring the Rust contract; Rust already cast the model output, so Python only deserializes valid JSON into typed objects:
 
 ```python
 import huglet_datasmith
@@ -121,12 +121,12 @@ if answer.ok:
     first = answer.response.items[0]         # a typed QaItem
     print(first.question, "→", first.source_path)
 else:
-    print("error:", answer.error)             # errors are answers, never exceptions
+    print("error:", answer.error)             # traced turn errors are answers
 ```
 
 ## 3. The librarian: a jail made of closures
 
-The publishing side lives in `examples/hf-librarian/pipeline.py`, defined entirely on the [Python surface](../guides/05-agent-entirely-in-python.md). The repo id and staged file are module-level constants the host fixed; each tool is an annotated function — `@huggr.tool` infers the advertised schema from the signature and docstring — so the model never chooses *where* anything goes:
+The publishing side lives in `examples/hf-librarian/pipeline.py`, defined entirely on the [Python surface](../guides/05-agent-entirely-in-python.md). The repo id and staged file are module-level constants the host fixed. Each tool is an annotated function, and `@huggr.tool` infers the advertised schema from the signature and docstring, so the model never chooses *where* anything goes:
 
 ```python
 import huggr_agents as huggr
@@ -169,7 +169,7 @@ def publish_data() -> str:
     return f"uploaded data/qa.jsonl to {REPO_ID}"
 ```
 
-This is the Python-surface trust model used deliberately: tool callables are trusted host code, so the jail is the function body itself. `dataset_summary` gives the model statistics and three sample rows instead of the whole file — enough to write an honest dataset card without paying to stream every pair through context. `publish_data` takes no arguments at all; the staged JSONL and its destination are fixed.
+This is the Python-surface trust model used deliberately: tool callables are trusted host code, so the jail is the function body itself. `dataset_summary` gives the model statistics and three sample rows instead of the whole file, which is enough to write an honest dataset card without paying to stream every pair through context. `publish_data` takes no arguments at all; the staged JSONL and its destination are fixed.
 
 The agent itself is data: a specialist system prompt, one model tier, the three tools, and a `response_schema` pinning the final answer to `{notes}`:
 
@@ -200,7 +200,7 @@ librarian = huggr.Agent(
 )
 ```
 
-The orchestration is plain Python — generate, stage, publish — with the deterministic parts (staging the JSONL, creating the repo) done by the host, not the model:
+The orchestration is plain Python: generate, stage, and publish, with the deterministic parts (staging the JSONL and creating the repo) done by the host, not the model:
 
 ```python
 generated = huglet_datasmith.ask(str(DOCS), f"Generate {COUNT} question/answer pairs.")
@@ -231,13 +231,13 @@ The two halves run in one process: the datasmith through its wheel, the libraria
       generating a dataset summary, uploading a comprehensive README with YAML front matter
       (including 'huggr' and 'synthetic' tags), and publishing the JSONL data file.
 
-cost: 90799 µUSD — traces: datasmith=fa808c069b1500e6 librarian=9eb44174ebe8188e
+cost: 90799 µUSD, traces: datasmith=fa808c069b1500e6 librarian=9eb44174ebe8188e
 dataset: https://huggingface.co/datasets/<you>/huglet-docs-qa
 ```
 
 ## 5. Close the loop: evaluate huglet-docs against the dataset
 
-`eval.py` downloads `data/qa.jsonl` back from the Hub, has `huglet_docs.ask(...)` answer every question, and grades each answer with a third specialist — a tool-free `qa-judge` agent whose `response_schema` pins its verdict to `{correct, reasoning}`:
+`eval.py` downloads `data/qa.jsonl` back from the Hub, has `huglet_docs.ask(...)` answer every question, and grades each answer with a third specialist, a tool-free `qa-judge` agent whose `response_schema` pins its verdict to `{correct, reasoning}`:
 
 ```python
 judge = huggr.Agent(
@@ -295,23 +295,23 @@ evaluating huglet-docs on 10 questions from <you>/huglet-docs-qa
  7. PASS [intermediate] When granting one Huggr agent to another as a tool, how are large files passed between them without copying bytes?
  8. PASS [advanced] How is cost attributed when an orchestrator agent calls a child huglet?
  9. PASS [intermediate] What is the difference between `huggr replay` and `huggr verify`?
-10. PASS [basic] Why does the Huggr cron scheduler refuse to start jobs that don't have a `max_cost_micro_usd` limit?
+...
 
-score: 10/10 — eval cost: 122045 µUSD
+score: 10/10, eval cost: 122045 µUSD
 ```
 
-A failing row prints the expected answer, the candidate, and the judge's reasoning — the starting point for fixing either the docs agent or the docs themselves.
+A failing row prints the expected answer, the candidate, and the judge's reasoning. This is the starting point for fixing either the docs agent or the docs themselves.
 
 ## 6. Inspect the runs: `huggr traces` and `huggr stats`
 
-Every ask above persisted a trace, and the `huggr` CLI reads them straight from an agent's folder — no code, no running process. `huggr traces` lists the store as a lineage: one line per ask with its id, outcome status, feedback count, and question. This is where you find the trace id to resume, replay, or attach feedback to:
+Every ask above persisted a trace, and the `huggr` CLI reads them straight from an agent's folder with no code or running process. `huggr traces` lists the store as a lineage: one line per ask with its id, outcome status, feedback count, and question. This is where you find the trace id to resume, replay, or attach feedback to:
 
 ```text
 $ huggr traces examples/huglet-datasmith
 • fa808c069b1500e6 [success] feedback=0 Generate 10 question/answer pairs covering the whole docume…
 ```
 
-The eval left ten sibling traces on `huglet-docs` — one per question, each independently resumable:
+The eval left ten sibling traces on `huglet-docs`, one per question, and each is independently resumable:
 
 ```text
 $ huggr traces examples/huglet-docs
@@ -340,7 +340,7 @@ tools:
   scratch_write calls=1 errors=0 total_latency_ms=1 mean_latency_ms=1
 ```
 
-This one screen answers the operational questions a pipeline owner actually has. Where does the money go? 82.6k input tokens against 2.2k output — the datasmith's cost is reading docs, so trimming what it reads (or a cheaper tier for skimming) is the lever. Is the agent behaving? The tool rows show it listed the folder once, bulk-read files once, and used its scratchpad — no errors, no thrashing. And the same view over `huglet-docs` after the eval shows the per-question shape:
+This one screen answers the operational questions a pipeline owner actually has. Where does the money go? With 82.6k input tokens against 2.2k output, the datasmith's cost is reading docs, so trimming what it reads (or using a cheaper tier for skimming) is the lever. Is the agent behaving? The tool rows show it listed the folder once, bulk-read files once, and used its scratchpad, with no errors or thrashing. And the same view over `huglet-docs` after the eval shows the per-question shape:
 
 ```text
 $ huggr stats examples/huglet-docs
@@ -358,9 +358,9 @@ tools:
   fs_search calls=19 errors=0 total_latency_ms=35 mean_latency_ms=1
 ```
 
-Ten asks, ~10.3¢, p95 under 4 seconds, and `fs_search`-heavy tool use — the docs agent searches more than it reads, which is exactly what you want from a Q&A specialist. Because stats fold from traces, these numbers accumulate across runs: re-run the eval after changing `SYSTEM.md` and the deltas in cost, latency, and tool mix are your regression report. The `feedback=0` column is the reminder that verdicts can be attached back to traces (`agent.feedback(trace_id, ...)`), which the offline `examples/huglet-insights` agent then mines for improvement suggestions.
+Ten asks, ~10.3¢, p95 under 4 seconds, and `fs_search`-heavy tool use show that the docs agent searches more than it reads, which is exactly what you want from a Q&A specialist. Because stats fold from traces, these numbers accumulate across runs: re-run the eval after changing `SYSTEM.md` and the deltas in cost, latency, and tool mix are your regression report. The `feedback=0` column is the reminder that verdicts can be attached back to traces (`agent.feedback(trace_id, ...)`), which the offline `examples/huglet-insights` agent then mines for improvement suggestions.
 
-To see *inside* a single run rather than the aggregate, replay it deterministically — every file the datasmith read before writing each pair, event by event:
+To see *inside* a single run rather than the aggregate, replay it deterministically to inspect every file the datasmith read before writing each pair, event by event:
 
 ```bash
 huggr replay examples/huglet-datasmith fa808c069b1500e6 --step
@@ -370,4 +370,4 @@ The Python-defined agents (`hf-librarian`, `qa-judge`) have no manifest folder f
 
 ## Next
 
-Point the datasmith at your own project's docs and publish an eval set for *your* assistant, or extend the loop: file each eval verdict as feedback on the `huglet-docs` traces and let `examples/huglet-insights` mine them for prompt improvements. If a batch of pairs is weak, resume the datasmith trace (`huglet_datasmith.ask(..., trace_id=...)`) to regenerate — the new ask is a sibling trace, the original stays immutable.
+Point the datasmith at your own project's docs and publish an eval set for *your* assistant, or extend the loop: file each eval verdict as feedback on the `huglet-docs` traces and let `examples/huglet-insights` mine them for prompt improvements. If a batch of pairs is weak, resume the datasmith trace (`huglet_datasmith.ask(..., trace_id=...)`) to regenerate. The new ask is a sibling trace, and the original stays immutable.

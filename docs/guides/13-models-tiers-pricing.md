@@ -50,7 +50,7 @@ The OpenAI-compatible adapter in `huggr-providers` retries 429 and 5xx responses
 
 Semantic errors, such as malformed tool arguments or a logical tool failure, take the other path: they return to the model as tool results so it can correct itself within the same turn.
 
-There is no per-request HTTP timeout in the adapter; wall-clock bounds belong to `[limits].timeout_s`, which caps the whole ask (see [limits and unattended runs](14-limits-and-cron.md)).
+There is no per-request HTTP timeout in the adapter; wall-clock bounds belong to `[limits].timeout_s`, which caps the whole ask (see [limits](14-limits.md)).
 
 ## Cost accounting
 

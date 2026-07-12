@@ -61,7 +61,7 @@ allow_hosts = ["api.open-meteo.com", "geocoding-api.open-meteo.com"]
 
 The system prompt, in plain Markdown. Template variables like `{{agent_name}}` are substituted at assembly time. The weather prompt tells the model exactly which two Open-Meteo endpoints to hit with `web_fetch` and to answer in one short sentence; edit this file first when you want different behavior.
 
-### src/lib.rs — the response contract
+### src/lib.rs, the response contract
 
 The crate exports a typed response contract:
 
@@ -96,7 +96,7 @@ Because this agent has a typed Rust contract, the first `huggr run` compiles a s
 
 ## 4. Resume and fork with trace ids
 
-Every ask is recorded as an immutable trace. List them as a lineage tree:
+Every completed turn is recorded as an immutable trace. List them as a lineage tree:
 
 ```bash
 huggr traces my-agent
@@ -116,7 +116,7 @@ A resumed ask never mutates the old trace. It writes a **new** trace with `depen
 
 ## 5. Inspect the agent card
 
-Every agent surface answers `--describe` with its agent card, including its name, scoped tools, priced model tiers, and limits. `--config` returns the parsed manifest as JSON, including the API key environment variable name and whether it resolves, but never the secret:
+Every agent surface answers `--describe` with its agent card, including its name, tools, context policy, priced model tiers, and limits. `--config` returns the effective identity, models, grants, skills, runtime arguments, limits, state paths, and response schema as JSON, including the API key environment variable name and whether it resolves, but never the secret:
 
 ```bash
 huggr run my-agent -- --describe
@@ -132,18 +132,17 @@ huggr build my-agent --release
 
 This generates a shim crate under `my-agent/dist/` (override with `--out <dir>`). The shim embeds the agent bundle, including the manifest, prompt, and response contract, then compiles it with cargo.
 
-The result is one self-contained binary at `my-agent/dist/my_agent-cli/target/release/my_agent` that needs no repository checkout. On startup, it installs its bundle into a content-addressed `.definitions/<name>/<hash>/` cache beside `~/.huggr/<name>/`; traces and other mutable state remain in the agent home, so `--trace` resume works anywhere you copy the binary.
+The result is one self-contained binary at `my-agent/dist/my-agent-cli/target/release/my-agent` that needs no repository checkout. On startup, it installs its bundle into a content-addressed `.definitions/<name>/<hash>/` cache beside `~/.huggr/<name>/`; traces and other mutable state remain in the agent home, so `--trace` resume works anywhere you copy the binary.
 
 `--surface python` also generates a pip-installable Python module.
 
 The built binary speaks the same universal surface as `huggr run`:
 
 ```
-my_agent "question" [--trace <ID>] [--json|--pretty] [--blob <PATH>...] [--skill <PATH>...] [--stream]
-my_agent --describe | --config | --traces | --stats [--trace <ID>]
-my_agent --feedback <TRACE_ID> [--feedback-payload <JSON>]
-my_agent --mcp-serve
-my_agent --cron-serve [--allow-uncapped]
+my-agent "question" [--trace <ID>] [--json|--pretty] [--blob <PATH>...] [--skill <PATH>...] [--stream]
+my-agent --describe | --config | --traces | --stats [--trace <ID>]
+my-agent --feedback <TRACE_ID> [--feedback-payload <JSON>]
+my-agent --mcp-serve
 ```
 
 - `--trace <ID>` resumes/forks exactly as with `huggr run`; `--json` switches from the default pretty printing to compact.
@@ -153,7 +152,6 @@ my_agent --cron-serve [--allow-uncapped]
 - `--describe`, `--config`, `--traces`, and `--stats` are the audit views. They return JSON and exit non-zero on failure, unlike the ask path.
 - `--feedback <TRACE_ID>` appends a JSON feedback payload to a stored trace (from `--feedback-payload` or stdin).
 - `--mcp-serve` turns the binary into a stdio MCP server exposing an ask tool; register the command in any MCP client and your agent becomes a tool.
-- `--cron-serve` runs any `[cron.<name>]` jobs from the manifest until stopped.
 
 The workflow is: scaffold the agent, edit two text files, run it, inspect it, and ship one binary.
 

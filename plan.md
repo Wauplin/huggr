@@ -7,7 +7,7 @@ Status legend: each task starts `[ ]`; flip to `[x]` when merged (code + tests +
 ## Ground rules (checked against every task below)
 
 - `huggr-core` stays sans-IO, pure, single-threaded, dependency-free beyond serde. None of the tasks below adds anything environmental to it; the only core changes in this plan are pure (new `ContextDisposition` variants, one `Record` variant for model-backed compaction, policy plumbing) and each ships with scripted determinism + replay tests.
-- All nondeterminism stays injected as events. Anything that needs a clock (cron), a model call (summarization), or IO (storage backends) lives in a host layer or rides the existing command/event cycle.
+- All nondeterminism stays injected as events. Anything that needs a model call (summarization) or IO (storage backends) lives in a host layer or rides the existing command/event cycle.
 - The log stays the source of truth and traces stay immutable. Feedback, memory, and analytics are all sidecars or folds — never mutations of a stored trace. Compaction changes the *projection*, never the log.
 - Narrow waist: new capabilities (memory, feedback-as-tool, traces_read) are ordinary `Capability` registrations with opaque args — zero core type changes. New manifest sections are open string sets where possible.
 - Sandbox-by-registration: every new tool is granted in the manifest, jailed to a declared scope, and gets a threat-model note in `docs/security.md`. The library stays exec-free.
@@ -23,7 +23,6 @@ Status legend: each task starts `[ ]`; flip to `[x]` when merged (code + tests +
 | 4 | new_ideas.md workflow in AGENTS.md | 0.5 |
 | 5 | Detailed analytics | 2.4 |
 | 6 | Shared blobs, no local copies | 1.5 |
-| 7 | Cron jobs for an agent | 2.5 |
 | 8 | Swappable storage backends | 1.2 |
 | 9 | Built-in configurable compaction/forget | 2.1 |
 | 10 | Comment cleanup | 0.4 |
@@ -216,19 +215,6 @@ These change defaults and introduce the seams that Phase 2/3 build on. Order: 1.
 - Tests: golden stats over a fixture set of traces (crafted with fake adapter: multi-tier, tools, one child call, one error); `--stats` surfaced through conformance.
 - Depends on: 1.1; benefits from 2.3.
 
-### 2.5 `[x]` Cron jobs for an agent (idea 7) — M
-
-- Why: "a prompt + a cron formula" — recurring asks (poll a feed, re-index docs, daily summary) without an external orchestrator.
-- Design (host-layer only; the brain never sees a clock):
-  - Manifest: `[cron.<name>]` sections — `schedule = "*/30 * * * *"` (5-field cron, parsed with the `croner` crate at load time so typos are manifest errors), `question = "..."`, optional `lineage = "fresh" | "chain"` (`chain` threads each run's `trace_id` as the next run's parent — a slowly-growing conversation; `fresh` default), optional per-job `[cron.<name>.limits]` overriding `[limits]` for these unattended asks.
-  - Runtime: built binary `<agent> --cron-serve` (and dev `huggr cron <agent-dir>`) runs a small tokio scheduler: sleep-until-next-fire per job, each firing is an ordinary `ask` with `extra: {"cron": "<name>", "fired_at": ...}`, answer logged to stderr, trace persisted as always; overlapping fires of the same job are skipped with a notice (asks can be slow). No daemonization, no persistence of the schedule itself — the process *is* the scheduler; systemd/launchd own keeping it alive. `--cron-print` emits ready-to-paste crontab lines (`0 8 * * * /path/agent "question" --json >> log`) for people who prefer system cron — S, optional.
-- Docs: update the new mode and manifest in `docs/agents.md` and the threat note in `docs/security.md`: unattended asks make `[limits]` (especially `max_cost_micro_usd`) *strongly recommended* — the scheduler refuses to start a job with no cost cap unless `--allow-uncapped` is passed.
-- Tests: schedule parsing errors; scheduler unit test with injected clock; end-to-end one-shot fire with fake adapter; overlap-skip behavior.
-- Depends on: nothing hard; nicer after 1.1 (predictable trace location for consumers of cron output).
-- Invariant check: the clock lives in the host scheduler; each fired ask is a normal deterministic session (`Tick`-stamped like any other).
-
----
-
 ## Phase 3 — Language surfaces
 
 ### 3.1 `[x]` Python runtime API (idea 13) — XL
@@ -288,7 +274,7 @@ These change defaults and introduce the seams that Phase 2/3 build on. Order: 1.
   - `05-agent-entirely-in-python.md` — the 3.1 runtime API end-to-end. (After 3.1.)
   - `06-agent-entirely-in-typescript.md` — the 3.2 API, node + browser variants. (After 3.2.)
   - `07-composition-and-cost.md` — agents-as-tools, blob passing, feedback, `huggr stats`. (After 1.5/2.3/2.4.)
-  - `08-traces-replay-debugging.md` — trace anatomy, `huggr replay --step`, `verify`, cron + insights workflow. (Mostly available; finish after 2.5/4.1.)
+  - `08-traces-replay-debugging.md` — trace anatomy, `huggr replay --step`, `verify`, and the insights workflow. (Mostly available; finish after 4.1.)
 - Steps: write 01/02/04 immediately; others gated on their features; add a CI job that extracts and runs the shell blocks from 01 (doctest-style smoke) where secrets aren't needed.
 - Docs: README links the tutorial index; AGENTS.md "one doc" rule amended: `docs/` remains the reference; tutorials are teaching material and must not restate spec (link instead).
 
@@ -296,7 +282,7 @@ These change defaults and introduce the seams that Phase 2/3 build on. Order: 1.
 
 - Why: huggr must be agent-first — a coding agent dropped into any repo should be able to build a huglet without reading the whole spec. Agent skills are the delivery vehicle.
 - Design: in-repo `.agents/skills/` (checked in, so contributors' agents get them; installable elsewhere by copy):
-  - `huggr-build-agent/SKILL.md` — the main skill: scaffold, manifest schema cheat-sheet (every section incl. `[context]`, `[cron]`, `[tools.memory]` as they land), tool library + jail semantics, typed contracts, run/build/traces/replay commands, packaging, troubleshooting (missing key env, maturin absent, etc.).
+  - `huggr-build-agent/SKILL.md` — the main skill: scaffold, manifest schema cheat-sheet (every section incl. `[context]` and `[tools.memory]` as they land), tool library + jail semantics, typed contracts, run/build/traces/replay commands, packaging, troubleshooting (missing key env, maturin absent, etc.).
   - `huggr-python/SKILL.md`, `huggr-typescript/SKILL.md`, `huggr-chrome-extension/SKILL.md` — per-surface skills, gated on 3.1/3.2/0.3.
   - `huggr-debug-traces/SKILL.md` — replay/verify/stats/insights workflow.
 - Keep each skill short, imperative, example-heavy; skills reference tutorials for narrative and `docs/` for rationale — never duplicate spec.
@@ -324,13 +310,13 @@ These change defaults and introduce the seams that Phase 2/3 build on. Order: 1.
 - **W2 — Concrete Postgres / browser-localStorage / cloud storage backends in this repo**: 1.2 ships the traits + fs + in-memory reference impls (and 3.2 the IndexedDB TS impl); anything heavier is written *in an agent implementation* via `storage()` — that extensibility is the requirement in idea 8, not a Postgres driver dependency in the framework.
 - **W3 — Compaction that rewrites the durable log**: "forget" only ever changes the projection (2.1); the log/trace stays append-only and immutable. Any design that summarizes-then-deletes records is rejected — it breaks replay, fork, and audit.
 - **W4 — Model-backed summarization outside the event loop**: an adapter or host silently calling a model to compact (as the wasm POC's *shape* would suggest if generalized) hides an unrecorded model call from the trace; the only acceptable shape is 2.1b (a `StartModelCall` command + recorded `Record::ContextSummary`). The deterministic parts of the POC are absorbed by 2.1a instead.
-- **W5 — Environmental anything in `huggr-core`**: no storage traits, cron clocks, Python/TS types, or async in core. All surfaces in this plan are hosts.
+- **W5 — Environmental anything in `huggr-core`**: no storage traits, Python/TS types, or async in core. All surfaces in this plan are hosts.
 - **W6 — A `shell` tool / bespoke plugin protocol / second external-tool escape hatch**: unchanged; MCP remains the only external-process escape hatch, the library stays exec-free (`code_exec` in 4.4 is the designed, sandboxed exception and is not a shell).
 - **W7 — Per-agent generated Python packages as the "Python API"**: the runtime API (3.1) does not replace or restore per-agent codegen beyond the existing `--surface python`; one generic runtime package, per the old plan's recommendation.
 
 ## Doc-sync master checklist (rolled up from the tasks)
 
-- `docs/`: project layout (examples/, bindings/, huggr-wasm slimmed); surface shape (`--stream`, `--stats`, `--feedback`, `--cron-serve`); language surfaces (generated wrappers + runtime embeddings: Python, TS); contract (feedback back-channel, blob zero-copy semantics); manifest (`[context]`, `[cron.*]`, `[tools.memory]`, home-dir defaults); tool library (`memory`, `traces_read`); composition (blob forwarding, `agent_<name>_feedback`); context management replacing the "no compaction" sentence; storage (backend traits, `~/.huggr` layout, shared blob store); new threat notes (memory, feedback, traces_read, storage backends, cron caps, hardlink note); open questions — remove "Storage backends" and "Browser packaging" (resolved), add trace-GC resolution, keep schema-migration.
+- `docs/`: project layout (examples/, bindings/, huggr-wasm slimmed); surface shape (`--stream`, `--stats`, `--feedback`); language surfaces (generated wrappers + runtime embeddings: Python, TS); contract (feedback back-channel, blob zero-copy semantics); manifest (`[context]`, `[tools.memory]`, home-dir defaults); tool library (`memory`, `traces_read`); composition (blob forwarding, `agent_<name>_feedback`); context management replacing the "no compaction" sentence; storage (backend traits, `~/.huggr` layout, shared blob store); new threat notes (memory, feedback, traces_read, storage backends, hardlink note); open questions — remove "Storage backends" and "Browser packaging" (resolved), add trace-GC resolution, keep schema-migration.
 - `README.md`: quickstart paths (`~/.huggr`), crate/bindings/examples layout, huglet-docs path → `examples/huglet-docs`, new features one-liner each, tutorial links.
-- `AGENTS.md`: project layout (examples/, bindings/); comment conventions rewritten (0.4); new_ideas.md ↔ plan.md loop (0.5); "done" definition includes skills cheat-sheets (4.3); command list (`huggr stats`, `huggr cron`, `huggr eval`, `huggr traces gc`).
+- `AGENTS.md`: project layout (examples/, bindings/); comment conventions rewritten (0.4); new_ideas.md ↔ plan.md loop (0.5); "done" definition includes skills cheat-sheets (4.3); command list (`huggr stats`, `huggr eval`, `huggr traces gc`).
 - Delete when superseded: `PYTHON_RUNTIME_API_PLAN.md` (into 3.1), `HUGGR_WASM_PLAN.md` (into 0.3 + `docs/`).

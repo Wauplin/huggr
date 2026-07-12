@@ -15,7 +15,7 @@ huggr build examples/huglet-weather --release
 huggr build ./my-summarizer --release     # any agent crate you have
 ```
 
-The built binary lands under each crate's `dist/target/`. The grant you're about to write points at one of these binaries, so `huggr build` must run first for each agent you want to compose (see `--help` for `--out` to choose the destination).
+The built binary lands under each crate's `dist/<agent>-cli/target/release/`. The grant you're about to write points at one of these binaries, so `huggr build` must run first for each agent you want to compose (see `--help` for `--out` to choose the destination).
 
 ## Grant one agent to another
 
@@ -23,7 +23,7 @@ An agent grant is a manifest line under `[tools.agent.<name>]`. Add this to the 
 
 ```toml
 [tools.agent.weather]
-artifact = "../examples/huglet-weather/dist"
+artifact = "../examples/huglet-weather/dist/huglet-weather-cli/target/release/huglet-weather"
 ```
 
 `<name>` is `weather`, so the parent gets a capability named `agent_weather`. The parent's model sees it as an ordinary tool whose args are an [`Ask`](../agents.md#the-ask-and-answer-contract): a `question`, an optional `trace_id` to resume the child, and optional `blobs`:

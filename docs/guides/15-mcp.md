@@ -11,7 +11,7 @@ The ask/answer contract makes huglets uniform for callers that speak it, but mos
 Every built agent binary is already an MCP server:
 
 ```bash
-./dist/huglet-docs ./docs --mcp-serve
+./dist/huglet-docs-cli/target/release/huglet-docs ./docs --mcp-serve
 ```
 
 Register that command (binary plus its runtime args, then `--mcp-serve`) as a stdio server in any MCP client; the server name and version come from the manifest, and the agent description becomes the server instructions. The transport is newline-delimited JSON-RPC over stdio, and there is no state beyond the process: one registration, one agent.
@@ -53,7 +53,7 @@ The same reasoning applies in reverse when serving: anyone who can call your age
 
 ## Worked example
 
-The docs huglet from [guide 1](01-first-agent-cli.md) is built once, then registered in an MCP client with command `./dist/huglet-docs` and args `["./docs", "--mcp-serve"]`. The client calls `ask {"question": "How do runtime args work?"}` and receives an `Answer` with a `trace_id`; a follow-up passes that `trace_id` back and gets a resumed conversation; `feedback {"trace_id": ..., "payload": {"score": 1}}` files a review the insights workflow can mine later ([guide 8](08-traces-replay-debugging.md)). Meanwhile, the same binary could itself grant `[tools.mcp.github]` and call `mcp__github__*` tools during its turns. Both boundaries are subprocesses speaking the same protocol.
+The docs huglet from [guide 1](01-first-agent-cli.md) is built once, then registered in an MCP client with command `./dist/huglet-docs-cli/target/release/huglet-docs` and args `["./docs", "--mcp-serve"]`. The client calls `ask {"question": "How do runtime args work?"}` and receives an `Answer` with a `trace_id`; a follow-up passes that `trace_id` back and gets a resumed conversation; `feedback {"trace_id": ..., "payload": {"score": 1}}` files a review the insights workflow can mine later ([guide 8](08-traces-replay-debugging.md)). Meanwhile, the same binary could itself grant `[tools.mcp.github]` and call `mcp__github__*` tools during its turns. Both boundaries are subprocesses speaking the same protocol.
 
 ## Limitations
 

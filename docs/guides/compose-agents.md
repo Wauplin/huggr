@@ -55,7 +55,7 @@ my-orchestrator "summarize this dataset" --blob ./data.csv
 
 The file is hashed and copied into an atomically installed shared-store object; the caller's mutable inode is never used as the content-addressed object. The implementation is in `crates/huggr-agent/src/blobs.rs`. The parent's model receives a `sha256:<hash>` handle.
 
-When the parent calls `agent_weather` with `blobs: [{"type":"sha256","hash":"…"}]`, the resolver passes the reference to the child as `--blob sha256:<hash>`. It also sets `HUGGR_BLOB_STORE` to the same shared root.
+When the parent calls `agent_weather` with `blobs: [{"ref":{"kind":"sha256","sha256":"sha256:<hash>"},"media_type":"text/csv"}]`, the resolver passes the reference to the child as `--blob sha256:<hash>`. It also sets `HUGGR_BLOB_STORE` to the same shared root. The subprocess tool schema does not advertise inline `bytes` refs because the child CLI accepts only paths and content addresses.
 
 The child resolves the reference from that store, so **zero bytes cross the process boundary**. The child's answer blobs are also `sha256` references and return unchanged in the parent's tool result.
 

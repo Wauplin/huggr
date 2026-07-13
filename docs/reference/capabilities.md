@@ -6,6 +6,15 @@ This page lists the capabilities provided by `huggr-toolkit`. Grant-driven capab
 
 `[tools.fs_read]` accepts `root` (default `.`) and registers eight read-only capabilities under that canonicalized root.
 
+You can grant several roots instead of one with `roots` (an array of path strings, or `{ name, path }` tables). With a single root, tool paths stay relative to it. With more than one, each root gets a name and tool paths are addressed as `<root-name>/<path>`; a tree operation (`fs_list`, `fs_search`, `fs_grep`, `fs_glob`, `fs_outline`) with no `path` spans every root, and `fs_list` with no `path` lists the root names. A name defaults to the final path component; give explicit names when two roots would otherwise collide.
+
+```toml
+[tools.fs_read]
+roots = ["../repo-a", "../repo-b"]                     # names: repo-a, repo-b
+# or, with explicit names:
+# roots = [{ name = "app", path = "../frontend" }, { name = "api", path = "../backend" }]
+```
+
 | Capability | What it does | Limits |
 | --- | --- | --- |
 | `fs_list` | Lists a directory, optionally recursively. | At most 2,000 returned entries; recursive walks have an internal 20,000-file ceiling. |
@@ -21,9 +30,9 @@ Absolute tool paths, `..`, and symlink escapes are rejected. A full-disk grant u
 
 ## Filesystem writes
 
-`[tools.fs_write]` accepts `root` (default `.`) and registers `fs_write`, `fs_edit`, `fs_create_dir`, and `fs_remove`. `fs_write` creates, replaces, or appends to one file whose parent already exists. `fs_edit` replaces an exact text occurrence in one existing file; `old` must match verbatim and, unless `replace_all` is set, must occur exactly once. `fs_create_dir` creates one directory whose parent exists. `fs_remove` removes one file or one empty directory, never removes recursively, and refuses to remove the configured root itself (including via `.` or `a/..` spellings).
+`[tools.fs_write]` accepts `root` (default `.`), or `roots` for several named write jails (same form as `fs_read` above; with more than one, write paths are addressed as `<root-name>/<path>`), and registers `fs_write`, `fs_edit`, `fs_create_dir`, and `fs_remove`. `fs_write` creates, replaces, or appends to one file whose parent already exists. `fs_edit` replaces an exact text occurrence in one existing file; `old` must match verbatim and, unless `replace_all` is set, must occur exactly once. `fs_create_dir` creates one directory whose parent exists. `fs_remove` removes one file or one empty directory, never removes recursively, and refuses to remove the configured root itself (including via `.` or `a/..` spellings).
 
-Write implies read on the same root: `[tools.fs_write]` also registers the full `fs_read` family (see below) jailed to its `root`, so granting write alone gives an agent both read and write access to a folder. Add a separate `[tools.fs_read]` only for read-only access or to read a different root; when both grants are present the explicit `fs_read` owns the read jail and the write grant does not register the read family a second time.
+Write implies read on the same root(s): `[tools.fs_write]` also registers the full `fs_read` family (see below) jailed to the same root or roots, so granting write alone gives an agent both read and write access to those folders. Add a separate `[tools.fs_read]` only for read-only access or to read a different root; when both grants are present the explicit `fs_read` owns the read jail and the write grant does not register the read family a second time.
 
 Write targets and their canonicalized parents must remain under the configured root, including through symlinks. Use `root = "/"` only when the operator intends to grant full-disk writes.
 

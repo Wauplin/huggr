@@ -39,9 +39,11 @@ output_usd_per_m_tokens = 0.17
 # errors. A tool is jailed to the scope declared here.
 [tools.fs_read]
 root = "./policies"              # read/list/search/grep/glob jailed to this folder
+# roots = ["../repo-a", "../repo-b"]  # several jails; paths become <root-name>/<path>
 
 # [tools.fs_write]
 # root = "./generated"             # write+edit+read on this folder (write implies read); "/" is full-disk
+# roots = [{ name = "app", path = "../frontend" }]  # or several named write jails
 
 # [tools.shell]
 # allow_commands = ["git", "cargo"] # direct execution; no shell operators

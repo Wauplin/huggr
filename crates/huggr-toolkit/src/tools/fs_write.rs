@@ -8,15 +8,14 @@ use huggr_core::{ToolSchema, Value};
 use huggr_host::{Capability, ChunkSink};
 use serde_json::json;
 
-#[derive(Clone)]
-/// A canonicalized writable root shared by the filesystem write capabilities.
-pub struct FsWriteRoot {
-    root: Arc<PathBuf>,
+/// A single canonicalized write jail: the path-resolution primitives, each
+/// re-checking against this jail's root after canonicalization.
+struct WriteJail {
+    root: PathBuf,
 }
 
-impl FsWriteRoot {
-    /// Canonicalize a directory used as the write jail.
-    pub fn new(root: impl AsRef<Path>) -> Result<Self> {
+impl WriteJail {
+    fn new(root: impl AsRef<Path>) -> Result<Self> {
         let root = root
             .as_ref()
             .canonicalize()
@@ -26,19 +25,7 @@ impl FsWriteRoot {
             "fs_write root is not a directory: {}",
             root.display()
         );
-        Ok(Self {
-            root: Arc::new(root),
-        })
-    }
-
-    /// Build the write, edit, directory-creation, and removal capabilities.
-    pub fn capabilities(&self) -> Vec<Arc<dyn Capability>> {
-        vec![
-            Arc::new(FsWrite(self.clone())),
-            Arc::new(FsEdit(self.clone())),
-            Arc::new(FsCreateDir(self.clone())),
-            Arc::new(FsRemove(self.clone())),
-        ]
+        Ok(Self { root })
     }
 
     fn relative(&self, rel: &str) -> Result<PathBuf> {
@@ -62,10 +49,7 @@ impl FsWriteRoot {
             .context("path has no parent")?
             .canonicalize()
             .with_context(|| format!("parent directory does not exist for {rel}"))?;
-        anyhow::ensure!(
-            parent.starts_with(self.root.as_path()),
-            "path escapes the tool root"
-        );
+        anyhow::ensure!(parent.starts_with(&self.root), "path escapes the tool root");
         Ok(parent.join(candidate.file_name().context("path has no file name")?))
     }
 
@@ -74,10 +58,7 @@ impl FsWriteRoot {
             .relative(rel)?
             .canonicalize()
             .with_context(|| format!("path does not exist inside the tool root: {rel}"))?;
-        anyhow::ensure!(
-            path.starts_with(self.root.as_path()),
-            "path escapes the tool root"
-        );
+        anyhow::ensure!(path.starts_with(&self.root), "path escapes the tool root");
         Ok(path)
     }
 
@@ -88,6 +69,128 @@ impl FsWriteRoot {
         }
         self.resolve_parent(rel)
     }
+}
+
+struct NamedWriteJail {
+    name: String,
+    jail: WriteJail,
+}
+
+#[derive(Clone)]
+/// One or more named canonicalized write jails shared by the write
+/// capabilities. A single jail keeps bare relative paths; with more than one,
+/// callers address files as `<root-name>/<path>`.
+pub struct FsWriteRoot {
+    jails: Arc<Vec<NamedWriteJail>>,
+}
+
+impl FsWriteRoot {
+    /// Canonicalize a single directory used as the write jail. Paths stay bare.
+    pub fn new(root: impl AsRef<Path>) -> Result<Self> {
+        let jail = WriteJail::new(root)?;
+        let name = default_root_name(&jail.root);
+        Ok(Self {
+            jails: Arc::new(vec![NamedWriteJail { name, jail }]),
+        })
+    }
+
+    /// Build from named roots. With one entry paths stay bare; with several,
+    /// the first path segment selects the root by name. Names must be unique
+    /// and free of `/`.
+    pub fn with_named(roots: Vec<(String, PathBuf)>) -> Result<Self> {
+        anyhow::ensure!(!roots.is_empty(), "fs_write requires at least one root");
+        let mut jails = Vec::with_capacity(roots.len());
+        let mut seen = std::collections::HashSet::new();
+        for (name, path) in roots {
+            anyhow::ensure!(!name.is_empty(), "root name cannot be empty");
+            anyhow::ensure!(!name.contains('/'), "root name `{name}` cannot contain `/`");
+            anyhow::ensure!(seen.insert(name.clone()), "duplicate root name `{name}`");
+            let jail = WriteJail::new(&path)?;
+            jails.push(NamedWriteJail { name, jail });
+        }
+        Ok(Self {
+            jails: Arc::new(jails),
+        })
+    }
+
+    /// Build the write, edit, directory-creation, and removal capabilities.
+    pub fn capabilities(&self) -> Vec<Arc<dyn Capability>> {
+        vec![
+            Arc::new(FsWrite(self.clone())),
+            Arc::new(FsEdit(self.clone())),
+            Arc::new(FsCreateDir(self.clone())),
+            Arc::new(FsRemove(self.clone())),
+        ]
+    }
+
+    /// The canonical jail roots (one per named root).
+    pub fn roots(&self) -> Vec<PathBuf> {
+        self.jails.iter().map(|j| j.jail.root.clone()).collect()
+    }
+
+    fn named(&self) -> bool {
+        self.jails.len() > 1
+    }
+
+    fn root_names(&self) -> Vec<&str> {
+        self.jails.iter().map(|j| j.name.as_str()).collect()
+    }
+
+    /// Split a caller path into (jail, jail-relative sub-path). The sub-path is
+    /// empty only when the caller named a root with no file under it.
+    fn locate(&self, rel: &str) -> Result<(&WriteJail, String)> {
+        if self.named() {
+            let rel = rel.trim().trim_start_matches('/');
+            let (name, sub) = match rel.split_once('/') {
+                Some((name, sub)) => (name, sub),
+                None => (rel, ""),
+            };
+            let jail = self
+                .jails
+                .iter()
+                .find(|j| j.name == name)
+                .with_context(|| {
+                    format!(
+                        "unknown root `{name}`; known roots: {}",
+                        self.root_names().join(", ")
+                    )
+                })?;
+            Ok((&jail.jail, sub.trim().to_string()))
+        } else {
+            Ok((&self.jails[0].jail, rel.trim().to_string()))
+        }
+    }
+
+    fn resolve_write(&self, rel: &str) -> Result<PathBuf> {
+        let (jail, sub) = self.locate(rel)?;
+        anyhow::ensure!(!sub.is_empty(), "a file path is required, not just a root");
+        jail.resolve_write(&sub)
+    }
+
+    fn resolve_parent(&self, rel: &str) -> Result<PathBuf> {
+        let (jail, sub) = self.locate(rel)?;
+        anyhow::ensure!(!sub.is_empty(), "a path is required, not just a root");
+        jail.resolve_parent(&sub)
+    }
+
+    fn resolve_existing(&self, rel: &str) -> Result<PathBuf> {
+        let (jail, sub) = self.locate(rel)?;
+        anyhow::ensure!(!sub.is_empty(), "a file path is required, not just a root");
+        jail.resolve_existing(&sub)
+    }
+
+    /// Whether a canonical path is exactly one of the jail roots.
+    fn is_jail_root(&self, path: &Path) -> bool {
+        self.jails.iter().any(|j| j.jail.root == path)
+    }
+}
+
+/// Default display name for a root: its final path component, or `root`.
+fn default_root_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "root".to_string())
 }
 
 struct FsWrite(FsWriteRoot);
@@ -246,8 +349,8 @@ impl Capability for FsRemove {
             anyhow::ensure!(!rel.trim().is_empty(), "cannot remove the tool root");
             let path = self.0.resolve_existing(rel)?;
             // `resolve_existing` canonicalizes, so `.`/`a/..`-style paths that
-            // name the jail itself compare equal to the root here.
-            anyhow::ensure!(path != *self.0.root, "cannot remove the tool root");
+            // name a jail itself compare equal to that root here.
+            anyhow::ensure!(!self.0.is_jail_root(&path), "cannot remove the tool root");
             if path.is_dir() {
                 fs::remove_dir(path)?;
             } else {
@@ -371,6 +474,58 @@ mod tests {
                 .contains("does not exist")
         );
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn multi_root_writes_edits_and_protects_each_root() {
+        let base = std::env::temp_dir().join(format!("huggr-fsw-multi-{}", std::process::id()));
+        let a = base.join("a");
+        let b = base.join("b");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        let root = FsWriteRoot::with_named(vec![
+            ("a".to_string(), a.clone()),
+            ("b".to_string(), b.clone()),
+        ])
+        .unwrap();
+        let sink = ChunkSink::noop();
+
+        // Write and edit addressed by `<root>/<path>`.
+        FsWrite(root.clone())
+            .invoke(json!({ "path": "b/notes.txt", "content": "hello" }), &sink)
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(b.join("notes.txt")).unwrap(), "hello");
+        FsEdit(root.clone())
+            .invoke(
+                json!({ "path": "b/notes.txt", "old": "hello", "new": "bye" }),
+                &sink,
+            )
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(b.join("notes.txt")).unwrap(), "bye");
+        // The other root is untouched and has no such file.
+        assert!(!a.join("notes.txt").exists());
+
+        // Unknown root, jail-root removal, and cross-root traversal all fail.
+        let unknown = FsWrite(root.clone())
+            .invoke(json!({ "path": "c/x.txt", "content": "x" }), &sink)
+            .await
+            .unwrap_err();
+        assert!(unknown["error"].as_str().unwrap().contains("unknown root"));
+        let remove_root = FsRemove(root.clone())
+            .invoke(json!({ "path": "a" }), &sink)
+            .await
+            .unwrap_err();
+        assert!(remove_root["error"].as_str().unwrap().contains("root"));
+        let traversal = FsWrite(root.clone())
+            .invoke(json!({ "path": "a/../b/evil.txt", "content": "x" }), &sink)
+            .await
+            .unwrap_err();
+        assert!(traversal["error"].as_str().unwrap().contains("escapes"));
+        assert!(!b.join("evil.txt").exists());
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[cfg(unix)]

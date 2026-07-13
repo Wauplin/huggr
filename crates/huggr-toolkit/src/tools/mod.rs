@@ -159,6 +159,74 @@ pub enum ToolError {
     },
 }
 
+/// Parse the `root`/`roots` scope of a filesystem grant into resolved
+/// (name, path) pairs. Accepts a single `root = "path"`, or
+/// `roots = ["a", "b"]` / `roots = [{ name = "x", path = "..." }]`. Relative
+/// paths resolve against `base_dir`; a name defaults to the path's final
+/// component. Paths are not required to exist here — the jail canonicalizes.
+pub(crate) fn resolve_roots(
+    config: &serde_json::Value,
+    base_dir: &Path,
+) -> anyhow::Result<Vec<(String, std::path::PathBuf)>> {
+    use anyhow::Context;
+    let resolve = |p: &str| {
+        let path = Path::new(p);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            base_dir.join(path)
+        }
+    };
+    let derive_name = |p: &Path| -> String {
+        p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "root".to_string())
+    };
+    let mut out: Vec<(String, std::path::PathBuf)> = Vec::new();
+    if let Some(roots) = config.get("roots") {
+        let arr = roots
+            .as_array()
+            .context("`roots` must be an array of path strings or { name, path } tables")?;
+        anyhow::ensure!(!arr.is_empty(), "`roots` cannot be empty");
+        for entry in arr {
+            let (name, path) = if let Some(s) = entry.as_str() {
+                let resolved = resolve(s);
+                (derive_name(&resolved), resolved)
+            } else if let Some(obj) = entry.as_object() {
+                let path = obj
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .context("a `roots` table requires string `path`")?;
+                let resolved = resolve(path);
+                let name = obj
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| derive_name(&resolved));
+                (name, resolved)
+            } else {
+                anyhow::bail!(
+                    "each `roots` entry must be a path string or a {{ name, path }} table"
+                );
+            };
+            out.push((name, path));
+        }
+    } else {
+        let root = config.get("root").and_then(|v| v.as_str()).unwrap_or(".");
+        let resolved = resolve(root);
+        out.push((derive_name(&resolved), resolved));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for (name, _) in &out {
+        anyhow::ensure!(
+            seen.insert(name.as_str()),
+            "two roots resolve to the same name `{name}`; give explicit names with `roots = [{{ name = \"...\", path = \"...\" }}]`"
+        );
+    }
+    Ok(out)
+}
+
 /// Build the capabilities a single library grant registers. Relative scope
 /// paths resolve against `base_dir` (the agent crate folder). The `scratchpad`
 /// grant returns an empty vec — the agent runtime provides those tools; the
@@ -176,40 +244,19 @@ pub fn build_library_grant(
     };
     match grant.name.as_str() {
         "fs_read" => {
-            let root = grant
-                .config
-                .get("root")
-                .and_then(|v| v.as_str())
-                .unwrap_or(".");
-            let resolved = {
-                let p = Path::new(root);
-                if p.is_absolute() {
-                    p.to_path_buf()
-                } else {
-                    base_dir.join(p)
-                }
-            };
-            let fs_root = FsRoot::new(&resolved).map_err(cfg)?;
-            Ok(fs_root.capabilities())
+            let roots = resolve_roots(&grant.config, base_dir).map_err(cfg)?;
+            Ok(FsRoot::with_named(roots).map_err(cfg)?.capabilities())
         }
         "fs_write" => {
-            let root = grant
-                .config
-                .get("root")
-                .and_then(|v| v.as_str())
-                .unwrap_or(".");
-            let p = Path::new(root);
-            let resolved = if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                base_dir.join(p)
-            };
-            let mut caps = FsWriteRoot::new(&resolved).map_err(cfg)?.capabilities();
+            let roots = resolve_roots(&grant.config, base_dir).map_err(cfg)?;
+            let mut caps = FsWriteRoot::with_named(roots.clone())
+                .map_err(cfg)?
+                .capabilities();
             // Writing a folder implies reading it: `fs_edit` needs the current
             // bytes, and a writer that cannot read is rarely useful. An explicit
             // `fs_read` grant owns the read jail instead; the host suppresses this
             // overlapping read family when one is present (see `runtime`).
-            caps.extend(FsRoot::new(&resolved).map_err(cfg)?.capabilities());
+            caps.extend(FsRoot::with_named(roots).map_err(cfg)?.capabilities());
             Ok(caps)
         }
         "shell" => {
@@ -284,6 +331,48 @@ mod tests {
                 "delegate"
             ]
         );
+    }
+
+    #[test]
+    fn resolve_roots_parses_single_array_and_tables() {
+        use std::path::PathBuf;
+        let base = Path::new("/tmp");
+        let one = resolve_roots(&json!({ "root": "docs" }), base).unwrap();
+        assert_eq!(one, vec![("docs".to_string(), PathBuf::from("/tmp/docs"))]);
+        // Default single root is `.`.
+        let dot = resolve_roots(&json!({}), base).unwrap();
+        assert_eq!(dot.len(), 1);
+        // Array of strings derives names from the final path component.
+        let many = resolve_roots(&json!({ "roots": ["../repo-a", "../repo-b"] }), base).unwrap();
+        assert_eq!(
+            many.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+            vec!["repo-a", "repo-b"]
+        );
+        // Tables carry explicit names; absolute paths stay absolute.
+        let named = resolve_roots(
+            &json!({ "roots": [{ "name": "x", "path": "../a" }, { "name": "y", "path": "/abs/b" }] }),
+            base,
+        )
+        .unwrap();
+        assert_eq!(named[0], ("x".to_string(), PathBuf::from("/tmp/../a")));
+        assert_eq!(named[1], ("y".to_string(), PathBuf::from("/abs/b")));
+        // Two roots that derive the same name are rejected with guidance.
+        let dup = resolve_roots(&json!({ "roots": ["../a/repo", "../b/repo"] }), base);
+        assert!(dup.is_err());
+    }
+
+    #[test]
+    fn fs_read_grant_with_multiple_roots_builds() {
+        let base =
+            std::env::temp_dir().join(format!("huggr-fsread-multi-grant-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("a")).unwrap();
+        std::fs::create_dir_all(base.join("b")).unwrap();
+        let caps =
+            build_library_grant(&grant("fs_read", json!({ "roots": ["a", "b"] })), &base).unwrap();
+        assert!(caps.iter().any(|c| c.name() == "fs_read"));
+        assert!(caps.iter().any(|c| c.name() == "fs_grep"));
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

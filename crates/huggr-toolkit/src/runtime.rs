@@ -525,32 +525,20 @@ pub async fn build_agent_with_options(
 /// jail; without one, a granted `fs_write` root counts because write implies
 /// read on the same root.
 fn readable_roots(def: &AgentDefinition, base_dir: &Path) -> Vec<PathBuf> {
-    let read_grant = |name: &'static str| {
-        let name = name.to_string();
-        move |grant: &&ToolGrant| grant.kind == ToolKind::Library && grant.name == name
+    let roots_of = |name: &str| -> Vec<PathBuf> {
+        def.tools
+            .iter()
+            .filter(|grant| grant.kind == ToolKind::Library && grant.name == name)
+            .filter_map(|grant| tools::resolve_roots(&grant.config, base_dir).ok())
+            .flatten()
+            .filter_map(|(_, path)| std::fs::canonicalize(path).ok())
+            .collect()
     };
-    let root_of = |grant: &ToolGrant| {
-        let root = grant
-            .config
-            .get("root")
-            .and_then(|v| v.as_str())
-            .unwrap_or(".");
-        std::fs::canonicalize(resolve(base_dir, root)).ok()
-    };
-    let explicit: Vec<PathBuf> = def
-        .tools
-        .iter()
-        .filter(read_grant("fs_read"))
-        .filter_map(root_of)
-        .collect();
+    let explicit = roots_of("fs_read");
     if !explicit.is_empty() {
         return explicit;
     }
-    def.tools
-        .iter()
-        .filter(read_grant("fs_write"))
-        .filter_map(root_of)
-        .collect()
+    roots_of("fs_write")
 }
 
 fn build_delegate_tool(grant: &ToolGrant, base_dir: &Path) -> Result<AgentToolSpec, RuntimeError> {
@@ -1221,6 +1209,36 @@ page_snapshot = 1
         assert_eq!(value["summary_selector"], "fast");
         assert_eq!(value["keep_last_per_tool"]["page_snapshot"], 1);
         assert_eq!(agent.describe().context["kind"], "budget");
+    }
+
+    #[tokio::test]
+    async fn fs_read_manifest_with_multiple_roots_builds() {
+        let base = std::env::temp_dir().join(format!("huggr-multiroot-def-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("repo-a")).unwrap();
+        std::fs::create_dir_all(base.join("repo-b")).unwrap();
+        let src = r#"
+[agent]
+name = "x"
+
+[models]
+default = "balanced"
+
+[tools.fs_read]
+roots = ["repo-a", "repo-b"]
+"#;
+        let mut def = AgentDefinition::parse(src, "huggr.toml").unwrap();
+        def.source_dir = Some(base.clone());
+        let (agent, _warnings) = build_agent(&def).await.unwrap();
+        let tools: Vec<_> = agent
+            .describe()
+            .tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert!(tools.contains(&"fs_read".to_string()), "{tools:?}");
+        assert_eq!(readable_roots(&def, &base).len(), 2);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[tokio::test]

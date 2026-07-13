@@ -142,7 +142,7 @@ type AgentEvent =
   | { type: "answer_ready"; answer: Answer };
 ```
 
-This is the same wire vocabulary as the Rust `--stream` surface and the Python `agent.run(...)` events, so a UI rendering these is portable across all three. `ask` is `run` with a collector: it yields every event, captures `answer_ready`, and returns it. TypeScript currently buffers a model call's text deltas until that call finishes; tool and turn events retain their order.
+This is the same wire vocabulary as the Rust `--stream` surface and the Python `agent.run(...)` events, so a UI rendering these is portable across all three. `ask` is `run` with a collector: it yields every event, captures `answer_ready`, and returns it. TypeScript yields each model text delta as the provider stream delivers it; tool and turn events retain their order.
 
 ## AskOptions: resume, abort, extra
 

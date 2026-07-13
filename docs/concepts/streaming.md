@@ -72,7 +72,7 @@ for await (const event of agent.run("Explain compaction")) {
 }
 ```
 
-TypeScript's `AgentEvent` is a discriminated union on `type` with the identical wire shapes; `ask()` is `run()` with a collector that returns the `answer_ready` payload. Its model text deltas are currently buffered until each model call finishes, while the other events retain their order ([Define an agent in TypeScript](../tutorials/typescript-agent.md)).
+TypeScript's `AgentEvent` is a discriminated union on `type` with the identical wire shapes; `ask()` is `run()` with a collector that returns the `answer_ready` payload. Model text deltas are yielded as the provider stream delivers them, while the other events retain their order ([Define an agent in TypeScript](../tutorials/typescript-agent.md)).
 
 ## Choosing the surface
 

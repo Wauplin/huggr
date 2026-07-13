@@ -10,7 +10,7 @@ export class MockOpenAi {
     this.server = http.createServer((req, res) => {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
-      req.on("end", () => {
+      req.on("end", async () => {
         this.requests.push(JSON.parse(body));
         const output = this.outputs.shift();
         if (!output) {
@@ -19,7 +19,11 @@ export class MockOpenAi {
           return;
         }
         res.writeHead(200, { "content-type": "text/event-stream" });
-        for (const chunk of sseChunks(output)) {
+        const chunks = sseChunks(output);
+        res.write(`data: ${JSON.stringify(chunks.shift())}\n\n`);
+        output.firstChunk?.();
+        if (output.release) await output.release;
+        for (const chunk of chunks) {
           res.write(`data: ${JSON.stringify(chunk)}\n\n`);
         }
         res.write("data: [DONE]\n\n");
@@ -40,6 +44,19 @@ export class MockOpenAi {
 
   scriptText(text) {
     this.outputs.push({ text });
+  }
+
+  scriptPausedText(text) {
+    let release;
+    let firstChunk;
+    const output = {
+      text,
+      release: new Promise((resolve) => { release = resolve; }),
+      firstChunk: () => firstChunk(),
+    };
+    const started = new Promise((resolve) => { firstChunk = resolve; });
+    this.outputs.push(output);
+    return { started, release };
   }
 
   scriptToolCall(name, args, callId = "call_1") {

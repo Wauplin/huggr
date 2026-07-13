@@ -120,6 +120,26 @@ test("event stream ordering", async () => {
   assert.equal(events.at(-1).answer.status, "success");
 });
 
+test("text deltas are yielded before the model stream finishes", async () => {
+  const agent = makeAgent();
+  const gate = server.scriptPausedText('{"answer": "streamed"}');
+  const stream = agent.run("q");
+  assert.equal((await stream.next()).value.type, "ask_started");
+  assert.equal((await stream.next()).value.type, "model_started");
+
+  const pendingDelta = stream.next();
+  await gate.started;
+  const outcome = await Promise.race([
+    pendingDelta.then((event) => ({ event })),
+    new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 200)),
+  ]);
+  gate.release();
+
+  assert.ok("event" in outcome, "text delta stayed buffered until stream completion");
+  assert.equal(outcome.event.value.type, "text_delta");
+  for await (const _event of stream) { /* drain and persist the trace */ }
+});
+
 test("resume and fork with fs store; verify via wasm", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "huggr-ts-test-"));
   const runtime = {

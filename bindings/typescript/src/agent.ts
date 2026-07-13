@@ -22,6 +22,7 @@ import type {
 } from "./contract.js";
 import { STATUS_ERROR, STATUS_SUCCESS } from "./contract.js";
 import { callOpenAiCompatible } from "./openai.js";
+import type { ModelCallHooks, ModelCallSettings, ModelResult } from "./openai.js";
 
 /// The wasm-bindgen surface the Agent drives (crates/huggr-wasm `AgentSession`).
 export interface WasmSessionClass {
@@ -154,13 +155,19 @@ export class Agent {
             break;
           }
           yield { type: "model_started", op, tier: selector };
-          const deltas: AgentEvent[] = [];
           try {
-            const result = await callOpenAiCompatible(payload.request as Json, this.settingsFor(selector, models), {
-              onText: (text) => deltas.push({ type: "text_delta", op, text }),
+            const stream = streamModelCall(payload.request as Json, this.settingsFor(selector, models), {
               signal: effectController.signal,
             });
-            yield* deltas;
+            let result: ModelResult;
+            for (;;) {
+              const item = await stream.next();
+              if (item.done) {
+                result = item.value;
+                break;
+              }
+              yield { type: "text_delta", op, text: item.value };
+            }
             meta.model_calls += 1;
             meta.tokens_in += result.usage.input_tokens;
             meta.tokens_out += result.usage.output_tokens;
@@ -178,7 +185,6 @@ export class Agent {
               ) as Json[]),
             );
           } catch (error) {
-            yield* deltas;
             const message = String((error as Error)?.message ?? error);
             yield { type: "notice", message: `model error: ${message}` };
             queue.push(...(JSON.parse(session.submit_model_error(op, JSON.stringify({ error: message }), Date.now())) as Json[]));
@@ -342,6 +348,49 @@ export class Agent {
     }
     return { providers, models: resolved };
   }
+}
+
+async function* streamModelCall(
+  request: Json,
+  settings: ModelCallSettings,
+  hooks: Omit<ModelCallHooks, "onText">,
+): AsyncGenerator<string, ModelResult> {
+  const deltas: string[] = [];
+  let wake: (() => void) | null = null;
+  let finished = false;
+  const notify = () => {
+    const pending = wake;
+    wake = null;
+    pending?.();
+  };
+  const outcome = callOpenAiCompatible(request, settings, {
+    ...hooks,
+    onText: (text) => {
+      deltas.push(text);
+      notify();
+    },
+  }).then(
+    (result) => ({ result } as const),
+    (error: unknown) => ({ error } as const),
+  ).finally(() => {
+    finished = true;
+    notify();
+  });
+
+  while (!finished || deltas.length > 0) {
+    if (deltas.length === 0) {
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+        if (finished || deltas.length > 0) notify();
+      });
+    }
+    const delta = deltas.shift();
+    if (delta !== undefined) yield delta;
+  }
+
+  const settled = await outcome;
+  if ("error" in settled) throw settled.error;
+  return settled.result;
 }
 
 function abortable<T>(effect: Promise<T> | T, signal: AbortSignal): Promise<T> {

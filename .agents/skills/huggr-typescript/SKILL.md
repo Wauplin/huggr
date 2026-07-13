@@ -64,6 +64,8 @@ Node resolves `HUGGR_AGENT_HOME`, then `HUGGR_HOME/<name>`, then `~/.huggr/<name
 
 The runtime resolves the fixed `fast`, `balanced`, `powerful`, and `max` tiers from its built-in catalog. Pass `modelCatalog` in the optional runtime object to override providers, model ids, and prices. Browsers have no environment variables, so put `api_key` on the runtime provider from a user-controlled settings store and never bake a production secret into a published bundle. Supply custom `TraceStore` and `FeedbackStore` implementations through the runtime when the built-in fs, IndexedDB, or memory stores do not fit.
 
+Provider-reported usage cost is authoritative for answer metadata and `max_cost_micro_usd`; configured token prices are the fallback when the provider reports no cost.
+
 ## Context policy
 
 Pass `context` using manifest-shaped keys:

@@ -42,8 +42,8 @@ export class MockOpenAi {
     return `http://127.0.0.1:${this.server.address().port}/v1`;
   }
 
-  scriptText(text) {
-    this.outputs.push({ text });
+  scriptText(text, usage) {
+    this.outputs.push({ text, usage });
   }
 
   scriptPausedText(text) {
@@ -59,8 +59,8 @@ export class MockOpenAi {
     return { started, release };
   }
 
-  scriptToolCall(name, args, callId = "call_1") {
-    this.outputs.push({ tool: { id: callId, name, args } });
+  scriptToolCall(name, args, callId = "call_1", usage) {
+    this.outputs.push({ tool: { id: callId, name, args }, usage });
   }
 
   close() {
@@ -91,6 +91,6 @@ function sseChunks(output) {
   }
   const chunks = deltas.map((delta) => ({ choices: [{ delta }] }));
   chunks.push({ choices: [{ delta: {}, finish_reason: finish }] });
-  chunks.push({ choices: [], usage: { prompt_tokens: 7, completion_tokens: 3 } });
+  chunks.push({ choices: [], usage: output.usage ?? { prompt_tokens: 7, completion_tokens: 3 } });
   return chunks;
 }

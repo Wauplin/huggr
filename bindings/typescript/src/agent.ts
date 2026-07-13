@@ -19,6 +19,7 @@ import type {
   TraceHead,
   TraceHeader,
   TraceStore,
+  Usage,
 } from "./contract.js";
 import { STATUS_ERROR, STATUS_SUCCESS } from "./contract.js";
 import { callOpenAiCompatible } from "./openai.js";
@@ -171,7 +172,7 @@ export class Agent {
             meta.model_calls += 1;
             meta.tokens_in += result.usage.input_tokens;
             meta.tokens_out += result.usage.output_tokens;
-            meta.cost_micro_usd += this.costMicroUsd(selector, result.usage.input_tokens, result.usage.output_tokens, models);
+            meta.cost_micro_usd += this.costMicroUsd(selector, result.usage, models);
             yield { type: "model_ended", op, usage: result.usage };
             queue.push(
               ...(JSON.parse(
@@ -317,9 +318,17 @@ export class Agent {
     };
   }
 
-  private costMicroUsd(selector: string, tokensIn: number, tokensOut: number, models: ModelCatalog): number {
+  private costMicroUsd(selector: string, usage: Usage, models: ModelCatalog): number {
+    const extra = usage.extra;
+    if (extra && typeof extra === "object" && !Array.isArray(extra)) {
+      const reported = extra.cost;
+      if (typeof reported === "number" && Number.isFinite(reported) && reported >= 0) {
+        return Math.round(reported * 1_000_000);
+      }
+    }
     const tier = this.tierConfig(selector, models);
-    const cost = tokensIn * (tier.input_usd_per_m_tokens ?? 0) + tokensOut * (tier.output_usd_per_m_tokens ?? 0);
+    const cost = usage.input_tokens * (tier.input_usd_per_m_tokens ?? 0)
+      + usage.output_tokens * (tier.output_usd_per_m_tokens ?? 0);
     return Math.round(cost);
   }
 

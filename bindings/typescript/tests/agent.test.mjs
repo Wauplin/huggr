@@ -193,6 +193,24 @@ test("limits trip to error answers", async () => {
   assert.ok(String(answer.response.error).includes("max_model_calls"));
 });
 
+test("provider-reported cost drives metadata and the spending cap", async () => {
+  const agent = makeAgent({ limits: { max_cost_micro_usd: 40 }, tools: [lookupTool([])] });
+  server.scriptToolCall("lookup", { word: "x" }, "call_1", {
+    prompt_tokens: 7,
+    completion_tokens: 3,
+    cost: 0.000_050,
+    cost_source: "router",
+  });
+
+  const answer = await agent.ask("q");
+
+  assert.equal(answer.status, "error");
+  assert.ok(String(answer.response.error).includes("max_cost_micro_usd"));
+  assert.equal(answer.metadata.model_calls, 1);
+  assert.equal(answer.metadata.cost_micro_usd, 50);
+  assert.equal(server.requests.length, 1);
+});
+
 test("feedback round-trip", async () => {
   const agent = makeAgent();
   server.scriptText('{"answer": "x"}');

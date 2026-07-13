@@ -10,7 +10,7 @@ export class MockOpenAi {
     this.server = http.createServer((req, res) => {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
-      req.on("end", () => {
+      req.on("end", async () => {
         this.requests.push(JSON.parse(body));
         const output = this.outputs.shift();
         if (!output) {
@@ -18,8 +18,16 @@ export class MockOpenAi {
           res.end("mock ran out of scripted outputs");
           return;
         }
+        if (output.transportError) {
+          req.socket.destroy();
+          return;
+        }
         res.writeHead(200, { "content-type": "text/event-stream" });
-        for (const chunk of sseChunks(output)) {
+        const chunks = sseChunks(output);
+        res.write(`data: ${JSON.stringify(chunks.shift())}\n\n`);
+        output.firstChunk?.();
+        if (output.release) await output.release;
+        for (const chunk of chunks) {
           res.write(`data: ${JSON.stringify(chunk)}\n\n`);
         }
         res.write("data: [DONE]\n\n");
@@ -38,12 +46,29 @@ export class MockOpenAi {
     return `http://127.0.0.1:${this.server.address().port}/v1`;
   }
 
-  scriptText(text) {
-    this.outputs.push({ text });
+  scriptText(text, usage) {
+    this.outputs.push({ text, usage });
   }
 
-  scriptToolCall(name, args, callId = "call_1") {
-    this.outputs.push({ tool: { id: callId, name, args } });
+  scriptTransportFailure() {
+    this.outputs.push({ transportError: true });
+  }
+
+  scriptPausedText(text) {
+    let release;
+    let firstChunk;
+    const output = {
+      text,
+      release: new Promise((resolve) => { release = resolve; }),
+      firstChunk: () => firstChunk(),
+    };
+    const started = new Promise((resolve) => { firstChunk = resolve; });
+    this.outputs.push(output);
+    return { started, release };
+  }
+
+  scriptToolCall(name, args, callId = "call_1", usage) {
+    this.outputs.push({ tool: { id: callId, name, args }, usage });
   }
 
   close() {
@@ -74,6 +99,6 @@ function sseChunks(output) {
   }
   const chunks = deltas.map((delta) => ({ choices: [{ delta }] }));
   chunks.push({ choices: [{ delta: {}, finish_reason: finish }] });
-  chunks.push({ choices: [], usage: { prompt_tokens: 7, completion_tokens: 3 } });
+  chunks.push({ choices: [], usage: output.usage ?? { prompt_tokens: 7, completion_tokens: 3 } });
   return chunks;
 }

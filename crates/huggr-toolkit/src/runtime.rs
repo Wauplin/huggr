@@ -698,7 +698,8 @@ fn resolve_agent_artifact(grant: &ToolGrant, base_dir: &Path) -> Result<PathBuf,
 /// Run a built agent artifact as a subprocess over the CLI JSON contract:
 /// `<bin> <question> --json [--trace <id>]`, then parse the `Answer`
 /// from stdout. The child inherits `depth` via [`AGENT_DEPTH_ENV`] so a
-/// delegation cycle terminates. Blob forwarding is a later refinement.
+/// delegation cycle terminates. Path and content-addressed blobs forward
+/// through repeatable `--blob` arguments; inline bytes have no CLI form.
 async fn run_subprocess_agent(bin: &Path, ask: Ask, depth: u32) -> Result<Answer, String> {
     let mut cmd = tokio::process::Command::new(bin);
     cmd.kill_on_drop(true);

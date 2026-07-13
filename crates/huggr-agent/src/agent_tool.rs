@@ -89,13 +89,32 @@ fn agent_tool_schema(name: &str, description: &str) -> ToolSchema {
                 "trace_id": { "type": "string", "description": "Resume/fork the huglet's prior trace (from an earlier Answer)." },
                 "blobs": {
                     "type": "array",
-                    "description": "Blob handles to forward to the huglet. A `path` ref is only accepted for files this agent can already read; use `bytes` or `sha256` otherwise.",
+                    "description": "Blob handles to forward to the huglet. A `path` ref is only accepted for files this agent can already read; use `sha256` for shared content-addressed data.",
                     "items": {
                         "type": "object",
                         "properties": {
                             "ref": {
-                                "type": "object",
-                                "description": "One of {\"kind\":\"bytes\",\"base64\":\"…\"}, {\"kind\":\"sha256\",\"sha256\":\"sha256:<64 hex>\"}, or {\"kind\":\"path\",\"path\":\"…\"} (path must be inside a readable root)."
+                                "description": "A shared content address, or a path inside this agent's readable roots.",
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "kind": { "const": "sha256" },
+                                            "sha256": { "type": "string", "pattern": "^sha256:[0-9A-Fa-f]{64}$" }
+                                        },
+                                        "required": ["kind", "sha256"],
+                                        "additionalProperties": false
+                                    },
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "kind": { "const": "path" },
+                                            "path": { "type": "string" }
+                                        },
+                                        "required": ["kind", "path"],
+                                        "additionalProperties": false
+                                    }
+                                ]
                             },
                             "media_type": { "type": "string", "description": "IANA media type of the payload." },
                             "name": { "type": "string", "description": "Suggested file name inside the huglet's scratchpad." }
@@ -205,6 +224,17 @@ mod tests {
             ..Ask::default()
         })
         .unwrap()
+    }
+
+    #[test]
+    fn subprocess_agent_schema_only_advertises_forwardable_blob_refs() {
+        let schema =
+            AgentToolSpec::new("agent_x", "child", echo_resolver(Arc::new(Mutex::new(0)))).schema();
+        let refs = &schema.parameters["properties"]["blobs"]["items"]["properties"]["ref"]["oneOf"];
+        assert_eq!(refs.as_array().unwrap().len(), 2);
+        assert_eq!(refs[0]["properties"]["kind"]["const"], json!("sha256"));
+        assert_eq!(refs[1]["properties"]["kind"]["const"], json!("path"));
+        assert!(!schema.parameters.to_string().contains("bytes"));
     }
 
     async fn invoke_with(roots: Vec<PathBuf>, blob_ref: BlobRef) -> (Result<Value, Value>, u32) {

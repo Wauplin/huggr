@@ -14,7 +14,7 @@ The `huggr-agents` npm package in `bindings/typescript/` is a typed layer over t
 - **`huggr-agents/node`:** the Node runtime: `createAgent(config)`, `loadWasm()` from `./pkg`, `FsTraceStore` / `FsFeedbackStore` under `~/.huggr/<name>/`, and `api_key_env` resolved from `process.env`.
 - **`huggr-agents/browser`:** the browser runtime: `createAgent(config)`, `loadWasm(pkgUrl?)` over `fetch`, `IndexedDbTraceStore` / `IndexedDbFeedbackStore`.
 
-The brain never touches IO. The TS `Agent` is the host: it loads the wasm, drives the submit/poll loop, fetches the model, invokes tools, and persists traces, following the documented runtime boundary.
+The brain never touches IO. The TS `Agent` is the host: it loads the wasm, drives the submit/poll loop, fetches the model, invokes tools, and persists traces, following the documented runtime boundary. Its OpenAI-compatible adapter retries transport failures and 429/5xx responses before a response stream starts; a failure after streaming begins is final.
 
 ## Prerequisites
 
@@ -103,7 +103,7 @@ console.log(answer.metadata.model_calls);      // number
 
 `agent.ask(question, options?): Promise<Answer>` drains the run and returns the final `Answer`.
 
-The `Answer` has the same shape on every surface. It contains `status` (`"success"` or `"error"`), `response` (a `Record<string, Json>` object), `trace_id`, optional `blobs`, and `metadata: AnswerMeta`. Metadata contains `duration_ms`, `cost_micro_usd`, `tokens_in`, `tokens_out`, `model_calls`, and `tool_calls`.
+The `Answer` has the same shape on every surface. It contains `status` (`"success"` or `"error"`), `response` (a `Record<string, Json>` object), `trace_id`, optional `blobs`, and `metadata: AnswerMeta`. Metadata contains `duration_ms`, `cost_micro_usd`, `tokens_in`, `tokens_out`, `model_calls`, and `tool_calls`. A provider-reported cost in the usage payload is authoritative for both metadata and `max_cost_micro_usd`; the resolved tier's token prices are the fallback.
 
 Run errors are answers, not exceptions: a blown limit, missing final model text, or timeout ends `ask`/`run` with an error answer (`status: "error"`, `response.error` set) rather than throwing. Failures outside a run still throw as ordinary exceptions: an invalid config, storage or WASM-loading errors, a runaway session, a `feedback` call for an unknown trace, and `verify` on a drifting trace.
 
@@ -142,7 +142,7 @@ type AgentEvent =
   | { type: "answer_ready"; answer: Answer };
 ```
 
-This is the same wire vocabulary as the Rust `--stream` surface and the Python `agent.run(...)` events, so a UI rendering these is portable across all three. `ask` is `run` with a collector: it yields every event, captures `answer_ready`, and returns it. TypeScript currently buffers a model call's text deltas until that call finishes; tool and turn events retain their order.
+This is the same wire vocabulary as the Rust `--stream` surface and the Python `agent.run(...)` events, so a UI rendering these is portable across all three. `ask` is `run` with a collector: it yields every event, captures `answer_ready`, and returns it. TypeScript yields each model text delta as the provider stream delivers it; tool and turn events retain their order.
 
 ## AskOptions: resume, abort, extra
 
@@ -156,7 +156,7 @@ interface AskOptions {
 }
 ```
 
-- `traceId` resumes/forks: the parent trace is loaded, re-folded into a fresh session via `session.resume_trace(...)`, and the *new* ask writes a new trace with `depends_on` set. Resuming never mutates the old trace; resuming the same id twice forks into two branches.
+- `traceId` resumes/forks: the parent trace is loaded, its recorded context and tool policy is restored, its events are re-folded into a fresh session via `session.resume_trace(...)`, and the *new* ask writes a new trace with `depends_on` set. Resuming never mutates the old trace; resuming the same id twice forks into two branches.
 - `signal` cancels the run; an aborted signal drains the brain via `session.abort(...)` and produces an error answer (`status: "error"`, `response.error: "aborted by caller"`) rather than throwing.
 - `extra` is arbitrary JSON stamped into the trace's meta; for tagging, correlation, anything you want to filter on later.
 
@@ -204,7 +204,7 @@ import { createAgent, IndexedDbTraceStore } from "huggr-agents/browser";
 const agent = createAgent(config, { traces: new IndexedDbTraceStore("my-agent") });
 ```
 
-This wires `loadWasm(pkgUrl?)` (imports `huggr_wasm.js` and initializes the wasm bytes over `fetch`), `IndexedDbTraceStore` (one IndexedDB database per agent, keyed by trace id), `IndexedDbFeedbackStore`, and no `env`; browsers have no environment, so point at `models.api_key` directly.
+This wires `loadWasm(pkgUrl?)` (imports `huggr_wasm.js` and initializes the wasm bytes over `fetch`), `IndexedDbTraceStore` (one IndexedDB database per agent, keyed by trace id), `IndexedDbFeedbackStore`, and no `env`; browsers have no environment, so point at `models.api_key` directly. Trace writes claim their content-derived key with an atomic IndexedDB `add`; concurrent tabs that collide retry with `-N` suffixes without overwriting or failing the ask.
 
 The root export's in-memory stores (`MemTraceStore`, `MemFeedbackStore`) are the reference implementation of the storage seam and double as the "how to write a backend" example; if you want to store traces somewhere neither fs nor IndexedDB covers (a remote service, your app's database), implement `TraceStore`:
 

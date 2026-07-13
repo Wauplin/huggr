@@ -3,10 +3,14 @@ import { after, before, beforeEach, test } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { indexedDB as fakeIndexedDb } from "fake-indexeddb";
 
 import { Agent, MemTraceStore, MemFeedbackStore } from "../dist/index.js";
+import { IndexedDbTraceStore } from "../dist/browser.js";
 import { loadWasm, FsTraceStore, FsFeedbackStore, createAgent } from "../dist/node.js";
 import { MockOpenAi } from "./mock_openai.mjs";
+
+globalThis.indexedDB = fakeIndexedDb;
 
 let server;
 before(async () => {
@@ -22,11 +26,11 @@ function memRuntime() {
   return { loadWasm, traces: new MemTraceStore(), feedback: new MemFeedbackStore() };
 }
 
-function makeAgent({ tools = [], limits, context, runtime = memRuntime() } = {}) {
+function makeAgent({ tools = [], limits, context, system = "Answer as JSON.", runtime = memRuntime() } = {}) {
   return new Agent(
     {
       name: "ts-test-agent",
-      system: "Answer as JSON.",
+      system,
       providers: { test: { base_url: server.baseUrl, api_key: "test-key" } },
       models: {
         default: "balanced",
@@ -105,6 +109,18 @@ test("errors are answers", async () => {
   assert.ok(answer.trace_id);
 });
 
+test("transient transport failures are retried", async () => {
+  const agent = makeAgent();
+  server.scriptTransportFailure();
+  server.scriptText('{"answer": "retried"}');
+
+  const answer = await agent.ask("q");
+
+  assert.equal(answer.status, "success");
+  assert.deepEqual(answer.response, { answer: "retried" });
+  assert.equal(server.requests.length, 2);
+});
+
 test("event stream ordering", async () => {
   const calls = [];
   const agent = makeAgent({ tools: [lookupTool(calls)] });
@@ -118,6 +134,26 @@ test("event stream ordering", async () => {
   assert.ok(types.includes("model_started") && types.includes("text_delta"));
   assert.ok(types.indexOf("tool_started") < types.indexOf("tool_ended"));
   assert.equal(events.at(-1).answer.status, "success");
+});
+
+test("text deltas are yielded before the model stream finishes", async () => {
+  const agent = makeAgent();
+  const gate = server.scriptPausedText('{"answer": "streamed"}');
+  const stream = agent.run("q");
+  assert.equal((await stream.next()).value.type, "ask_started");
+  assert.equal((await stream.next()).value.type, "model_started");
+
+  const pendingDelta = stream.next();
+  await gate.started;
+  const outcome = await Promise.race([
+    pendingDelta.then((event) => ({ event })),
+    new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 200)),
+  ]);
+  gate.release();
+
+  assert.ok("event" in outcome, "text delta stayed buffered until stream completion");
+  assert.equal(outcome.event.value.type, "text_delta");
+  for await (const _event of stream) { /* drain and persist the trace */ }
 });
 
 test("resume and fork with fs store; verify via wasm", async () => {
@@ -151,6 +187,35 @@ test("resume and fork with fs store; verify via wasm", async () => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+test("failed resumed turns do not reuse the parent answer", async () => {
+  const agent = makeAgent();
+  server.scriptText('{"answer": "parent"}');
+  const parent = await agent.ask("first question");
+
+  const resumed = await agent.ask("follow-up", { traceId: parent.trace_id });
+
+  assert.equal(resumed.status, "error");
+  assert.match(String(resumed.response.error), /model did not produce a final answer/);
+  assert.notDeepEqual(resumed.response, parent.response);
+  await agent.verify(resumed.trace_id);
+});
+
+test("resumed turns restore the parent trace policy", async () => {
+  const runtime = memRuntime();
+  const parentAgent = makeAgent({ system: "Original system prompt.", runtime });
+  server.scriptText('{"answer": "parent"}');
+  const parent = await parentAgent.ask("first question");
+
+  const changedAgent = makeAgent({ system: "Changed system prompt.", runtime });
+  server.scriptText('{"answer": "child"}');
+  const child = await changedAgent.ask("follow-up", { traceId: parent.trace_id });
+
+  const systemMessage = server.requests.at(-1).messages.find((message) => message.role === "system");
+  assert.equal(systemMessage.content, "Original system prompt.");
+  assert.equal(child.status, "success");
+  await changedAgent.verify(child.trace_id);
+});
+
 test("limits trip to error answers", async () => {
   const agent = makeAgent({ limits: { max_model_calls: 1 }, tools: [lookupTool([])] });
   server.scriptToolCall("lookup", { word: "x" });
@@ -158,6 +223,24 @@ test("limits trip to error answers", async () => {
   const answer = await agent.ask("q");
   assert.equal(answer.status, "error");
   assert.ok(String(answer.response.error).includes("max_model_calls"));
+});
+
+test("provider-reported cost drives metadata and the spending cap", async () => {
+  const agent = makeAgent({ limits: { max_cost_micro_usd: 40 }, tools: [lookupTool([])] });
+  server.scriptToolCall("lookup", { word: "x" }, "call_1", {
+    prompt_tokens: 7,
+    completion_tokens: 3,
+    cost: 0.000_050,
+    cost_source: "router",
+  });
+
+  const answer = await agent.ask("q");
+
+  assert.equal(answer.status, "error");
+  assert.ok(String(answer.response.error).includes("max_cost_micro_usd"));
+  assert.equal(answer.metadata.model_calls, 1);
+  assert.equal(answer.metadata.cost_micro_usd, 50);
+  assert.equal(server.requests.length, 1);
 });
 
 test("feedback round-trip", async () => {
@@ -178,6 +261,29 @@ test("fs stores reject trace path traversal", async () => {
   await assert.rejects(() => traces.get("../outside"), /invalid trace id/);
   await assert.rejects(() => feedback.list("../outside"), /invalid trace id/);
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("indexeddb trace collision suffixes are allocated atomically", async () => {
+  const agentName = `indexeddb-collision-${Date.now()}-${Math.random()}`;
+  const firstStore = new IndexedDbTraceStore(agentName);
+  const secondStore = new IndexedDbTraceStore(agentName);
+  const trace = { meta: {}, events: [], commands: [], log: [], blobs: { refs: [] } };
+  const header = {
+    agent_name: "browser-test",
+    agent_version: "0.0.0",
+    question: "same question",
+    status: "success",
+  };
+
+  const ids = await Promise.all([
+    firstStore.put(trace, header),
+    secondStore.put(trace, header),
+  ]);
+
+  assert.equal(new Set(ids).size, 2);
+  const [base, suffixed] = [...ids].sort((a, b) => a.length - b.length);
+  assert.equal(suffixed, `${base}-1`);
+  assert.deepEqual((await firstStore.list()).map((head) => head.trace_id).sort(), ids.sort());
 });
 
 test("timeout interrupts a running tool and records cancellation", async () => {

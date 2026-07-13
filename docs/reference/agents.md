@@ -121,7 +121,7 @@ pub struct Answer {
 
 pub struct AnswerMeta {
     pub duration_ms: u64,
-    pub cost_micro_usd: u64,         // folded from per-op usage × per-tier pricing
+    pub cost_micro_usd: u64,         // provider-reported cost, with per-tier pricing as fallback
     pub tokens_in: u64, pub tokens_out: u64,
     pub model_calls: u32, pub tool_calls: u32,
 }
@@ -135,11 +135,13 @@ pub struct Feedback {
 
 `AnswerMeta` is never optional, so an orchestrator can always account for a call. `response` is always a JSON object. Without a declared response contract, plain model text is wrapped as `{ "text": ... }`.
 
+External trace ids must be non-empty and contain only ASCII letters, digits, `-`, or `_`. Invalid ids return an error answer on ask and feedback surfaces, or an ordinary validation error on audit and language APIs; they never reach filesystem path construction.
+
 A typed response contract is a Rust `serde` + `schemars` type. Huggr derives JSON Schema from it, passes that schema to the model provider as `response_format`, and casts the final JSON into the Rust type before returning it. If that cast fails, the agent asks the model to repair the response up to the contract's attempt limit.
 
 A Rust-only final answer hook may then rewrite the `Answer` deterministically at the last host-layer boundary before returning it to the caller. This hook is not a core event and does not enter the trace. `extra` is reserved for non-answer extras and is never load-bearing for the contract.
 
-For `BlobHandle { ref: Bytes | Path | Sha256, media_type }`, inbound blobs are materialized into the scratchpad before the turn starts. Filesystem-backed `Sha256` refs hardlink from the shared blob store when possible and copy otherwise. Outbound files under `out/` are copied into atomically installed shared content-addressed objects and returned by `Sha256` ref, with deduplication by hash.
+For `BlobHandle { ref: Bytes | Path | Sha256, media_type }`, inbound blobs are materialized into the scratchpad before the turn starts. Filesystem-backed `Sha256` refs are verified against their content address, then hardlink from the shared blob store when possible and copy otherwise. Outbound files under `out/` are copied into atomically installed shared content-addressed objects and returned by `Sha256` ref, with deduplication by hash.
 
 The orchestration model:
 
@@ -295,7 +297,7 @@ For an isolated context using the same agent and manifest, `[tools.delegate]` re
 - **The child is a built artifact.** The grant points at a built agent binary. The parent starts it as a subprocess that uses the standard CLI JSON contract, providing one composition mechanism based on the shipped artifact.
 - **Privileges compose downward only.** The child runs under its own manifest, jail, tiers, and limits. Granting an agent never exposes the parent's capabilities to it.
 - **Blob refs compose.** `agent_<name>` tool calls may include `blobs`; `Sha256` refs are passed to the child as `--blob sha256:<hash>` and both processes point at the same `HUGGR_BLOB_STORE`, so large payloads do not cross the process boundary.
-- **Blob refs are screened.** These `blobs` are model-supplied arguments: `sha256` refs must be well-formed content addresses, and `path` refs are accepted only for files inside the parent's own `fs_read` roots, so delegation never reads a file the caller could not.
+- **Blob refs are screened.** The subprocess tool schema advertises only `sha256` and `path` refs because inline `bytes` have no CLI forwarding form. These `blobs` are model-supplied arguments: `sha256` refs must be well-formed content addresses, and `path` refs are accepted only for files inside the parent's own `fs_read` roots, so delegation never reads a file the caller could not.
 - **Feedback composes beside the trace.** A parent model can file feedback on the child trace immediately after delegation through `agent_<name>_feedback`; the parent records the feedback call's result as an ordinary tool result, while the child's trace remains immutable.
 - **Cost folds up.** The child's `Answer.metadata` merges into the parent's `AnswerMeta`, so the orchestrator's cost line stays complete; `huggr stats` also reports direct child-agent delegated cost without recursively walking grandchildren.
 - **Determinism is preserved.** The child's `Answer` (with its `trace_id`) is recorded as the tool's result in the parent trace; replaying the parent never re-runs the child. Recursion depth is capped (`max_agent_depth`).

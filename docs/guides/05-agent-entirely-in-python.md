@@ -72,7 +72,7 @@ async def lookup(word: str) -> dict:
     return {"definition": "async ok"}
 ```
 
-Sync and async tools are interchangeable from the agent's perspective, so choose the form that fits your I/O. A tool that raises an exception does not crash the run. The exception message is sent back to the model as a tool error result, allowing the model to recover and try again or finish the answer.
+Sync and async tools are interchangeable from the agent's perspective, so choose the form that fits your I/O. An async tool runs on a fresh event loop on a worker thread (via `asyncio.run`), not on your program's running loop, so it must be self-contained: create its own clients and await its own I/O. A coroutine that depends on objects bound to another loop (a loop-scoped client, task, lock, or `contextvars` state created elsewhere) will fail. A tool that raises an exception does not crash the run. The exception message is sent back to the model as a tool error result, allowing the model to recover and try again or finish the answer.
 
 ### The `requires_permission` and `background` flags
 

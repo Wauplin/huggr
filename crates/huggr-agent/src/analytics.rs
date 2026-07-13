@@ -313,7 +313,7 @@ fn fold_trace(
 
         if let (Some(selector), Some(usage)) = (&meta.model, &meta.usage) {
             let selector = selector.0.clone();
-            let cost = pricing.cost_micro_usd(&selector, usage.input_tokens, usage.output_tokens);
+            let cost = model_call_cost_micro_usd(pricing, &selector, usage);
             totals.model_calls += 1;
             totals.tokens_in += usage.input_tokens;
             totals.tokens_out += usage.output_tokens;
@@ -363,6 +363,25 @@ fn child_agent_name(tool_name: &str) -> Option<&str> {
         return None;
     }
     Some(child)
+}
+
+/// The cost of one model call in micro-USD, applying the authoritative
+/// accounting rule: a provider-reported cost carried in `Usage.extra` (the
+/// router's actual bill) wins over the manifest tier price, which is itself a
+/// fallback for a call whose provider reported nothing. An unpriced tier with
+/// no reported cost contributes zero (explicitly unknown, never a wrong guess).
+pub(crate) fn model_call_cost_micro_usd(
+    pricing: &Pricing,
+    selector: &str,
+    usage: &huggr_core::Usage,
+) -> u64 {
+    if let Some(usd) = usage.extra.get("cost").and_then(serde_json::Value::as_f64)
+        && usd.is_finite()
+        && usd >= 0.0
+    {
+        return (usd * 1_000_000.0).round() as u64;
+    }
+    pricing.cost_micro_usd(selector, usage.input_tokens, usage.output_tokens)
 }
 
 fn duration_stats(mut durations: Vec<u64>) -> DurationStats {

@@ -72,6 +72,40 @@ async fn stats_fold_models_tools_child_cost_and_feedback() {
 }
 
 #[tokio::test]
+async fn provider_reported_cost_wins_over_the_pricing_table() {
+    let traces = Arc::new(MemTraceStore::new());
+    let feedback = Arc::new(MemFeedbackStore::new());
+    // The table would price this call at 1000 in + 1000 out µUSD = 2 µUSD…
+    let pricing = Pricing::new().with_tier("medium", 1.0, 1.0);
+
+    let trace_id = traces
+        .put(
+            // …but the router reported an actual $0.000123 = 123 µUSD.
+            Trace::new(
+                Vec::new(),
+                vec![model_end_with_reported_cost(
+                    0, 1, "medium", 1000, 1000, 0.000123,
+                )],
+                Some(1),
+            ),
+            TraceHeader::new("stats", "0.1.0", "q", STATUS_SUCCESS),
+        )
+        .await
+        .unwrap();
+
+    let stats = collect_stats(
+        traces,
+        feedback,
+        &pricing,
+        StatsOptions::new().trace(trace_id),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stats.totals.cost_own_micro_usd, 123);
+    assert_eq!(stats.totals.cost_micro_usd, 123);
+}
+
+#[tokio::test]
 async fn stats_for_resumed_trace_only_count_new_suffix() {
     let traces = Arc::new(MemTraceStore::new());
     let feedback = Arc::new(MemFeedbackStore::new());
@@ -150,6 +184,39 @@ fn tool_end(seq: u64, op: u64, started: u64, ended: u64, outcome: OpOutcome) -> 
             op: OpId(op),
             outcome,
             meta: op_meta(started, ended, None, None),
+        },
+    )
+}
+
+/// A model OpEnded whose usage carries a provider-reported cost (USD) in
+/// `extra`, the way the OpenAI adapter records a router's actual bill.
+fn model_end_with_reported_cost(
+    seq: u64,
+    op: u64,
+    selector: &str,
+    input: u64,
+    output: u64,
+    reported_usd: f64,
+) -> LogEntry {
+    let meta: OpMeta = serde_json::from_value(json!({
+        "started_at": seq * 10,
+        "ended_at": seq * 10 + 3,
+        "model": selector,
+        "usage": {
+            "input_tokens": input,
+            "output_tokens": output,
+            "extra": { "cost": reported_usd, "cost_source": "router" }
+        },
+        "extra": null
+    }))
+    .unwrap();
+    LogEntry::new(
+        Seq(seq),
+        Timestamp(seq),
+        Record::OpEnded {
+            op: OpId(op),
+            outcome: OpOutcome::Ok,
+            meta,
         },
     )
 }

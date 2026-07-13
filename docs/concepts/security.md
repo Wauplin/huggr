@@ -25,7 +25,7 @@ The operator is responsible for the process and OS boundary when running an untr
 **`fs_write`** (write access, one canonicalized root):
 
 - **Traversal and symlink escape.** Paths reject absolute and parent components. New targets canonicalize and re-check the existing parent; existing removal targets are canonicalized and re-checked before mutation.
-- **Destructive scope.** Replacement and removal are intentional powers of the grant. Removal is limited to one file or empty directory, but `root = "/"` still grants writes across the process-visible disk.
+- **Destructive scope.** Replacement, in-place editing, and removal are intentional powers of the grant. `fs_edit` canonicalizes and re-checks the existing target like removal does. Removal is limited to one file or empty directory, but `root = "/"` still grants writes across the process-visible disk.
 - **TOCTOU on canonicalize.** A privileged concurrent process can swap a checked path before mutation. Use an outer OS sandbox when the agent or other local processes are untrusted.
 
 **`shell`** (process execution):

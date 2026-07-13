@@ -21,7 +21,7 @@ Absolute tool paths, `..`, and symlink escapes are rejected. A full-disk grant u
 
 ## Filesystem writes
 
-`[tools.fs_write]` accepts `root` (default `.`) and registers `fs_write`, `fs_create_dir`, and `fs_remove`. `fs_write` creates, replaces, or appends to one file whose parent already exists. `fs_create_dir` creates one directory whose parent exists. `fs_remove` removes one file or one empty directory, never removes recursively, and refuses to remove the configured root itself (including via `.` or `a/..` spellings).
+`[tools.fs_write]` accepts `root` (default `.`) and registers `fs_write`, `fs_edit`, `fs_create_dir`, and `fs_remove`. `fs_write` creates, replaces, or appends to one file whose parent already exists. `fs_edit` replaces an exact text occurrence in one existing file; `old` must match verbatim and, unless `replace_all` is set, must occur exactly once. `fs_create_dir` creates one directory whose parent exists. `fs_remove` removes one file or one empty directory, never removes recursively, and refuses to remove the configured root itself (including via `.` or `a/..` spellings).
 
 Write targets and their canonicalized parents must remain under the configured root, including through symlinks. Use `root = "/"` only when the operator intends to grant full-disk writes.
 

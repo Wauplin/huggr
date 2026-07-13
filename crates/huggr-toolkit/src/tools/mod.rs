@@ -60,8 +60,8 @@ pub const CATALOG: &[LibraryToolSpec] = &[
     LibraryToolSpec {
         id: "fs_write",
         privilege: "write",
-        tools: &["fs_write", "fs_create_dir", "fs_remove"],
-        summary: "Root-jailed filesystem writes, directory creation, and removal.",
+        tools: &["fs_write", "fs_edit", "fs_create_dir", "fs_remove"],
+        summary: "Root-jailed filesystem writes, targeted edits, directory creation, and removal.",
     },
     LibraryToolSpec {
         id: "shell",
@@ -291,5 +291,23 @@ mod tests {
         assert_eq!(caps[0].name(), "web_fetch");
         assert!(!caps[0].requires_permission());
         assert_eq!(spec("web_fetch").unwrap().privilege, "network");
+    }
+
+    #[test]
+    fn fs_write_grant_registers_the_edit_capability() {
+        let dir =
+            std::env::temp_dir().join(format!("huggr-fs-write-grant-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let caps = build_library_grant(&grant("fs_write", json!({ "root": "." })), &dir).unwrap();
+        let names: Vec<_> = caps.iter().map(|c| c.name().to_string()).collect();
+        assert!(names.contains(&"fs_edit".to_string()), "{names:?}");
+        // The catalog and the built capabilities agree on the registered set.
+        let mut cataloged: Vec<_> = spec("fs_write").unwrap().tools.to_vec();
+        cataloged.sort_unstable();
+        let mut built = names.clone();
+        built.sort();
+        assert_eq!(built, cataloged);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

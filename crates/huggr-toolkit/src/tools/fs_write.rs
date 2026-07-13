@@ -31,10 +31,11 @@ impl FsWriteRoot {
         })
     }
 
-    /// Build the write, directory-creation, and removal capabilities.
+    /// Build the write, edit, directory-creation, and removal capabilities.
     pub fn capabilities(&self) -> Vec<Arc<dyn Capability>> {
         vec![
             Arc::new(FsWrite(self.clone())),
+            Arc::new(FsEdit(self.clone())),
             Arc::new(FsCreateDir(self.clone())),
             Arc::new(FsRemove(self.clone())),
         ]
@@ -90,6 +91,7 @@ impl FsWriteRoot {
 }
 
 struct FsWrite(FsWriteRoot);
+struct FsEdit(FsWriteRoot);
 struct FsCreateDir(FsWriteRoot);
 struct FsRemove(FsWriteRoot);
 
@@ -134,6 +136,61 @@ impl Capability for FsWrite {
                 fs::write(&path, content)?;
             }
             Ok(json!({"path":rel,"bytes_written":content.len()}))
+        })())
+    }
+}
+
+#[async_trait]
+impl Capability for FsEdit {
+    fn name(&self) -> &str {
+        "fs_edit"
+    }
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "fs_edit",
+            "Replace an exact text occurrence in one existing file under the configured root. `old` must match verbatim and, unless `replace_all` is set, must be unique.",
+            json!({"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string","description":"Exact text to find. Must be non-empty."},"new":{"type":"string","description":"Replacement text."},"replace_all":{"type":"boolean","description":"Replace every occurrence instead of requiring a unique match. Defaults to false."}},"required":["path","old","new"],"additionalProperties":false}),
+        )
+    }
+    fn requires_permission(&self) -> bool {
+        false
+    }
+    async fn invoke(&self, args: Value, _: &ChunkSink) -> std::result::Result<Value, Value> {
+        wrap((|| {
+            let rel = args
+                .get("path")
+                .and_then(Value::as_str)
+                .context("fs_edit requires string `path`")?;
+            let old = args
+                .get("old")
+                .and_then(Value::as_str)
+                .context("fs_edit requires string `old`")?;
+            let new = args
+                .get("new")
+                .and_then(Value::as_str)
+                .context("fs_edit requires string `new`")?;
+            anyhow::ensure!(!old.is_empty(), "`old` must be non-empty");
+            anyhow::ensure!(old != new, "`old` and `new` are identical; nothing to edit");
+            let replace_all = args
+                .get("replace_all")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let path = self.0.resolve_existing(rel)?;
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("reading {rel} for edit (must be UTF-8 text)"))?;
+            let count = content.matches(old).count();
+            anyhow::ensure!(count > 0, "`old` text not found in {rel}");
+            anyhow::ensure!(
+                replace_all || count == 1,
+                "`old` occurs {count} times in {rel}; pass a longer unique match or set replace_all"
+            );
+            let updated = if replace_all {
+                content.replace(old, new)
+            } else {
+                content.replacen(old, new, 1)
+            };
+            fs::write(&path, &updated)?;
+            Ok(json!({"path":rel,"replacements":if replace_all {count} else {1}}))
         })())
     }
 }
@@ -235,6 +292,84 @@ mod tests {
             );
             assert!(dir.is_dir(), "jail root survived `{path}`");
         }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn fs_edit_replaces_a_unique_occurrence() {
+        let dir = std::env::temp_dir().join(format!("huggr-fs-edit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("a.txt"), "hello world").unwrap();
+        let edit = FsEdit(FsWriteRoot::new(&dir).unwrap());
+        let out = edit
+            .invoke(
+                json!({ "path": "a.txt", "old": "world", "new": "there" }),
+                &ChunkSink::noop(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["replacements"], 1);
+        assert_eq!(
+            fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "hello there"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn fs_edit_rejects_ambiguous_match_but_replace_all_takes_it() {
+        let dir = std::env::temp_dir().join(format!("huggr-fs-edit-amb-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("a.txt"), "x x x").unwrap();
+        let edit = FsEdit(FsWriteRoot::new(&dir).unwrap());
+        let sink = ChunkSink::noop();
+        let err = edit
+            .invoke(json!({ "path": "a.txt", "old": "x", "new": "y" }), &sink)
+            .await
+            .unwrap_err();
+        assert!(err["error"].as_str().unwrap().contains("3 times"));
+        let out = edit
+            .invoke(
+                json!({ "path": "a.txt", "old": "x", "new": "y", "replace_all": true }),
+                &sink,
+            )
+            .await
+            .unwrap();
+        assert_eq!(out["replacements"], 3);
+        assert_eq!(fs::read_to_string(dir.join("a.txt")).unwrap(), "y y y");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn fs_edit_errors_on_missing_text_and_missing_file() {
+        let dir = std::env::temp_dir().join(format!("huggr-fs-edit-miss-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("a.txt"), "abc").unwrap();
+        let edit = FsEdit(FsWriteRoot::new(&dir).unwrap());
+        let sink = ChunkSink::noop();
+        let missing_text = edit
+            .invoke(json!({ "path": "a.txt", "old": "zzz", "new": "q" }), &sink)
+            .await
+            .unwrap_err();
+        assert!(
+            missing_text["error"]
+                .as_str()
+                .unwrap()
+                .contains("not found")
+        );
+        let missing_file = edit
+            .invoke(json!({ "path": "nope.txt", "old": "a", "new": "b" }), &sink)
+            .await
+            .unwrap_err();
+        assert!(
+            missing_file["error"]
+                .as_str()
+                .unwrap()
+                .contains("does not exist")
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

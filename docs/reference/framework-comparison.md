@@ -6,12 +6,12 @@ The comparison reflects public documentation and Huggr `main` at commit `3ae15de
 
 ## High-level comparison
 
-| Project | What it is | Good fit | Compared with Huggr |
-| --- | --- | --- | --- |
-| **Huggr** | A toolkit for building small, focused agents as standalone programs | Portable specialist agents that need explicit permissions, typed answers, local traces, and reproducible behavior | Stronger focus on small auditable artifacts, but fewer integrations and production operations features |
-| **CrewAI** | A Python framework for coordinating several agents and workflow steps | Multi-agent automations built as Python applications | More built-in workflow and team coordination features, but less emphasis on a small pure runtime and standalone artifacts |
-| **LangChain, LangGraph, and LangSmith** | A large ecosystem for building, running, testing, and monitoring agent applications | Custom applications that need many model, data, and service integrations | Much broader ecosystem and production tooling, but more components and application setup |
-| **eve** | A TypeScript framework for complete agent applications, including web and messaging entry points | Agents that run as durable web services or connect directly to user channels | More of the application stack is included, but the runtime is broader and its APIs are still beta |
+| Project                                 | What it is                                                                                       | Good fit                                                                                                          | Compared with Huggr                                                                                                       |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **Huggr**                               | A toolkit for building small, focused agents as standalone programs                              | Portable specialist agents that need explicit permissions, typed answers, local traces, and reproducible behavior |                                                                                                                           |
+| **CrewAI**                              | A Python framework for coordinating several agents and workflow steps                            | Multi-agent automations built as Python applications                                                              | More built-in workflow and team coordination features, but less emphasis on a small pure runtime and standalone artifacts |
+| **LangChain, LangGraph, and LangSmith** | A large ecosystem for building, running, testing, and monitoring agent applications              | Custom applications that need many model, data, and service integrations                                          | Much broader ecosystem and production tooling, but more components and application setup                                  |
+| **eve**                                 | A TypeScript framework for complete agent applications, including web and messaging entry points | Agents that run as durable web services or connect directly to user channels                                      | More of the application stack is included, but the runtime is broader and its APIs are still beta                         |
 
 In practical terms:
 

@@ -4,12 +4,10 @@ name: Publish huglet-docs to PyPI
 # trusted publishing (OIDC, no API token). Register this workflow as the
 # project's trusted publisher on PyPI with environment `pypi`.
 #
-# The native extension is abi3-py39, so a single wheel covers all Python >=3.9.
-# It is built inside a manylinux_2_28 image so the wheel is tagged for an older
-# glibc and installs across most Linux distros; building on ubuntu-latest tags
-# manylinux_2_39, which is too new for most systems. Everything (compiling the
-# huggr CLI and running maturin) happens in the same container so the generated
-# project's absolute path dependency stays consistent.
+# The native extension is abi3-py39, so a single build produces one wheel that
+# covers all Python >=3.9. Built on ubuntu-22.04 (glibc 2.35) so the wheel tags
+# manylinux_2_35; ubuntu-latest would tag manylinux_2_39, too new for most
+# systems.
 on:
   workflow_dispatch:
 
@@ -18,18 +16,18 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    container: quay.io/pypa/manylinux_2_28_x86_64
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Install maturin
-        run: /opt/python/cp312-cp312/bin/pip install maturin
+        run: pip install maturin
       - name: Build wheel
-        run: |
-          export PATH="/opt/python/cp312-cp312/bin:$PATH"
-          cargo run -p huggr-toolkit --bin huggr -- build examples/huglet-docs --surface python --release
+        run: cargo run -p huggr-toolkit --bin huggr -- build examples/huglet-docs --surface python --release
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:

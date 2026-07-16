@@ -49,8 +49,7 @@ struct NativeAgent {
 #[pymethods]
 impl NativeAgent {
     #[new]
-    #[pyo3(signature = (config_json, tools, api_token=None))]
-    fn new(config_json: &str, tools: Vec<ToolSpec>, api_token: Option<String>) -> PyResult<Self> {
+    fn new(config_json: &str, tools: Vec<ToolSpec>) -> PyResult<Self> {
         let cfg = parse(config_json, "agent config")?;
         let def = config::definition_from_config(&cfg).map_err(value_err)?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -58,12 +57,8 @@ impl NativeAgent {
             .enable_all()
             .build()
             .map_err(runtime_err)?;
-        let mut options = huggr_toolkit::runtime::RuntimeOptions::default();
-        if let Some(api_token) = api_token {
-            options = options.with_api_token(api_token);
-        }
         let (mut agent, warnings) = runtime
-            .block_on(build_agent_with_options(&def, &options))
+            .block_on(build_agent_with_options(&def, &Default::default()))
             .map_err(runtime_err)?;
         for (name, description, schema_json, requires_permission, background, callable) in tools {
             let schema = parse(&schema_json, "tool schema")?;

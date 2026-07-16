@@ -7,13 +7,11 @@ export class MockOpenAi {
   constructor() {
     this.outputs = [];
     this.requests = [];
-    this.authorizations = [];
     this.server = http.createServer((req, res) => {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", async () => {
         this.requests.push(JSON.parse(body));
-        this.authorizations.push(req.headers.authorization);
         const output = this.outputs.shift();
         if (!output) {
           res.writeHead(500);

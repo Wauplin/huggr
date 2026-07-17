@@ -81,7 +81,7 @@ huggr run my-agent "what's the weather in Paris?"
 
 You get one pretty-printed JSON `Answer` on stdout, while diagnostics go to stderr. Add `--json` for compact single-line output.
 
-The `Answer` carries `status`, your typed `response` object, a `trace_id`, and mandatory `metadata`: duration, cost in micro-USD, tokens, and model/tool call counts.
+The `Answer` carries `status`, your typed `response` object, a `trace_id`, and mandatory `metadata`: duration, cost in micro-USD, tokens, effective model ids, and model/tool call counts.
 
 **The ask path always exits 0.** A missing key, a bad manifest, or a blown limit returns a `status: "error"` answer instead of crashing. See [the Ask and Answer contract](../reference/agents.md#the-ask-and-answer-contract).
 

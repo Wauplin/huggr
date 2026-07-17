@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use huggr_agent::{
-    Agent, AnswerHook, Ask, AskHook, Pricing, ResponseContract, STATUS_ERROR, STATUS_SUCCESS,
-    TraceId, TraceStore,
+    Agent, AnswerHook, Ask, AskHook, ModelDetails, Pricing, ResponseContract, STATUS_ERROR,
+    STATUS_SUCCESS, TraceId, TraceStore,
 };
 use huggr_core::{ModelOutput, ModelRequest, ModelSelector, Record, Usage};
 use huggr_host::{Clock, ModelAdapter, ModelSink};
@@ -84,6 +84,18 @@ fn priced_agent(store: TraceStore, replies: Vec<&'static str>) -> Agent {
         agent.system_prompt = Some("You answer tersely.".into());
         agent.clock = Some(deterministic_clock());
         agent.pricing = Pricing::new().with_tier("medium", 2.0, 5.0);
+        agent.model_details.insert(
+            "medium".into(),
+            ModelDetails {
+                provider: "test".into(),
+                model: "mock-concrete-model".into(),
+                base_url: "http://localhost".into(),
+                api_key_env: "TEST_KEY".into(),
+                api_key_resolved: true,
+                source: "test".into(),
+                resolved_from: "medium".into(),
+            },
+        );
         agent
     }
 }
@@ -293,6 +305,7 @@ async fn pricing_cost_is_folded_from_only_the_new_trace_slice() {
         assert_eq!(answer.metadata.cost_micro_usd, 29);
         assert_eq!(answer.metadata.tokens_in, 7);
         assert_eq!(answer.metadata.tokens_out, 3);
+        assert_eq!(answer.metadata.models, ["mock-concrete-model"]);
         assert_eq!(answer.metadata.model_calls, 1);
     }
 }

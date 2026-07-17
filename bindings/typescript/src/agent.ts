@@ -112,7 +112,7 @@ export class Agent {
       session.resume_trace(JSON.stringify(parent));
     }
 
-    const meta: AnswerMeta = { duration_ms: 0, cost_micro_usd: 0, tokens_in: 0, tokens_out: 0, model_calls: 0, tool_calls: 0 };
+    const meta: AnswerMeta = { duration_ms: 0, cost_micro_usd: 0, tokens_in: 0, tokens_out: 0, models: [], model_calls: 0, tool_calls: 0 };
     const limits = this.config.limits ?? {};
     const deadline = limits.timeout_s ? startedAt + limits.timeout_s * 1000 : null;
     const effectController = new AbortController();
@@ -172,6 +172,8 @@ export class Agent {
             meta.tokens_in += result.usage.input_tokens;
             meta.tokens_out += result.usage.output_tokens;
             meta.cost_micro_usd += this.costMicroUsd(selector, result.usage, models);
+            const model = this.tierConfig(selector, models).model;
+            if (!meta.models.includes(model)) meta.models.push(model);
             yield { type: "model_ended", op, usage: result.usage };
             queue.push(
               ...(JSON.parse(

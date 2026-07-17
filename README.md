@@ -75,7 +75,7 @@ cargo run -p huggr-toolkit --bin huggr -- run examples/huglet-docs ./docs "What 
     "related_documents": [{ "path": "docs/README.md", "url": "https://huggingface.co/docs/docs/README" }]
   },
   "trace_id": "1e4f7d0a9b2c3d44",
-  "metadata": { "duration_ms": 1234, "tokens_in": 1000, "tokens_out": 200, "cost_micro_usd": 1300, "model_calls": 2, "tool_calls": 3 }
+  "metadata": { "duration_ms": 1234, "tokens_in": 1000, "tokens_out": 200, "cost_micro_usd": 1300, "models": ["zai-org/GLM-5.2:together"], "model_calls": 2, "tool_calls": 3 }
 }
 ```
 

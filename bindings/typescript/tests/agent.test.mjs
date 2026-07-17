@@ -68,6 +68,7 @@ test("tool round-trip with accounting", async () => {
   assert.deepEqual(answer.response, { answer: "huggr is a toolkit" });
   assert.deepEqual(calls, [{ word: "huggr" }]);
   assert.equal(answer.metadata.model_calls, 2);
+  assert.deepEqual(answer.metadata.models, ["mock-model"]);
   assert.equal(answer.metadata.tool_calls, 1);
   assert.ok(answer.metadata.cost_micro_usd > 0);
   const second = server.requests[1];

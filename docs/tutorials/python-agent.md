@@ -181,7 +181,7 @@ The `.ok` property is shorthand for `status == STATUS_SUCCESS`. Traced turn fail
 
 ### `AnswerMeta`
 
-`AnswerMeta` carries the mandatory cost accounting: `duration_ms`, `cost_micro_usd`, `tokens_in`, `tokens_out`, `model_calls`, `tool_calls`. Every field is an int defaulting to zero. These numbers come from the runtime's per-op fold; the same ones `huggr stats` aggregates.
+`AnswerMeta` carries mandatory execution metadata: `duration_ms`, `cost_micro_usd`, `tokens_in`, `tokens_out`, `models`, `model_calls`, and `tool_calls`. Numeric fields are ints defaulting to zero. `models` is a list of effective model ids, de-duplicated in first-use order, and defaults to an empty list. The accounting numbers come from the runtime's per-op fold; the same ones `huggr stats` aggregates.
 
 ### Passing blobs
 

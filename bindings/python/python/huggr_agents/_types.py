@@ -174,6 +174,7 @@ class AnswerMetaDict(TypedDict):
     cost_micro_usd: int
     tokens_in: int
     tokens_out: int
+    models: List[str]
     model_calls: int
     tool_calls: int
 
@@ -208,6 +209,7 @@ class AnswerMeta:
     cost_micro_usd: int = 0
     tokens_in: int = 0
     tokens_out: int = 0
+    models: List[str] = field(default_factory=list)
     model_calls: int = 0
     tool_calls: int = 0
 
@@ -218,6 +220,7 @@ class AnswerMeta:
             cost_micro_usd=data.get("cost_micro_usd", 0),
             tokens_in=data.get("tokens_in", 0),
             tokens_out=data.get("tokens_out", 0),
+            models=data.get("models", []),
             model_calls=data.get("model_calls", 0),
             tool_calls=data.get("tool_calls", 0),
         )

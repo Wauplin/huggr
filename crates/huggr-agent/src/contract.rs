@@ -133,8 +133,7 @@ pub const STATUS_SUCCESS: &str = "success";
 /// still a full [`Answer`], exit code 0 on a CLI.
 pub const STATUS_ERROR: &str = "error";
 
-/// Mandatory accounting on every [`Answer`]. Derivable from the persisted trace
-/// alone — `OpMeta` usage × per-tier pricing — including huglet children.
+/// Mandatory execution metadata on every [`Answer`], including huglet children.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnswerMeta {
     /// Wall-clock duration of the ask, in milliseconds.
@@ -145,6 +144,8 @@ pub struct AnswerMeta {
     pub tokens_in: u64,
     /// Total completion tokens across all model calls (children included).
     pub tokens_out: u64,
+    /// Effective model identifiers used by completed calls, in first-use order.
+    pub models: Vec<String>,
     /// Number of model calls made.
     pub model_calls: u32,
     /// Number of tool invocations made.
@@ -162,6 +163,11 @@ impl AnswerMeta {
         self.tokens_out += child.tokens_out;
         self.model_calls += child.model_calls;
         self.tool_calls += child.tool_calls;
+        for model in &child.models {
+            if !self.models.contains(model) {
+                self.models.push(model.clone());
+            }
+        }
     }
 }
 

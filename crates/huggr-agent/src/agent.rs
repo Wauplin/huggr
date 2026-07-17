@@ -612,6 +612,7 @@ impl Agent {
             baseline,
             started.elapsed().as_millis() as u64,
             &self.pricing,
+            &self.model_details,
         );
         // Fold each delegated child agent's spend into this ask's meta.
         for child_meta in child_spend.lock().unwrap().iter() {
@@ -1121,6 +1122,7 @@ fn meta_from_trace(
     baseline: usize,
     duration_ms: u64,
     pricing: &Pricing,
+    model_details: &BTreeMap<String, ModelDetails>,
 ) -> AnswerMeta {
     let mut meta = AnswerMeta {
         duration_ms,
@@ -1136,6 +1138,13 @@ fn meta_from_trace(
             meta.tokens_out += usage.output_tokens;
             meta.cost_micro_usd +=
                 crate::analytics::model_call_cost_micro_usd(pricing, &selector.0, usage);
+            let model = model_details
+                .get(&selector.0)
+                .map(|details| details.model.as_str())
+                .unwrap_or(&selector.0);
+            if !meta.models.iter().any(|used| used == model) {
+                meta.models.push(model.to_string());
+            }
         } else if op.model.is_none() {
             meta.tool_calls += 1;
         }

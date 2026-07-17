@@ -124,6 +124,7 @@ pub struct AnswerMeta {
     pub duration_ms: u64,
     pub cost_micro_usd: u64,         // provider-reported cost, with per-tier pricing as fallback
     pub tokens_in: u64, pub tokens_out: u64,
+    pub models: Vec<String>,         // effective model ids, unique in first-use order
     pub model_calls: u32, pub tool_calls: u32,
 }
 
@@ -134,7 +135,7 @@ pub struct Feedback {
 }
 ```
 
-`AnswerMeta` is never optional, so an orchestrator can always account for a call. `response` is always a JSON object. Without a declared response contract, plain model text is wrapped as `{ "text": ... }`.
+`AnswerMeta` is never optional, so an orchestrator can always account for a call. `models` contains the effective concrete model ids used by completed calls, de-duplicated in first-use order; a custom adapter without an effective mapping reports its registered selector. Delegated child model ids fold into the parent alongside their cost, tokens, and call counts. `response` is always a JSON object. Without a declared response contract, plain model text is wrapped as `{ "text": ... }`.
 
 External trace ids must be non-empty and contain only ASCII letters, digits, `-`, or `_`. Invalid ids return an error answer on ask and feedback surfaces, or an ordinary validation error on audit and language APIs; they never reach filesystem path construction.
 
@@ -301,5 +302,5 @@ For an isolated context using the same agent and manifest, `[tools.delegate]` re
 - **Blob refs compose.** `agent_<name>` tool calls may include `blobs`; `Sha256` refs are passed to the child as `--blob sha256:<hash>` and both processes point at the same `HUGGR_BLOB_STORE`, so large payloads do not cross the process boundary.
 - **Blob refs are screened.** The subprocess tool schema advertises only `sha256` and `path` refs because inline `bytes` have no CLI forwarding form. These `blobs` are model-supplied arguments: `sha256` refs must be well-formed content addresses, and `path` refs are accepted only for files inside the parent's own `fs_read` roots, so delegation never reads a file the caller could not.
 - **Feedback composes beside the trace.** A parent model can file feedback on the child trace immediately after delegation through `agent_<name>_feedback`; the parent records the feedback call's result as an ordinary tool result, while the child's trace remains immutable.
-- **Cost folds up.** The child's `Answer.metadata` merges into the parent's `AnswerMeta`, so the orchestrator's cost line stays complete; `huggr stats` also reports direct child-agent delegated cost without recursively walking grandchildren.
+- **Metadata folds up.** The child's `Answer.metadata` merges models, cost, tokens, and call counts into the parent's `AnswerMeta`, so the orchestrator's execution summary stays complete; `huggr stats` also reports direct child-agent delegated cost without recursively walking grandchildren.
 - **Determinism is preserved.** The child's `Answer` (with its `trace_id`) is recorded as the tool's result in the parent trace; replaying the parent never re-runs the child. Recursion depth is capped (`max_agent_depth`).

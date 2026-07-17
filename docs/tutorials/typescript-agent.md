@@ -98,12 +98,13 @@ console.log(answer.status);              // "success"
 console.log(answer.response);             // { answer: "yes, up to €200" }
 console.log(answer.trace_id);             // "<16 hex chars>"
 console.log(answer.metadata.cost_micro_usd);   // number
+console.log(answer.metadata.models);           // string[]
 console.log(answer.metadata.model_calls);      // number
 ```
 
 `agent.ask(question, options?): Promise<Answer>` drains the run and returns the final `Answer`.
 
-The `Answer` has the same shape on every surface. It contains `status` (`"success"` or `"error"`), `response` (a `Record<string, Json>` object), `trace_id`, optional `blobs`, and `metadata: AnswerMeta`. Metadata contains `duration_ms`, `cost_micro_usd`, `tokens_in`, `tokens_out`, `model_calls`, and `tool_calls`. A provider-reported cost in the usage payload is authoritative for both metadata and `max_cost_micro_usd`; the resolved tier's token prices are the fallback.
+The `Answer` has the same shape on every surface. It contains `status` (`"success"` or `"error"`), `response` (a `Record<string, Json>` object), `trace_id`, optional `blobs`, and `metadata: AnswerMeta`. Metadata contains `duration_ms`, `cost_micro_usd`, `tokens_in`, `tokens_out`, `models`, `model_calls`, and `tool_calls`. `models` contains effective model ids, de-duplicated in first-use order. A provider-reported cost in the usage payload is authoritative for both metadata and `max_cost_micro_usd`; the resolved tier's token prices are the fallback.
 
 Run errors are answers, not exceptions: a blown limit, missing final model text, or timeout ends `ask`/`run` with an error answer (`status: "error"`, `response.error` set) rather than throwing. Failures outside a run still throw as ordinary exceptions: an invalid config, storage or WASM-loading errors, a runaway session, a `feedback` call for an unknown trace, and `verify` on a drifting trace.
 

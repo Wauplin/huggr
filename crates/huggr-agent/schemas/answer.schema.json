@@ -39,6 +39,7 @@
         "cost_micro_usd",
         "tokens_in",
         "tokens_out",
+        "models",
         "model_calls",
         "tool_calls"
       ],
@@ -51,6 +52,11 @@
         },
         "tokens_in": { "type": "integer", "minimum": 0 },
         "tokens_out": { "type": "integer", "minimum": 0 },
+        "models": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Effective model identifiers used by completed calls, in first-use order."
+        },
         "model_calls": { "type": "integer", "minimum": 0 },
         "tool_calls": { "type": "integer", "minimum": 0 }
       }

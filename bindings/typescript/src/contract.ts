@@ -12,6 +12,7 @@ export interface AnswerMeta {
   cost_micro_usd: number;
   tokens_in: number;
   tokens_out: number;
+  models: string[];
   model_calls: number;
   tool_calls: number;
 }

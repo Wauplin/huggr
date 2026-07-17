@@ -34,6 +34,7 @@ The output is the standard Huggr `Answer` JSON:
     "cost_micro_usd": 1300,
     "tokens_in": 1000,
     "tokens_out": 200,
+    "models": ["zai-org/GLM-5.2:together"],
     "model_calls": 2,
     "tool_calls": 3
   },

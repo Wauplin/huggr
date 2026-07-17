@@ -5,7 +5,7 @@
 //! log, and whether a capability needs permission — but never hardcodes those
 //! decisions. Swap the policy to change behaviour without touching the reducer.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -254,6 +254,15 @@ impl TurnPolicy for StaticPolicy {
                 disposition,
             );
         }
+        // Results always follow their call and call ids are unique, so one
+        // pass indexes them for O(1) lookup instead of rescanning the log per
+        // tool call.
+        let mut tool_result_by_call: HashMap<&str, &LogEntry> = HashMap::new();
+        for entry in log {
+            if let Record::ToolResult { call_id, .. } = &entry.record {
+                tool_result_by_call.entry(call_id.as_str()).or_insert(entry);
+            }
+        }
         let mut projected_tool_results = HashSet::new();
         for entry in log {
             if let Some((_, replaces_up_to)) = active_summary
@@ -324,7 +333,7 @@ impl TurnPolicy for StaticPolicy {
                     // changing the append-only log.
                     for call in &output.tool_calls {
                         if let Some(result_entry) =
-                            find_tool_result_for_call(log, entry.seq, &call.id)
+                            tool_result_by_call.get(call.id.as_str()).copied()
                         {
                             if let Record::ToolResult {
                                 call_id,
@@ -529,17 +538,6 @@ impl TurnPolicy for BudgetPolicy {
 
     fn project_context(&self, log: &[LogEntry], budget: TokenBudget) -> ContextPlan {
         let mut plan = self.base.project_context(log, budget);
-        if plan.totals.used_tokens <= u64::from(self.trigger_tokens) {
-            apply_forget_rules(
-                log,
-                &mut plan.entries,
-                &self.tool_ttl,
-                &self.keep_last_per_tool,
-            );
-            plan.totals = totals_for(&plan.entries);
-            return plan;
-        }
-
         apply_forget_rules(
             log,
             &mut plan.entries,
@@ -890,23 +888,6 @@ fn totals_for(entries: &[ContextPlanEntry]) -> ContextBudgetTotals {
         totals.add(&entry.disposition, entry.est_tokens);
     }
     totals
-}
-
-fn find_tool_result_for_call<'a>(
-    log: &'a [LogEntry],
-    after: crate::primitives::Seq,
-    call_id: &str,
-) -> Option<&'a LogEntry> {
-    log.iter().find(|entry| {
-        entry.seq > after
-            && matches!(
-                &entry.record,
-                Record::ToolResult {
-                    call_id: result_call_id,
-                    ..
-                } if result_call_id == call_id
-            )
-    })
 }
 
 #[cfg(test)]

@@ -182,9 +182,12 @@ impl Brain {
             return;
         }
 
+        // Only the tool calls are needed past the durable record; clone just
+        // them instead of the whole output (which carries the full text).
+        let tool_calls = output.tool_calls.clone();
         self.append(Record::ModelOutput {
             op,
-            output: output.clone(),
+            output,
             est_tokens,
         });
         self.end_op(op, OpOutcome::Ok, Some(usage));
@@ -195,7 +198,7 @@ impl Brain {
             // start no new work. Any requested tool calls are never started;
             // log a cancelled result for each so every `tool_use` in the next
             // projection still has a paired `tool_result`.
-            for call in output.tool_calls {
+            for call in tool_calls {
                 self.cancel_unstarted_tool_call(call);
             }
             self.checkpoint();
@@ -203,7 +206,7 @@ impl Brain {
             return;
         }
 
-        if output.tool_calls.is_empty() {
+        if tool_calls.is_empty() {
             // A final answer with no tool calls ends the turn — unless a
             // background op is still running. In that case the turn isn't over:
             // when the background op finishes its result is folded in and a
@@ -214,7 +217,7 @@ impl Brain {
                 self.done(DoneReason::EndTurn);
             }
         } else {
-            for call in output.tool_calls {
+            for call in tool_calls {
                 self.begin_tool_call(call);
             }
             // If every tool call this turn was a background op, nothing blocks

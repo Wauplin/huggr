@@ -2,21 +2,21 @@
 //!
 //! The lineage renderer is pure over a `Vec<TraceHead>`, so it is unit-testable without touching disk.
 
-use huggr_agent::{TraceHead, TraceListing};
+use huggr_agent::TraceListing;
 
-/// Render the lineage forest of a set of trace heads as an indented tree.
+/// Render the lineage forest of a set of trace listings as an indented tree.
 /// Roots are traces whose `depends_on` is absent (or points outside this set);
 /// children nest under their parent. Order is deterministic (by `trace_id`).
-pub fn render_lineage(heads: &[TraceHead]) -> String {
+pub fn render_lineage_with_feedback(heads: &[TraceListing]) -> String {
     if heads.is_empty() {
         return "(no traces)".to_string();
     }
     let ids: std::collections::BTreeSet<&str> = heads.iter().map(|h| h.trace_id.as_str()).collect();
 
     // parent id → child heads, and the roots.
-    let mut children: std::collections::BTreeMap<&str, Vec<&TraceHead>> =
+    let mut children: std::collections::BTreeMap<&str, Vec<&TraceListing>> =
         std::collections::BTreeMap::new();
-    let mut roots: Vec<&TraceHead> = Vec::new();
+    let mut roots: Vec<&TraceListing> = Vec::new();
     for head in heads {
         match &head.depends_on {
             Some(parent) if ids.contains(parent.as_str()) => {
@@ -30,58 +30,9 @@ pub fn render_lineage(heads: &[TraceHead]) -> String {
 
     let mut out = String::new();
     for root in roots {
-        render_node(root, &children, 0, &mut out);
-    }
-    out.trim_end().to_string()
-}
-
-pub fn render_lineage_with_feedback(heads: &[TraceListing]) -> String {
-    if heads.is_empty() {
-        return "(no traces)".to_string();
-    }
-    let ids: std::collections::BTreeSet<&str> = heads.iter().map(|h| h.trace_id.as_str()).collect();
-
-    let mut children: std::collections::BTreeMap<&str, Vec<&TraceListing>> =
-        std::collections::BTreeMap::new();
-    let mut roots: Vec<&TraceListing> = Vec::new();
-    for head in heads {
-        match &head.depends_on {
-            Some(parent) if ids.contains(parent.as_str()) => {
-                children.entry(parent.as_str()).or_default().push(head);
-            }
-            _ => roots.push(head),
-        }
-    }
-    roots.sort_by(|a, b| a.trace_id.as_str().cmp(b.trace_id.as_str()));
-
-    let mut out = String::new();
-    for root in roots {
         render_node_with_feedback(root, &children, 0, &mut out);
     }
     out.trim_end().to_string()
-}
-
-fn render_node(
-    head: &TraceHead,
-    children: &std::collections::BTreeMap<&str, Vec<&TraceHead>>,
-    depth: usize,
-    out: &mut String,
-) {
-    let indent = "  ".repeat(depth);
-    let bullet = if depth == 0 { "•" } else { "└─" };
-    out.push_str(&format!(
-        "{indent}{bullet} {id} [{status}] {question}\n",
-        id = head.trace_id.as_str(),
-        status = head.status,
-        question = truncate(&head.question, 60),
-    ));
-    if let Some(kids) = children.get(head.trace_id.as_str()) {
-        let mut kids = kids.clone();
-        kids.sort_by(|a, b| a.trace_id.as_str().cmp(b.trace_id.as_str()));
-        for kid in kids {
-            render_node(kid, children, depth + 1, out);
-        }
-    }
 }
 
 fn render_node_with_feedback(
@@ -121,7 +72,7 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use huggr_agent::TraceId;
+    use huggr_agent::{TraceHead, TraceId};
 
     fn head(id: &str, parent: Option<&str>, question: &str) -> TraceHead {
         TraceHead::new(
@@ -146,19 +97,19 @@ mod tests {
 
     #[test]
     fn empty_store_renders_placeholder() {
-        assert_eq!(render_lineage(&[]), "(no traces)");
+        assert_eq!(render_lineage_with_feedback(&[]), "(no traces)");
     }
 
     #[test]
     fn fork_tree_renders_as_a_tree() {
         // root → t1 → { t2a, t2b }
         let heads = vec![
-            head("root", None, "start"),
-            head("t1", Some("root"), "follow up"),
-            head("t2a", Some("t1"), "what-if A"),
-            head("t2b", Some("t1"), "what-if B"),
+            listing("root", None, "start", 0),
+            listing("t1", Some("root"), "follow up", 0),
+            listing("t2a", Some("t1"), "what-if A", 0),
+            listing("t2b", Some("t1"), "what-if B", 0),
         ];
-        let tree = render_lineage(&heads);
+        let tree = render_lineage_with_feedback(&heads);
         let lines: Vec<&str> = tree.lines().collect();
         assert_eq!(lines.len(), 4);
         assert!(lines[0].starts_with("• root"), "{tree}");
@@ -180,8 +131,8 @@ mod tests {
     #[test]
     fn orphan_child_becomes_a_root() {
         // A child whose parent isn't in this store still lists (as a root).
-        let heads = vec![head("child", Some("missing-parent"), "q")];
-        let tree = render_lineage(&heads);
+        let heads = vec![listing("child", Some("missing-parent"), "q", 0)];
+        let tree = render_lineage_with_feedback(&heads);
         assert!(tree.starts_with("• child"), "{tree}");
     }
 

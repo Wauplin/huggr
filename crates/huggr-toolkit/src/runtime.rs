@@ -1538,7 +1538,7 @@ root = "out"
         std::fs::write(
             &artifact,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {:?}\nprintf '%s\\n' '{{\"status\":\"success\",\"response\":{{\"ok\":true}},\"trace_id\":\"child-trace\",\"blobs\":[{{\"ref\":{{\"kind\":\"sha256\",\"sha256\":\"sha256:abc\"}},\"media_type\":\"text/plain\",\"name\":\"out.txt\"}}],\"metadata\":{{\"duration_ms\":0,\"cost_micro_usd\":0,\"tokens_in\":0,\"tokens_out\":0,\"model_calls\":0,\"tool_calls\":0}},\"extra\":{{}}}}'\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {:?}\nprintf '%s\\n' '{{\"status\":\"success\",\"response\":{{\"ok\":true}},\"trace_id\":\"child-trace\",\"blobs\":[{{\"ref\":{{\"kind\":\"sha256\",\"sha256\":\"sha256:abc\"}},\"media_type\":\"text/plain\",\"name\":\"out.txt\"}}],\"metadata\":{{\"duration_ms\":0,\"cost_micro_usd\":0,\"tokens_in\":0,\"tokens_out\":0,\"models\":[],\"model_calls\":0,\"tool_calls\":0}},\"extra\":{{}}}}'\n",
                 args_file.display().to_string()
             ),
         )

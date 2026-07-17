@@ -43,6 +43,7 @@ fn full_answer() -> Answer {
         cost_micro_usd: 43,
         tokens_in: 1700,
         tokens_out: 350,
+        models: vec!["gpt-5-mini".into(), "gpt-5".into()],
         model_calls: 3,
         tool_calls: 3,
     };
@@ -149,6 +150,7 @@ fn full_wire_snapshots_are_pinned() {
                 "cost_micro_usd": 43,
                 "tokens_in": 1700,
                 "tokens_out": 350,
+                "models": ["gpt-5-mini", "gpt-5"],
                 "model_calls": 3,
                 "tool_calls": 3
             },
@@ -169,6 +171,26 @@ fn errors_are_answers_with_mandatory_zeroed_meta() {
     let wire = serde_json::to_value(&answer).unwrap();
     assert_eq!(wire["status"], "error");
     assert_eq!(wire["metadata"]["cost_micro_usd"], 0);
+    assert_eq!(wire["metadata"]["models"], json!([]));
+}
+
+#[test]
+fn child_metadata_merges_unique_models_in_order() {
+    let mut parent = AnswerMeta {
+        models: vec!["parent-model".into(), "shared-model".into()],
+        ..AnswerMeta::default()
+    };
+    let child = AnswerMeta {
+        models: vec!["shared-model".into(), "child-model".into()],
+        ..AnswerMeta::default()
+    };
+
+    parent.merge_child(&child);
+
+    assert_eq!(
+        parent.models,
+        ["parent-model", "shared-model", "child-model"]
+    );
 }
 
 #[test]
@@ -184,7 +206,7 @@ fn sparse_wire_forms_keep_loading() {
         "trace_id": "t",
         "metadata": {
             "duration_ms": 1, "cost_micro_usd": 0, "tokens_in": 0, "tokens_out": 0,
-            "model_calls": 0, "tool_calls": 0
+            "models": [], "model_calls": 0, "tool_calls": 0
         }
     }))
     .unwrap();

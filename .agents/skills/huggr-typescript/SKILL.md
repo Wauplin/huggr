@@ -66,7 +66,7 @@ Browser trace writes use atomic IndexedDB `add` claims. Concurrent content-id co
 
 The runtime resolves the fixed `fast`, `balanced`, `powerful`, and `max` tiers from its built-in catalog. The built-in catalog leaves `max` unset, so it falls back to `powerful`. Pass `modelCatalog` in the optional runtime object to override providers, model ids, and prices. [Hugging Face Inference Providers](https://huggingface.co/inference/models) lists provider and model combinations for the built-in `hf` provider. For another OpenAI-compatible service, give it a separate provider alias with its own `base_url` API URL and credential configuration. Browsers have no environment variables, so put `api_key` on the runtime provider from a user-controlled settings store and never bake a production secret into a published bundle. Supply custom `TraceStore` and `FeedbackStore` implementations through the runtime when the built-in fs, IndexedDB, or memory stores do not fit.
 
-Provider-reported usage cost is authoritative for answer metadata and `max_cost_micro_usd`; configured token prices are the fallback when the provider reports no cost.
+`answer.metadata.models` lists effective model ids used by completed calls in first-use order. Provider-reported usage cost is authoritative for answer metadata and `max_cost_micro_usd`; configured token prices are the fallback when the provider reports no cost.
 
 The OpenAI-compatible adapter retries transport failures and 429/5xx responses before streaming begins. Mid-stream failures are final.
 

@@ -75,6 +75,7 @@ def test_sync_tool_round_trip(server, huggr_home):
     assert answer.response == {"answer": "huggr is a toolkit"}
     assert calls == [{"word": "huggr"}]
     assert answer.metadata.model_calls == 2
+    assert answer.metadata.models == ["mock-model"]
     assert answer.metadata.tool_calls == 1
     assert answer.metadata.cost_micro_usd > 0
     # The tool result was sent back to the model on the second request.

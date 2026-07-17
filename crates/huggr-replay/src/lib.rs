@@ -57,7 +57,7 @@ pub use replay::{
 /// The current trace container format version. Bump on any breaking change to
 /// the [`Trace`] layout; older readers reject newer versions (see
 /// [`TraceError::UnsupportedVersion`]).
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 1;
 
 /// The codename written into every trace, so a file is self-identifying.
 pub const CODENAME: &str = "huggr-trace";

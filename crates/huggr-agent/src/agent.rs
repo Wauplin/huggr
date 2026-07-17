@@ -136,6 +136,7 @@ impl StorageOverrides {
 ///
 /// Cheap to share pieces: adapters, capabilities, and the policy are `Arc`s,
 /// so each ask assembles a fresh engine without re-constructing them.
+#[derive(Clone)]
 pub struct Agent {
     pub name: String,
     pub version: String,
@@ -169,38 +170,6 @@ pub struct Agent {
     fs_trace_store: Option<TraceStore>,
     fs_blob_store: Option<FsBlobStore>,
     fs_feedback_store: Option<FsFeedbackStore>,
-}
-
-impl Clone for Agent {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            version: self.version.clone(),
-            description: self.description.clone(),
-            traces: self.traces.clone(),
-            system_prompt: self.system_prompt.clone(),
-            skill_paths: self.skill_paths.clone(),
-            models: self.models.clone(),
-            model_details: self.model_details.clone(),
-            default_model: self.default_model.clone(),
-            capabilities: self.capabilities.clone(),
-            context_policy: self.context_policy.clone(),
-            clock: self.clock.clone(),
-            scratch: self.scratch.clone(),
-            scratch_scope: self.scratch_scope.clone(),
-            blobs: self.blobs.clone(),
-            feedback: self.feedback.clone(),
-            pricing: self.pricing.clone(),
-            limits: self.limits.clone(),
-            response_contract: self.response_contract.clone(),
-            ask_hooks: self.ask_hooks.clone(),
-            answer_hooks: self.answer_hooks.clone(),
-            agent_tools: self.agent_tools.clone(),
-            fs_trace_store: self.fs_trace_store.clone(),
-            fs_blob_store: self.fs_blob_store.clone(),
-            fs_feedback_store: self.fs_feedback_store.clone(),
-        }
-    }
 }
 
 impl Agent {
@@ -654,8 +623,10 @@ impl Agent {
                 .first()
                 .map(|(selector, _)| selector_name(selector))
         });
-        let mut tiers: Vec<_> = self
-            .models
+        // Cards keep registration order: the tier vocabulary and its canonical
+        // ordering are owned by the host that registers the models (the
+        // toolkit registers fast→max), never re-encoded here.
+        self.models
             .iter()
             .map(|(selector, _)| {
                 let selector = selector_name(selector);
@@ -666,20 +637,7 @@ impl Agent {
                     selector,
                 }
             })
-            .collect();
-        tiers.sort_by(|a, b| {
-            let rank = |tier: &str| match tier {
-                "fast" => 0,
-                "balanced" => 1,
-                "powerful" => 2,
-                "max" => 3,
-                _ => 4,
-            };
-            rank(&a.selector)
-                .cmp(&rank(&b.selector))
-                .then_with(|| a.selector.cmp(&b.selector))
-        });
-        tiers
+            .collect()
     }
 }
 

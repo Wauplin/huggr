@@ -202,26 +202,7 @@ fn normalized_rel(path: &str) -> Option<String> {
 /// A cargo-legal package/binary name derived from the agent name. Shared by the
 /// CLI and Python surfaces.
 pub(crate) fn sanitize_crate_name(name: &str) -> String {
-    let mut out: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    // A crate name cannot start with a digit.
-    if out
-        .chars()
-        .next()
-        .map(|c| c.is_ascii_digit())
-        .unwrap_or(true)
-    {
-        out.insert_str(0, "agent-");
-    }
-    out
+    crate::scaffold::sanitize_rust_name(name, '_')
 }
 
 /// The CLI shim's `Cargo.toml`. The empty `[workspace]` table detaches it from

@@ -79,6 +79,25 @@ pub fn global_blob_store_dir() -> PathBuf {
     global_blob_store_dir_from(|key| std::env::var_os(key), std::env::temp_dir())
 }
 
+/// The `.huggr` root every default path hangs off: `HUGGR_HOME`, else
+/// `$HOME/.huggr`, else `<temp>/.huggr`.
+pub(crate) fn huggr_root_from(
+    env: impl Fn(&str) -> Option<OsString>,
+    temp_dir: PathBuf,
+) -> PathBuf {
+    if let Some(base) = env("HUGGR_HOME")
+        && !base.is_empty()
+    {
+        return PathBuf::from(base);
+    }
+    if let Some(home) = env("HOME")
+        && !home.is_empty()
+    {
+        return PathBuf::from(home).join(".huggr");
+    }
+    temp_dir.join(".huggr")
+}
+
 fn global_blob_store_dir_from(
     env: impl Fn(&str) -> Option<OsString>,
     temp_dir: PathBuf,
@@ -88,17 +107,7 @@ fn global_blob_store_dir_from(
     {
         return PathBuf::from(explicit);
     }
-    if let Some(base) = env("HUGGR_HOME")
-        && !base.is_empty()
-    {
-        return PathBuf::from(base).join(DEFAULT_GLOBAL_BLOB_DIRNAME);
-    }
-    if let Some(home) = env("HOME") {
-        return PathBuf::from(home)
-            .join(".huggr")
-            .join(DEFAULT_GLOBAL_BLOB_DIRNAME);
-    }
-    temp_dir.join(".huggr").join(DEFAULT_GLOBAL_BLOB_DIRNAME)
+    huggr_root_from(env, temp_dir).join(DEFAULT_GLOBAL_BLOB_DIRNAME)
 }
 
 fn agent_home_dir_from(
@@ -111,16 +120,7 @@ fn agent_home_dir_from(
     {
         return PathBuf::from(explicit);
     }
-    let name = sanitize_agent_name(agent_name);
-    if let Some(base) = env("HUGGR_HOME")
-        && !base.is_empty()
-    {
-        return PathBuf::from(base).join(name);
-    }
-    if let Some(home) = env("HOME") {
-        return PathBuf::from(home).join(".huggr").join(name);
-    }
-    temp_dir.join(".huggr").join(name)
+    huggr_root_from(env, temp_dir).join(sanitize_agent_name(agent_name))
 }
 
 pub fn agent_home_for_def(def: &AgentDefinition) -> PathBuf {
@@ -372,7 +372,12 @@ pub async fn build_agent_with_options(
     agent.description = def.agent.description.clone();
 
     let mut pricing = Pricing::new();
-    for (tier_name, tier) in &def.models.tiers {
+    // Register tiers in the canonical fast→max order; the agent layer lists
+    // model cards in registration order and never re-encodes this vocabulary.
+    for tier_name in MODEL_TIERS.map(String::from) {
+        let Some(tier) = def.models.tiers.get(&tier_name) else {
+            continue;
+        };
         let provider =
             def.providers
                 .get(&tier.provider)
@@ -400,7 +405,7 @@ pub async fn build_agent_with_options(
         agent.models.push((selector, Arc::new(adapter)));
         let resolution = def
             .model_sources
-            .get(tier_name)
+            .get(&tier_name)
             .cloned()
             .unwrap_or_else(|| crate::manifest::ModelResolution {
                 source: "inline".to_string(),
@@ -929,7 +934,7 @@ async fn run_subprocess_feedback(
 
 /// Resolve a manifest path against the agent crate folder (absolute paths pass
 /// through).
-fn resolve(base_dir: &Path, path: &str) -> PathBuf {
+pub(crate) fn resolve(base_dir: &Path, path: &str) -> PathBuf {
     let p = Path::new(path);
     if p.is_absolute() {
         p.to_path_buf()

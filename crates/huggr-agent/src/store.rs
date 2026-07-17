@@ -525,8 +525,15 @@ impl TraceBackend for MemTraceStore {
     }
 
     async fn head(&self, id: &TraceId) -> Result<TraceHead, StoreError> {
-        let trace = self.get(id).await?;
-        TraceStore::head_from_meta(id, trace.meta)
+        // Clone only the meta, not the trace's full event/log/blob vectors.
+        let meta = self
+            .traces
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|trace| trace.meta.clone())
+            .ok_or_else(|| StoreError::NotFound { id: id.clone() })?;
+        TraceStore::head_from_meta(id, meta)
     }
 
     async fn list(&self) -> Result<Vec<TraceHead>, StoreError> {

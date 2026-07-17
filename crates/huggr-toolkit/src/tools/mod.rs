@@ -11,7 +11,7 @@ mod traces_read;
 mod web_fetch;
 mod web_search;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use huggr_host::Capability;
@@ -263,10 +263,10 @@ pub fn build_library_grant(
         "shell" => {
             let mut config = grant.config.clone();
             if let Some(cwd) = config.get("cwd").and_then(|v| v.as_str()) {
-                let path = Path::new(cwd);
-                if !path.is_absolute() {
-                    config["cwd"] = base_dir.join(path).to_string_lossy().into_owned().into();
-                }
+                config["cwd"] = crate::runtime::resolve(base_dir, cwd)
+                    .to_string_lossy()
+                    .into_owned()
+                    .into();
             }
             Ok(vec![Arc::new(Shell::from_config(&config).map_err(cfg)?)])
         }
@@ -276,13 +276,11 @@ pub fn build_library_grant(
                 .get("root")
                 .and_then(|v| v.as_str())
                 .unwrap_or(".");
-            let resolved = {
-                let p = Path::new(root);
-                if p.is_absolute() || p.starts_with("~") {
-                    p.to_path_buf()
-                } else {
-                    base_dir.join(p)
-                }
+            // `~`-prefixed roots pass through for `TracesRoot` to expand.
+            let resolved = if root.starts_with('~') {
+                PathBuf::from(root)
+            } else {
+                crate::runtime::resolve(base_dir, root)
             };
             let traces_root = TracesRoot::new(&resolved).map_err(cfg)?;
             Ok(traces_root.capabilities())

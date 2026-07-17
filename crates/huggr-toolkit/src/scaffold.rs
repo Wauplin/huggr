@@ -215,7 +215,9 @@ fn lib_rs_for(name: &str) -> String {
     )
 }
 
-fn sanitize_rust_name(name: &str, separator: char) -> String {
+/// A cargo-legal package/binary name derived from the agent name: illegal
+/// chars map to `separator`, and a leading digit gets an `agent-` prefix.
+pub(crate) fn sanitize_rust_name(name: &str, separator: char) -> String {
     let mut out: String = name
         .chars()
         .map(|c| {

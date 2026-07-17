@@ -128,17 +128,7 @@ fn models_file_path_from(env: impl Fn(&str) -> Option<OsString>, temp_dir: PathB
     {
         return PathBuf::from(path);
     }
-    if let Some(base) = env("HUGGR_HOME")
-        && !base.is_empty()
-    {
-        return PathBuf::from(base).join("models.toml");
-    }
-    if let Some(home) = env("HOME")
-        && !home.is_empty()
-    {
-        return PathBuf::from(home).join(".huggr").join("models.toml");
-    }
-    temp_dir.join(".huggr").join("models.toml")
+    crate::runtime::huggr_root_from(env, temp_dir).join("models.toml")
 }
 
 pub fn load_catalog(path: impl AsRef<Path>) -> Result<ModelCatalog, ModelConfigError> {

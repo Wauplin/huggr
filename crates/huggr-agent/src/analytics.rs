@@ -168,9 +168,14 @@ pub async fn collect_stats(
     let mut tools: BTreeMap<String, ToolStats> = BTreeMap::new();
     let mut children: BTreeMap<String, ChildAgentStats> = BTreeMap::new();
 
+    // Parent log lengths, so a parent shared by many forks (or already folded
+    // as its own head) is loaded at most once.
+    let mut log_lens: BTreeMap<TraceId, usize> = BTreeMap::new();
+
     for head in heads {
         let trace = traces.get(&head.trace_id).await?;
-        let baseline = baseline_len(traces.as_ref(), &head).await?;
+        log_lens.insert(head.trace_id.clone(), trace.log.len());
+        let baseline = baseline_len(traces.as_ref(), &head, &mut log_lens).await?;
         let feedback_count = feedback.list(&head.trace_id).await?.len() as u64;
         let totals = fold_trace(
             &trace,
@@ -246,12 +251,19 @@ fn filter_heads(
 async fn baseline_len(
     traces: &dyn TraceBackend,
     head: &TraceHead,
+    log_lens: &mut BTreeMap<TraceId, usize>,
 ) -> Result<usize, AnalyticsError> {
     let Some(parent) = &head.depends_on else {
         return Ok(0);
     };
+    if let Some(len) = log_lens.get(parent) {
+        return Ok(*len);
+    }
     match traces.get(parent).await {
-        Ok(parent_trace) => Ok(parent_trace.log.len()),
+        Ok(parent_trace) => {
+            log_lens.insert(parent.clone(), parent_trace.log.len());
+            Ok(parent_trace.log.len())
+        }
         Err(StoreError::NotFound { .. }) => Ok(0),
         Err(err) => Err(err.into()),
     }

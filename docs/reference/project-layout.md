@@ -24,7 +24,7 @@ huggr/
 │                           #   storage + fetch adapter; hosts the JS modules the chrome-extension vendors
 ├── examples/
 │   ├── huglet-docs/          # the reference huglet crate (docs Q&A) with a typed response contract
-│   ├── huglet-weather/       # the beginner agent; source of the `huggr new --template weather` scaffold
+│   ├── huglet-weather/       # the beginner agent; release-checked source of the packaged weather scaffold
 │   ├── huglet-insights/      # offline self-improvement agent: mines traces + feedback via `traces_read`
 │   ├── huglet-datasmith/     # docs-QA dataset synthesizer: fs_read-jailed, typed QaDataset contract
 │   ├── hf-librarian/       # Python-surface pipeline: the datasmith wheel in-process, a jailed Hub

@@ -18,7 +18,7 @@ The tutorial is self-contained: the next section covers the Huggr concepts it us
 
 **Typed response contracts.** A Rust struct exported as `RESPONSE_RUST_TYPE` becomes the provider's structured-output schema, and the final model JSON is cast into it before it reaches you. Downstream code gets dataclasses, not string parsing. See [Define typed responses and answer hooks](../guides/typed-responses.md).
 
-**One runtime, several surfaces.** The same built agent is a CLI binary, an MCP server (`--mcp-serve`), or a typed Python wheel (`--surface python`). Separately, the `huggr-agents` Python package lets you define new agents directly in Python, with tools as annotated functions and config as data, on the same Rust runtime. See [Package an agent for Python](../guides/package-agent-for-python.md) and [Define an agent in Python](python-agent.md).
+**One runtime, several surfaces.** The same built agent is a CLI binary, an MCP server (`--mcp-serve`), or a typed Python wheel (`--surface python`). Separately, the `huggr-agents` Python package lets you define new agents directly in Python, with tools as annotated functions and config as data, on the same Rust runtime. Install the CLI with `cargo install huggr-toolkit --version 0.0.2 --locked`. See [Package an agent for Python](../guides/package-agent-for-python.md) and [Define an agent in Python](python-agent.md).
 
 ## The datasmith: a synthetic-data specialist in Rust
 

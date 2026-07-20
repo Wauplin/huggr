@@ -4,6 +4,12 @@ In this tutorial, you will scaffold a weather-answering huglet with `huggr new`,
 
 No prior Huggr knowledge is assumed. For the design rationale behind any step, see [the huglet overview](../concepts/overview.md#what-a-huglet-is).
 
+Install the published CLI before starting. Pinning the version keeps generated build crates reproducible:
+
+```bash
+cargo install huggr-toolkit --version 0.0.2 --locked
+```
+
 ## Scaffold the agent
 
 From the directory where you want the new folder to appear, run:
@@ -12,7 +18,7 @@ From the directory where you want the new folder to appear, run:
 huggr new my-agent
 ```
 
-This creates `./my-agent` from the default `weather` template (the checked-in `examples/huglet-weather` crate, embedded at compile time with the name substituted; pass `--template blank` for a tool-free starting point instead). The command refuses to overwrite an existing folder and tells you the next step on stderr.
+This creates `./my-agent` from the default `weather` template (the toolkit package contains a release-checked copy of `examples/huglet-weather`, with the name substituted; pass `--template blank` for a tool-free starting point instead). The command refuses to overwrite an existing folder and tells you the next step on stderr.
 
 ## Anatomy of the generated files
 

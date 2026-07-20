@@ -9,11 +9,12 @@ The idea is that a specialist with a focused prompt and five jailed tools is che
 ## Quickstart
 
 ```bash
-cargo run -p huggr-toolkit --bin huggr -- new my-agent            # scaffold an agent crate
-export HF_TOKEN=hf_...                                            # key for the default Hugging Face provider
-cargo run -p huggr-toolkit --bin huggr -- run my-agent "question" # interpret it (dev loop)
-cargo run -p huggr-toolkit --bin huggr -- build my-agent          # ship it: one standalone binary
-./my-agent/dist/my-agent-cli/target/debug/my-agent "question"    # answers; --trace <id> resumes; --mcp-serve serves MCP
+cargo install huggr-toolkit --version 0.0.2 --locked  # install the published toolkit
+huggr new my-agent                                    # scaffold an agent crate
+export HF_TOKEN=hf_...                                # key for the default Hugging Face provider
+huggr run my-agent "question"                         # interpret it (dev loop)
+huggr build my-agent                                  # ship it: one standalone binary
+./my-agent/dist/my-agent-cli/target/debug/my-agent "question" # answers; --trace <id> resumes; --mcp-serve serves MCP
 ```
 
 Every built binary self-describes: `--describe` (tools, privileges, tiers, pricing, context policy, limits), `--config` (effective identity, models, grants, skills, runtime args, limits, state paths, and response schema, with secrets omitted), `--traces` (stored lineage).
@@ -64,7 +65,7 @@ The built-in library includes jailed filesystem reads and writes, restricted or 
 
 ```bash
 export HF_TOKEN=hf_...
-cargo run -p huggr-toolkit --bin huggr -- run examples/huglet-docs ./docs "What is the narrow-waist rule?" | jq
+huggr run examples/huglet-docs ./docs "What is the narrow-waist rule?" | jq
 ```
 
 ```json
@@ -133,7 +134,7 @@ huggr/
 │   └── typescript/         # the `huggr-agents` TypeScript package (Node + browser)
 ├── examples/
 │   ├── huglet-docs/          # the reference docs-Q&A agent crate with a typed response contract
-│   ├── huglet-weather/       # the beginner agent; source of the `huggr new --template weather` scaffold
+│   ├── huglet-weather/       # the beginner agent; release-checked source of the packaged weather scaffold
 │   ├── huglet-insights/      # offline self-improvement agent over traces and feedback
 │   ├── huglet-datasmith/     # docs-QA dataset synthesizer with a typed QaDataset contract
 │   ├── hf-librarian/       # Python pipeline: datasmith wheel, jailed Hub publisher, judge-graded eval
@@ -145,6 +146,7 @@ huggr/
 
 - [Tutorials](docs/tutorials/README.md) teach a surface end to end.
 - [Guides](docs/guides/README.md) cover specific tasks.
+- [Release Huggr and build huglets in CI](docs/guides/releases-and-ci.md) documents crate publishing and the reusable downstream workflow.
 - [Concepts](docs/concepts/README.md) explain design and behavior.
 - [Reference](docs/reference/README.md) specifies contracts, configuration, packages, and terminology.
 

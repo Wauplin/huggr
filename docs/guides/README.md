@@ -8,3 +8,4 @@ Guides cover one task and assume you already know the basic Huggr workflow. For 
 - [Inspect, replay, and verify traces](inspect-traces.md): inspect trace anatomy, step through replay, verify determinism, and analyze feedback.
 - [Serve and consume MCP](mcp.md): expose a built agent through MCP and grant external MCP servers to an agent.
 - [Configure runtime arguments](runtime-arguments.md): patch supported manifest values at invocation time across CLI, MCP, and generated Python surfaces.
+- [Release Huggr and build huglets in CI](releases-and-ci.md): publish the six native crates as one version and reuse Huggr's build workflow from another repository.

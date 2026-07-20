@@ -9,6 +9,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  release-metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check lockstep release metadata
+        run: |
+          python3 scripts/release.py check
+          python3 -m unittest discover -s scripts -p 'test_release.py'
+      - name: Lint GitHub Actions workflows
+        uses: docker://rhysd/actionlint:1.7.12
+
   test:
     runs-on: ubuntu-latest
     steps:

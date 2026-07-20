@@ -5,8 +5,8 @@
 //! [`bundle`] and wraps the shared [`crate::surface::run_cli`] path, then
 //! invoke `cargo`. The artifact carries its whole agent bundle and needs no repo
 //! checkout to run (it unpacks the bundle into a per-agent home on startup;
-//! see `surface`). Building, however, needs the Rust toolchain and a path back
-//! to this repo's crates (prebuilt-runtime embedding is a later optimization).
+//! see `surface`). Building needs a Rust toolchain. Published toolkits generate
+//! exact registry dependencies; checkout builds patch that dependency locally.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

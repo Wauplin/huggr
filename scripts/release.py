@@ -18,6 +18,14 @@ CRATES = (
     "huggr-toolkit",
 )
 VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+VERSION_PIN_FILES = (
+    "README.md",
+    ".agents/skills/huggr-build-agent/SKILL.md",
+    "docs/guides/package-agent-for-python.md",
+    "docs/guides/releases-and-ci.md",
+    "docs/tutorials/docs-qa-dataset-pipeline.md",
+    "docs/tutorials/first-agent.md",
+)
 
 
 def workspace_version(root: Path = ROOT) -> str:
@@ -51,6 +59,7 @@ def next_version(current: str, bump: str) -> str:
 def set_version(version: str, root: Path = ROOT) -> None:
     if not VERSION_RE.fullmatch(version):
         raise ValueError(f"invalid release version `{version}`; expected MAJOR.MINOR.PATCH")
+    previous = workspace_version(root)
     path = root / "Cargo.toml"
     lines = path.read_text().splitlines(keepends=True)
     section = ""
@@ -96,6 +105,14 @@ def set_version(version: str, root: Path = ROOT) -> None:
         if ref_count != 1 or input_count != 1:
             raise ValueError("downstream release template has unexpected version fields")
         template.write_text(contents)
+    for relative in VERSION_PIN_FILES:
+        pinned = root / relative
+        if not pinned.exists():
+            continue
+        contents = pinned.read_text()
+        if previous not in contents:
+            raise ValueError(f"release pin file `{relative}` does not contain {previous}")
+        pinned.write_text(contents.replace(previous, version))
 
 
 def check(root: Path = ROOT) -> list[str]:
@@ -121,6 +138,11 @@ def check(root: Path = ROOT) -> list[str]:
             errors.append("downstream release template does not pin the workspace release tag")
         if f"huggr_version: {version}" not in contents:
             errors.append("downstream release template does not install the workspace release")
+
+    for relative in VERSION_PIN_FILES:
+        pinned = root / relative
+        if pinned.exists() and version not in pinned.read_text():
+            errors.append(f"release pin file `{relative}` does not contain {version}")
 
     sync_pairs = (
         ("examples/huglet-weather/Cargo.toml", "crates/huggr-toolkit/assets/weather-template/Cargo.toml.txt"),

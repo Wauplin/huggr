@@ -22,6 +22,7 @@ Huggr is a toolkit for building small, self-contained, domain-specific huglets o
 - [Inspect, replay, and verify traces](guides/inspect-traces.md)
 - [Serve and consume MCP](guides/mcp.md)
 - [Configure runtime arguments](guides/runtime-arguments.md)
+- [Release Huggr and build huglets in CI](guides/releases-and-ci.md)
 
 ## Concepts
 

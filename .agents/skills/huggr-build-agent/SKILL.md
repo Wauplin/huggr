@@ -10,7 +10,7 @@ Create a focused agent for one domain. Grant only the capabilities it needs and 
 ## Workflow
 
 1. Read the repository's `AGENTS.md` before changing an existing checkout. Read the relevant documentation under `docs/` before changing framework behavior.
-2. Install the CLI from a Huggr checkout with `cargo install --path crates/huggr-toolkit`, then scaffold with `huggr new <name>` for the weather template or `huggr new <name> --template blank` for a tool-free start.
+2. Install the published CLI with `cargo install huggr-toolkit --version 0.0.2 --locked`. Use `cargo install --path crates/huggr-toolkit` only when developing Huggr itself. Scaffold with `huggr new <name>` for the weather template or `huggr new <name> --template blank` for a tool-free start.
 3. Edit `SYSTEM.md`, `huggr.toml`, and `src/lib.rs`. Keep the prompt domain-specific and the manifest privilege-minimal.
 4. Run `huggr run <agent-dir> "question"`. Inspect `huggr run <agent-dir> -- --describe` and `--config` before trusting the grant surface.
 5. Resume with `--trace <id>` and verify the resulting immutable trace with `huggr verify <agent-dir> <id>`.
@@ -162,6 +162,8 @@ huggr stats ./my-agent
 huggr build ./my-agent --release
 ```
 
+For CI, call `Wauplin/huggr/.github/workflows/build-huglet.yml@v0.0.2` with `huggr_version: 0.0.2`, the manifest folder as `agent_dir`, and `surfaces: cli`, `python`, or `cli,python`. Tool scopes remain in the checked-in `huggr.toml`; the workflow does not accept privilege overrides. It uploads the binary, optional wheel, effective config, agent card, and checksums. See [Release Huggr and build huglets in CI](../../../docs/guides/releases-and-ci.md).
+
 Use `--stream` on a built binary for newline-delimited lifecycle events. A generated Python wheel exposes the same typed vocabulary through `async for event in <module>.run(...)`; `run()` takes the same parameters as `ask()`. Both methods cancel the native ask on `Ctrl+C`, task cancellation, or iterator close. `Answer.metadata.models` lists effective model ids used by completed calls in first-use order. Use `--blob <path>` for inbound files and repeatable `--skill <folder>` for invocation-specific standard Agent Skills. Definition-owned `skills = [...]` paths are manifest-relative; runtime skill paths are caller-relative. Treat `status: "error"` as contract data: ask paths exit 0 even on missing keys, limits, or model failures.
 
 For composition and accounting, read [Compose agents and account for cost](../../../docs/guides/compose-agents.md). For replay diagnosis, use `$huggr-debug-traces` or [Inspect, replay, and verify traces](../../../docs/guides/inspect-traces.md).
@@ -169,7 +171,7 @@ For composition and accounting, read [Compose agents and account for cost](../..
 ## Troubleshoot
 
 - Missing provider key: inspect `--config`, then set the environment variable named by the resolved provider's `api_key_env`; never put the secret in a manifest or catalog. The generated Python wheel's `ask(..., api_token=...)` supplies the credential per call instead of the environment, overriding every provider's `api_key_env` and staying out of the trace.
-- `huggr` is not found: install `crates/huggr-toolkit` from a Huggr checkout and confirm Cargo's bin directory is on `PATH`.
+- `huggr` is not found: install the published `huggr-toolkit` crate and confirm Cargo's bin directory is on `PATH`; use the path install only in a Huggr checkout.
 - Unknown manifest key: compare the failing table with the cheat sheet and `crates/huggr-toolkit/src/manifest.rs`.
 - Tool unavailable: add the narrowest matching grant, then confirm the registered surface with `--describe`.
 - Path resolves unexpectedly: manifest-relative tool roots resolve from the agent crate; runtime argument paths resolve from the caller's current directory.

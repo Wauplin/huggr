@@ -10,7 +10,7 @@ A Huggr agent is defined once, in its crate folder (`huggr.toml` + `SYSTEM.md` +
 
 ## Prerequisites
 
-- A working `huggr` CLI (`cargo install --path crates/huggr-toolkit` from the repo root, or your existing install).
+- A working `huggr` CLI (`cargo install huggr-toolkit --version 0.0.2 --locked`, or `cargo install --path crates/huggr-toolkit` when developing Huggr itself).
 - [maturin](https://www.maturin.rs) on your PATH (`pip install maturin`) as the wheel builder.
 - An API key for the resolved provider. The default catalog reads `HF_TOKEN`.
 

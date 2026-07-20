@@ -38,6 +38,15 @@ class ReleaseTest(unittest.TestCase):
             self.assertIn("build-huglet.yml@v1.2.3", rendered)
             self.assertIn("huggr_version: 1.2.3", rendered)
 
+    def test_set_updates_documented_release_pins(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "Cargo.toml").write_bytes((release.ROOT / "Cargo.toml").read_bytes())
+            pin = root / release.VERSION_PIN_FILES[0]
+            pin.write_text("install 0.0.2 and call @v0.0.2\n")
+            release.set_version("1.2.3", root)
+            self.assertEqual(pin.read_text(), "install 1.2.3 and call @v1.2.3\n")
+
     def test_rejects_non_release_versions(self) -> None:
         with self.assertRaises(ValueError):
             release.next_version("1.2.3-beta.1", "patch")

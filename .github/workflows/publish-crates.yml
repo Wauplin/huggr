@@ -1,0 +1,160 @@
+name: Publish Huggr crates
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Existing lockstep version to publish
+        required: true
+        type: string
+      release_sha:
+        description: Commit expected to contain the release
+        required: true
+        type: string
+  pull_request:
+    types: [closed]
+
+concurrency:
+  group: huggr-crates-publish
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: >-
+      github.event_name == 'workflow_call' ||
+      (github.event.pull_request.merged == true &&
+       github.event.pull_request.base.ref == 'main' &&
+       github.event.pull_request.user.type == 'Bot' &&
+       startsWith(github.event.pull_request.head.ref, 'release/v') &&
+       endsWith(github.event.pull_request.head.ref, '-publish'))
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
+    steps:
+      - id: release
+        name: Resolve version and immutable release commit
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SHA: ${{ inputs.release_sha }}
+          INPUT_VERSION: ${{ inputs.version }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_call" ]]; then
+            version="$INPUT_VERSION"
+            release_sha="$INPUT_SHA"
+          else
+            version=${PR_HEAD#release/v}
+            version=${version%-publish}
+            release_sha="$MERGE_SHA"
+          fi
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "invalid release version: $version" >&2
+            exit 1
+          fi
+          archive=$(mktemp)
+          url="https://static.crates.io/crates/huggr-core/huggr-core-${version}.crate"
+          if curl --fail --silent --show-error --location --output "$archive" "$url" 2>/dev/null; then
+            published_sha=$(tar -xOzf "$archive" "huggr-core-${version}/.cargo_vcs_info.json" | jq -r '.git.sha1')
+            if [[ -z "$published_sha" || "$published_sha" == "null" ]]; then
+              echo "published huggr-core ${version} has no VCS commit" >&2
+              exit 1
+            fi
+            release_sha="$published_sha"
+            echo "Resuming the release commit recorded by huggr-core: $release_sha"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: resolve
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ needs.resolve.outputs.version }}
+      release_sha: ${{ needs.resolve.outputs.release_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.release_sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate release commit
+        env:
+          EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.release_sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(python3 scripts/release.py check)" = "$EXPECTED_VERSION"
+          cargo fmt --all --check
+          cargo clippy --all-targets -- -D warnings
+          env -u HF_TOKEN -u HUGGR_API_KEY cargo test --workspace --all-targets
+          cargo tree -p huggr-core
+      - id: auth
+        name: Authenticate to crates.io with Trusted Publishing
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish missing crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.release_sha }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          published_sha() {
+            local crate=$1
+            local archive
+            archive=$(mktemp)
+            local url="https://static.crates.io/crates/${crate}/${crate}-${VERSION}.crate"
+            if ! curl --fail --silent --show-error --location --output "$archive" "$url" 2>/dev/null; then
+              return 1
+            fi
+            tar -xOzf "$archive" "${crate}-${VERSION}/.cargo_vcs_info.json" | jq -r '.git.sha1'
+          }
+
+          while IFS= read -r crate; do
+            if existing_sha=$(published_sha "$crate"); then
+              if [[ "$existing_sha" != "$RELEASE_SHA" ]]; then
+                echo "$crate $VERSION was published from $existing_sha, expected $RELEASE_SHA" >&2
+                exit 1
+              fi
+              echo "$crate $VERSION already published from this release commit"
+              continue
+            fi
+
+            cargo publish --package "$crate" --locked --registry crates-io
+            for attempt in {1..20}; do
+              if cargo info "${crate}@${VERSION}" --registry crates-io >/dev/null 2>&1; then
+                break
+              fi
+              if [[ "$attempt" == 20 ]]; then
+                echo "$crate $VERSION did not appear in the crates.io index" >&2
+                exit 1
+              fi
+              sleep 15
+            done
+          done < <(python3 scripts/release.py crates)
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          tag="v${VERSION}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release $tag already exists"
+            exit 0
+          fi
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --generate-notes --title "$tag"

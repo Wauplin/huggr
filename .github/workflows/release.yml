@@ -1,0 +1,140 @@
+name: Release Huggr crates
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version change to apply before release
+        required: true
+        default: patch
+        type: choice
+        options:
+          - none
+          - patch
+          - minor
+          - major
+      publish:
+        description: Publish the current or newly bumped version to crates.io
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: huggr-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      current: ${{ steps.version.outputs.current }}
+      target: ${{ steps.version.outputs.target }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - id: version
+        name: Resolve release version
+        env:
+          BUMP: ${{ inputs.bump }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          if [[ "$BUMP" == "none" && "$PUBLISH" != "true" ]]; then
+            echo "bump=none and publish=false is a no-op" >&2
+            exit 1
+          fi
+          current=$(python3 scripts/release.py current)
+          target=$(python3 scripts/release.py next "$BUMP")
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "Current version: $current"
+          echo "Target version: $target"
+
+  version-pr:
+    needs: plan
+    if: inputs.bump != 'none'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - id: app-token
+        name: Create release app token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Refuse a concurrent release PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          existing=$(gh pr list --state open --base main --json headRefName --jq '[.[].headRefName | select(startswith("release/v"))] | join(", ")')
+          if [[ -n "$existing" ]]; then
+            echo "an open release PR already exists: $existing" >&2
+            exit 1
+          fi
+      - name: Update lockstep version
+        env:
+          TARGET_VERSION: ${{ needs.plan.outputs.target }}
+        run: |
+          python3 scripts/release.py set "$TARGET_VERSION"
+          cargo check --workspace --all-targets
+          python3 scripts/release.py check
+      - id: pr
+        name: Commit, push, and open release PR
+        env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PUBLISH: ${{ inputs.publish }}
+          TARGET_VERSION: ${{ needs.plan.outputs.target }}
+        run: |
+          mode=bump-only
+          if [[ "$PUBLISH" == "true" ]]; then
+            mode=publish
+          fi
+          branch="release/v${TARGET_VERSION}-${mode}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            echo "release branch already exists: $branch" >&2
+            exit 1
+          fi
+          git switch -c "$branch"
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${APP_SLUG}[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git diff --cached --check
+          git commit -m "Release v${TARGET_VERSION}"
+          git push --set-upstream origin "$branch"
+          body_file=$(mktemp)
+          {
+            echo "Updates the six native Huggr crates from ${{ needs.plan.outputs.current }} to ${TARGET_VERSION}."
+            echo
+            echo "Publish after merge: ${PUBLISH}"
+            echo
+            echo "Created by the release workflow. CI and branch protection still apply."
+          } > "$body_file"
+          pr_url=$(gh pr create --base main --head "$branch" --title "Release v${TARGET_VERSION}" --body-file "$body_file")
+          gh pr merge --auto --squash "$pr_url"
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "Release PR: $pr_url"
+
+  publish-current:
+    needs: plan
+    if: inputs.bump == 'none' && inputs.publish
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/publish-crates.yml
+    with:
+      version: ${{ needs.plan.outputs.current }}
+      release_sha: ${{ github.sha }}

@@ -17,7 +17,7 @@ Two consequences are worth internalizing:
 - **The manifest is the audit surface.** "This agent has no shell" is a fact about registration you can verify by reading `[tools]`, not a hope that a runtime check holds. `--describe` and `--config` on a built binary show the same facts for a shipped artifact.
 - **The model is the threat actor.** Every tool argument is attacker-controlled, because model output can be steered by anything the model reads. Each capability therefore validates its arguments against its declared scope and returns a semantic error to the model on a violation; a rejected escape attempt is just another tool result.
 
-One grant can register several capabilities. `[tools.fs_read]` registers the eight `fs_*` read tools; `[tools.agent.receipts]` registers `agent_receipts` and `agent_receipts_feedback`. What the model sees is the union of the capabilities behind the grants.
+One grant can register several capabilities. `[tools.fs_read]` registers the seven `fs_*` read tools; `[tools.agent.receipts]` registers `agent_receipts` and `agent_receipts_feedback`. What the model sees is the union of the capabilities behind the grants.
 
 ## Filesystem grants
 
@@ -33,7 +33,7 @@ root = ["./output", "./scratch"]                   # two named write jails
 
 Files are always addressed as `<root-name>/<path>` (a single root included); a name defaults to the path's final component and must be unique. A tree operation with no path spans every root, and `fs_list` with no path lists the root names. Each root is its own canonicalized jail and the jails never merge, so a traversal out of one root cannot reach another.
 
-`fs_read` registers the read-only family: `fs_list`, `fs_search`, `fs_grep`, `fs_glob`, `fs_read`, `fs_read_range`, `fs_read_many`, and `fs_outline`, each with fixed size and match caps (200 KB default reads, 1 MB hard cap, 2,000 entries per listing). `fs_write` registers `fs_write`, `fs_edit`, `fs_create_dir`, and `fs_remove`; `fs_edit` replaces an exact, by-default-unique text match in one existing file, and removal takes one file or one empty directory and is never recursive. Write implies read on the same root(s), so `fs_write` also registers the `fs_read` family jailed to the same root or roots; a separate `[tools.fs_read]` grant, when present, owns the read jail and the write grant does not register those read tools twice.
+`fs_read` registers the read-only family: `fs_list`, `fs_grep`, `fs_glob`, `fs_read`, `fs_read_range`, `fs_read_many`, and `fs_outline`, each with fixed size and match caps (200 KB default reads, 1 MB hard cap, 2,000 entries per listing). `fs_write` registers `fs_write`, `fs_edit`, `fs_create_dir`, and `fs_remove`; `fs_edit` replaces an exact, by-default-unique text match in one existing file, and removal takes one file or one empty directory and is never recursive. Write implies read on the same root(s), so `fs_write` also registers the `fs_read` family jailed to the same root or roots; a separate `[tools.fs_read]` grant, when present, owns the read jail and the write grant does not register those read tools twice.
 
 The jail works the same way in both: tool paths must be relative, `..` and absolute paths are rejected before any filesystem touch, and every resolved target is canonicalized and re-checked against the root, so a symlink inside the root that points outside does not escape. `root = "/"` is an explicit full-disk grant, not a misconfiguration the jail softens; if you write it, you mean it.
 

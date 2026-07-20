@@ -47,7 +47,6 @@ pub const CATALOG: &[LibraryToolSpec] = &[
         privilege: "read_only",
         tools: &[
             "fs_list",
-            "fs_search",
             "fs_grep",
             "fs_glob",
             "fs_read",
@@ -55,7 +54,7 @@ pub const CATALOG: &[LibraryToolSpec] = &[
             "fs_read_many",
             "fs_outline",
         ],
-        summary: "Root-jailed read-only filesystem access (list/search/grep/glob/read/outline).",
+        summary: "Root-jailed read-only filesystem access (list/grep/glob/read/outline).",
     },
     LibraryToolSpec {
         id: "fs_write",
@@ -68,7 +67,6 @@ pub const CATALOG: &[LibraryToolSpec] = &[
             "fs_create_dir",
             "fs_remove",
             "fs_list",
-            "fs_search",
             "fs_grep",
             "fs_glob",
             "fs_read",

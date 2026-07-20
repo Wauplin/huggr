@@ -2,7 +2,7 @@
 //! from the `huglet-docs` retrieval tools: the docs-specific `AI_INDEX`/`is_index`
 //! bits are dropped and the root is a manifest-configured scope.
 //!
-//! One grant registers a family of eight read capabilities over one or more
+//! One grant registers a family of seven read capabilities over one or more
 //! named [`FsRoot`] jails. Files are always addressed as `<root-name>/<path>`;
 //! a tree operation with no path spans every root, and `fs_list` with no path
 //! lists the root names. The family:
@@ -10,7 +10,6 @@
 //! | tool             | purpose                                             |
 //! | ---------------- | --------------------------------------------------- |
 //! | `fs_list`        | list files/dirs (optionally recursive)              |
-//! | `fs_search`      | case-insensitive substring search over text files   |
 //! | `fs_grep`        | regular-expression search over text files            |
 //! | `fs_glob`        | match paths with a glob pattern                      |
 //! | `fs_read`        | read one text file (byte-capped)                    |
@@ -152,11 +151,10 @@ impl FsRoot {
         })
     }
 
-    /// The eight read capabilities backed by these roots.
+    /// The seven read capabilities backed by these roots.
     pub fn capabilities(&self) -> Vec<Arc<dyn Capability>> {
         vec![
             Arc::new(FsList(self.clone())),
-            Arc::new(FsSearch(self.clone())),
             Arc::new(FsGrep(self.clone())),
             Arc::new(FsGlob(self.clone())),
             Arc::new(FsRead(self.clone())),
@@ -349,7 +347,6 @@ macro_rules! read_tool {
 }
 
 read_tool!(FsList, "fs_list");
-read_tool!(FsSearch, "fs_search");
 read_tool!(FsGrep, "fs_grep");
 read_tool!(FsGlob, "fs_glob");
 read_tool!(FsRead, "fs_read");
@@ -668,35 +665,6 @@ fn read_many_impl(root: &FsRoot, args: Value) -> Result<Value> {
 }
 
 #[async_trait]
-impl Capability for FsSearch {
-    fn name(&self) -> &str {
-        "fs_search"
-    }
-    fn schema(&self) -> ToolSchema {
-        ToolSchema::new(
-            "fs_search",
-            "Search text files for a case-insensitive substring across all roots. Returns snippets with `<root>/<path>` paths and line numbers.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Case-insensitive substring to search for." },
-                    "path": { "type": "string", "description": "Optional `<root>` or `<root>/<path>` to scope the search. Omit to search every root." },
-                    "max_matches": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Maximum matches to return. Defaults to 50." }
-                },
-                "required": ["query"],
-                "additionalProperties": false
-            }),
-        )
-    }
-    fn requires_permission(&self) -> bool {
-        false
-    }
-    async fn invoke(&self, args: Value, _sink: &ChunkSink) -> std::result::Result<Value, Value> {
-        wrap(search_impl(&self.0, args))
-    }
-}
-
-#[async_trait]
 impl Capability for FsGrep {
     fn name(&self) -> &str {
         "fs_grep"
@@ -828,59 +796,6 @@ fn glob_impl(root: &FsRoot, args: Value) -> Result<Value> {
         }
     }
     Ok(json!({"matches":matches,"truncated":false}))
-}
-
-fn search_impl(root: &FsRoot, args: Value) -> Result<Value> {
-    let query = args
-        .get("query")
-        .and_then(Value::as_str)
-        .context("fs_search requires string `query`")?
-        .trim();
-    anyhow::ensure!(!query.is_empty(), "fs_search query cannot be empty");
-    let query_lower = query.to_ascii_lowercase();
-    let max_matches = args
-        .get("max_matches")
-        .and_then(Value::as_u64)
-        .unwrap_or(DEFAULT_MAX_MATCHES as u64)
-        .clamp(1, 500) as usize;
-    let files = collect_files(root, args.get("path").and_then(Value::as_str))?;
-    let mut matches = Vec::new();
-    let mut searched_files = 0usize;
-    for file in files {
-        let metadata = match fs::metadata(&file) {
-            Ok(metadata) if metadata.is_file() => metadata,
-            _ => continue,
-        };
-        if !looks_textual(&file) || metadata.len() > DEFAULT_SEARCH_LIMIT_BYTES {
-            continue;
-        }
-        searched_files += 1;
-        let (content, _) = read_utf8_prefix(&file, DEFAULT_SEARCH_LIMIT_BYTES as usize)?;
-        let rel = root.rel_path(&file)?;
-        for (line_idx, line) in content.lines().enumerate() {
-            if line.to_ascii_lowercase().contains(&query_lower) {
-                matches.push(json!({
-                    "path": rel,
-                    "line": line_idx + 1,
-                    "snippet": line.trim(),
-                }));
-                if matches.len() >= max_matches {
-                    return Ok(json!({
-                        "query": query,
-                        "matches": matches,
-                        "searched_files": searched_files,
-                        "truncated": true,
-                    }));
-                }
-            }
-        }
-    }
-    Ok(json!({
-        "query": query,
-        "matches": matches,
-        "searched_files": searched_files,
-        "truncated": false,
-    }))
 }
 
 #[async_trait]
@@ -1023,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn lists_reads_searches_greps_globs_and_outlines() {
+    fn lists_reads_greps_globs_and_outlines() {
         let (_dir, root) = root("basic");
         let listed = list_impl(&root, json!({ "path": "r", "recursive": true })).unwrap();
         let paths: Vec<_> = listed["entries"]
@@ -1037,10 +952,6 @@ mod tests {
 
         let read = read_document(&root, "r/a.md", 1_000_000).unwrap();
         assert!(read["content"].as_str().unwrap().contains("hello world"));
-
-        let searched = search_impl(&root, json!({ "query": "needle" })).unwrap();
-        assert_eq!(searched["matches"].as_array().unwrap().len(), 1);
-        assert_eq!(searched["matches"][0]["path"], "r/sub/b.txt");
 
         let grepped = grep_impl(
             &root,
@@ -1107,9 +1018,9 @@ mod tests {
     }
 
     #[test]
-    fn named_roots_search_across_all_and_scope_to_one() {
+    fn named_roots_grep_across_all_and_scope_to_one() {
         let (_a, _b, root) = multi_root();
-        let all = search_impl(&root, json!({ "query": "needle" })).unwrap();
+        let all = grep_impl(&root, json!({ "pattern": "needle" })).unwrap();
         let paths: Vec<_> = all["matches"]
             .as_array()
             .unwrap()
@@ -1119,7 +1030,7 @@ mod tests {
         assert!(paths.contains(&"a/main.md".to_string()));
         assert!(paths.contains(&"b/lib.md".to_string()));
 
-        let scoped = search_impl(&root, json!({ "query": "needle", "path": "b" })).unwrap();
+        let scoped = grep_impl(&root, json!({ "pattern": "needle", "path": "b" })).unwrap();
         let scoped: Vec<_> = scoped["matches"]
             .as_array()
             .unwrap()

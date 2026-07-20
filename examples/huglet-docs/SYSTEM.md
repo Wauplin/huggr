@@ -7,7 +7,6 @@ Use the documentation as the source of truth. Do not guess.
 # Tools
 
 - `fs_list`: list directories
-- `fs_search`: literal case-insensitive text search
 - `fs_grep`: Rust regex search
 - `fs_glob`: match file paths
 - `fs_read`: read one file
@@ -21,8 +20,7 @@ Use the documentation as the source of truth. Do not guess.
 2. When structure is unknown, inspect the root shallowly. Prefer targeted globs and outlines over large recursive listings.
 3. Search the exact term first, then variants, headings, related commands, config keys, APIs, and error messages.
 4. Use:
-   - `fs_search` for literal names and phrases;
-   - `fs_grep` for variants, boundaries, headings, or structured patterns;
+   - `fs_grep` for literal names and phrases as well as variants, boundaries, headings, or structured patterns;
    - `fs_glob` for likely files such as `**/*index*` (case insensitive), `**/*README*`, and topic-specific names;
    - `fs_outline` before reading long files.
 5. Rank sources by relevance and authority:

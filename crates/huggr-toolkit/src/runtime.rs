@@ -974,7 +974,7 @@ fn runtime_guidance(def: &AgentDefinition) -> String {
     // `fs_write` implies read on the same root, so the read family is available
     // whenever either grant is present.
     if grants.contains("fs_read") || grants.contains("fs_write") {
-        lines.push("- Read-only filesystem tools are scoped to their configured root. Use `fs_list`, `fs_search`, `fs_grep`, or `fs_glob` to locate relevant files, then `fs_read`, `fs_read_range`, or `fs_read_many` to inspect only what the task needs. Use `fs_outline` to understand large source files without reading them in full.".to_string());
+        lines.push("- Read-only filesystem tools are scoped to their configured root. Use `fs_list`, `fs_grep`, or `fs_glob` to locate relevant files, then `fs_read`, `fs_read_range`, or `fs_read_many` to inspect only what the task needs. Use `fs_outline` to understand large source files without reading them in full.".to_string());
     }
     if grants.contains("fs_write") {
         lines.push("- Filesystem write tools are scoped to their configured root and can read it too (write implies read). Use `fs_write` for requested persistent files, `fs_edit` to replace an exact snippet in an existing file instead of rewriting it whole, `fs_create_dir` for one directory, and `fs_remove` only when removal is part of the task. These files are separate from caller-facing blob output under the scratchpad's `out/` directory.".to_string());
@@ -1077,7 +1077,7 @@ root = "."
         assert!(prompt.contains("Agent policy-docs has tools:"));
         assert!(prompt.contains("fs_read"));
         assert!(prompt.contains("scratch_read"));
-        assert!(prompt.contains("Use `fs_list`, `fs_search`, `fs_grep`, or `fs_glob`"));
+        assert!(prompt.contains("Use `fs_list`, `fs_grep`, or `fs_glob`"));
         assert!(!prompt.contains("Use `web_fetch` to retrieve"));
         assert!(!prompt.contains("{{"), "all vars substituted: {prompt}");
     }
@@ -1109,7 +1109,7 @@ allow_hosts = ["example.com"]
         assert!(prompt.contains("Use `web_fetch` to retrieve"));
         // `fs_write` implies read, so the read-family guidance appears without a
         // separate `fs_read` grant.
-        assert!(prompt.contains("Use `fs_list`, `fs_search`, `fs_grep`, or `fs_glob`"));
+        assert!(prompt.contains("Use `fs_list`, `fs_grep`, or `fs_glob`"));
         assert!(!prompt.contains("Durable memory is shared"));
     }
 
@@ -1206,17 +1206,57 @@ allow_hosts = ["example.com"]
         let mut def = AgentDefinition::parse(DEF, "huggr.toml").unwrap();
         def.source_dir = Some(std::env::temp_dir());
         // fs_read root "." resolves to temp_dir (exists).
-        let (agent, warnings) = build_agent(&def).await.unwrap();
+        let (agent, warnings) =
+            build_agent_with_options(&def, &RuntimeOptions::default().with_api_token("test-key"))
+                .await
+                .unwrap();
         let card = agent.describe();
         assert_eq!(card.name, "policy-docs");
         // The fs_read family plus the three scratch tools are on the card.
         let tool_names: Vec<_> = card.tools.iter().map(|t| t.name.as_str()).collect();
         assert!(tool_names.contains(&"fs_read"));
-        assert!(tool_names.contains(&"fs_search"));
         assert!(tool_names.contains(&"fs_grep"));
         assert!(tool_names.contains(&"fs_glob"));
         assert!(tool_names.contains(&"scratch_write"));
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[tokio::test]
+    async fn build_warns_once_when_provider_api_key_env_is_unset() {
+        // A full four-tier manifest sharing one provider whose `api_key_env`
+        // names an env var no test process sets. The warning is deduplicated,
+        // so the single unresolved provider yields exactly one warning.
+        let src = r#"
+[agent]
+name = "x"
+
+[providers.local]
+base_url = "http://localhost"
+api_key_env = "HUGGR_TEST_MISSING_API_KEY"
+
+[models]
+default = "balanced"
+
+[models.fast]
+provider = "local"
+model = "m"
+[models.balanced]
+provider = "local"
+model = "m"
+[models.powerful]
+provider = "local"
+model = "m"
+[models.max]
+provider = "local"
+model = "m"
+"#;
+        let def = AgentDefinition::parse(src, "huggr.toml").unwrap();
+        let (_agent, warnings) = build_agent(&def).await.unwrap();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("HUGGR_TEST_MISSING_API_KEY"),
+            "{warnings:?}"
+        );
     }
 
     #[tokio::test]
@@ -1240,8 +1280,11 @@ summary_model = "fast"
 page_snapshot = 1
 "#;
         let def = AgentDefinition::parse(src, "huggr.toml").unwrap();
-        let (agent, warnings) = build_agent(&def).await.unwrap();
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let (agent, warnings) =
+            build_agent_with_options(&def, &RuntimeOptions::default().with_api_token("test-key"))
+                .await
+                .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         let policy = agent.context_policy.as_ref().expect("budget policy");
         let value = serde_json::to_value(policy).unwrap();
         assert_eq!(value["kind"], "budget");
@@ -1295,8 +1338,11 @@ default = "balanced"
 readonly = true
 "#;
         let def = AgentDefinition::parse(src, "huggr.toml").unwrap();
-        let (agent, warnings) = build_agent(&def).await.unwrap();
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let (agent, warnings) =
+            build_agent_with_options(&def, &RuntimeOptions::default().with_api_token("test-key"))
+                .await
+                .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         let card = agent.describe();
         let tools: Vec<_> = card.tools.iter().map(|tool| tool.name.clone()).collect();
         assert!(tools.contains(&"memory_read".to_string()), "{tools:?}");
@@ -1410,8 +1456,11 @@ root = "out"
         );
         let mut def = AgentDefinition::parse(&parent_src, "huggr.toml").unwrap();
         def.source_dir = Some(std::env::temp_dir());
-        let (agent, warnings) = build_agent(&def).await.unwrap();
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let (agent, warnings) =
+            build_agent_with_options(&def, &RuntimeOptions::default().with_api_token("test-key"))
+                .await
+                .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         let names: Vec<_> = agent
             .describe()
             .tools
@@ -1430,8 +1479,11 @@ root = "out"
     async fn delegate_grant_registers_self_agent_tool() {
         let src = "[agent]\nname = \"self\"\n[models]\ndefault = \"balanced\"\n[tools.delegate]\n";
         let def = AgentDefinition::parse(src, "huggr.toml").unwrap();
-        let (agent, warnings) = build_agent(&def).await.unwrap();
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let (agent, warnings) =
+            build_agent_with_options(&def, &RuntimeOptions::default().with_api_token("test-key"))
+                .await
+                .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         let tools: Vec<_> = agent
             .describe()
             .tools
@@ -1493,8 +1545,11 @@ root = "out"
         let parent_src = "[agent]\nname = \"parent-feedback\"\n[models]\ndefault = \"balanced\"\n[tools.agent.helper]\nartifact = \"child-feedback.sh\"\n";
         let mut def = AgentDefinition::parse(parent_src, "huggr.toml").unwrap();
         def.source_dir = Some(dir.clone());
-        let (mut agent, warnings) = build_agent(&def).await.unwrap();
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let (mut agent, warnings) =
+            build_agent_with_options(&def, &RuntimeOptions::default().with_api_token("test-key"))
+                .await
+                .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
         agent.models.clear();
         agent.models.push((
             ModelSelector::named("balanced"),

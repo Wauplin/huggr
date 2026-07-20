@@ -267,7 +267,7 @@ A **tool** is the model-facing view: a manifest grant (`[tools.fs_read]`, `[tool
 
 A **capability** is the host-side implementation behind that view: a Rust `Capability` (a name, the JSON schema advertised to the model, permission and background flags, and an `invoke` method) registered in the host's `CapabilityRegistry`. The brain never executes anything itself; it emits `StartCapability { name, args }` and the host looks the name up in the registry. There are no privileged built-ins: `fs_read`, an MCP bridge, a granted child agent, and even the model adapter at the host level all register through the same interface.
 
-The mapping is not always one-to-one. One `fs_read` grant registers eight `fs_*` capabilities; one `[tools.agent.<name>]` grant registers `agent_<name>` and `agent_<name>_feedback`. Sandbox-by-registration ties the two sides together: an optional tool that is not granted in the manifest has no capability registered, so there is no code path to it.
+The mapping is not always one-to-one. One `fs_read` grant registers seven `fs_*` capabilities; one `[tools.agent.<name>]` grant registers `agent_<name>` and `agent_<name>_feedback`. Sandbox-by-registration ties the two sides together: an optional tool that is not granted in the manifest has no capability registered, so there is no code path to it.
 
 In short: you grant tools in the manifest and the model calls tools; the host registers and invokes capabilities. When a sentence works with either word, the model-facing side is a tool and the host-facing side is a capability.
 

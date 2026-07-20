@@ -4,7 +4,7 @@ This page lists the capabilities provided by `huggr-toolkit`. Grant-driven capab
 
 ## Filesystem reads
 
-`[tools.fs_read]` registers eight read-only capabilities over one or more named, canonicalized roots. Files are always addressed as `<root-name>/<path>`: a tree operation (`fs_list`, `fs_search`, `fs_grep`, `fs_glob`, `fs_outline`) with no `path` spans every root, and `fs_list` with no `path` lists the root names.
+`[tools.fs_read]` registers seven read-only capabilities over one or more named, canonicalized roots. Files are always addressed as `<root-name>/<path>`: a tree operation (`fs_list`, `fs_grep`, `fs_glob`, `fs_outline`) with no `path` spans every root, and `fs_list` with no `path` lists the root names.
 
 `root` is polymorphic and defaults to `.`:
 
@@ -20,8 +20,7 @@ A name defaults to the path's final component; pin explicit names with the `{ na
 | Capability | What it does | Limits |
 | --- | --- | --- |
 | `fs_list` | Lists a directory, optionally recursively. | At most 2,000 returned entries; recursive walks have an internal 20,000-file ceiling. |
-| `fs_search` | Finds a case-insensitive literal substring with paths, line numbers, and snippets. | Text-like files up to 512 KB; at most 500 matches per call. |
-| `fs_grep` | Matches a Rust regular expression, optionally case-insensitively. | Same file and match limits as `fs_search`. |
+| `fs_grep` | Matches a Rust regular expression, optionally case-insensitively, with paths, line numbers, and snippets. | Text-like files up to 512 KB; at most 500 matches per call. |
 | `fs_glob` | Matches relative file paths with a glob; `**` crosses directories. | At most 2,000 returned paths; internal 20,000-file walk ceiling. |
 | `fs_read` | Reads one text file. | Default 200 KB, maximum 1 MB. |
 | `fs_read_range` | Reads an inclusive 1-based line range. | Default 200 lines, maximum 5,000 lines and 1 MB. |

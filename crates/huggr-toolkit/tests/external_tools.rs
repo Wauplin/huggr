@@ -6,7 +6,7 @@
 //! is what makes it callable.
 
 use huggr_toolkit::AgentDefinition;
-use huggr_toolkit::runtime::build_agent;
+use huggr_toolkit::runtime::{RuntimeOptions, build_agent_with_options};
 
 fn python3_available() -> bool {
     std::process::Command::new("python3")
@@ -57,10 +57,13 @@ for line in sys.stdin:
 ''']
 "#;
     let def = AgentDefinition::parse(manifest, "huggr.toml").unwrap();
-    let (agent, warnings) = build_agent(&def)
-        .await
-        .expect("MCP server should be loaded from the manifest");
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    // Inject a credential so the build is independent of the ambient provider
+    // key env var; the only expected warning source is thereby removed.
+    let (agent, warnings) =
+        build_agent_with_options(&def, &RuntimeOptions::default().with_api_token("test-key"))
+            .await
+            .expect("MCP server should be loaded from the manifest");
+    assert!(warnings.is_empty(), "{warnings:?}");
 
     let card = agent.describe();
     let names: Vec<_> = card.tools.iter().map(|t| t.name.as_str()).collect();

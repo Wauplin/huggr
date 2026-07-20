@@ -205,11 +205,11 @@ pub(crate) fn sanitize_crate_name(name: &str) -> String {
     crate::scaffold::sanitize_rust_name(name, '_')
 }
 
-/// The CLI shim's `Cargo.toml`. The empty `[workspace]` table detaches it from
-/// this repo's workspace, and the path dependency points back at the installed
-/// `huggr-toolkit` crate (resolved from this binary's compile-time manifest dir).
+/// The CLI shim's `Cargo.toml`. Released toolkits depend on their exact
+/// crates.io version; local checkout builds add a path patch for the same
+/// version so unreleased development code remains buildable.
 fn cli_cargo_toml(pkg: &str, response_dep: &Option<ResponseDependency>) -> String {
-    let toolkit_dir = env!("CARGO_MANIFEST_DIR");
+    let (toolkit_dependency, toolkit_patch) = toolkit_dependency(&[]);
     let response_dep = response_dep
         .as_ref()
         .map(ResponseDependency::cargo_dep)
@@ -229,11 +229,38 @@ path = "src/main.rs"
 [workspace]
 
 [dependencies]
-huggr-toolkit = {{ path = "{toolkit_dir}" }}
+{toolkit_dependency}
 {response_dep}
 tokio = {{ version = "1", features = ["rt-multi-thread", "macros"] }}
+{toolkit_patch}
 "#
     )
+}
+
+pub(crate) fn toolkit_dependency(features: &[&str]) -> (String, String) {
+    toolkit_dependency_for(features, option_env!("HUGGR_TOOLKIT_DEV_PATH"))
+}
+
+fn toolkit_dependency_for(features: &[&str], dev_path: Option<&str>) -> (String, String) {
+    let version = env!("CARGO_PKG_VERSION");
+    let features = if features.is_empty() {
+        String::new()
+    } else {
+        let quoted = features
+            .iter()
+            .map(|feature| format!("\"{feature}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(", features = [{quoted}]")
+    };
+    let dependency = format!("huggr-toolkit = {{ version = \"={version}\"{features} }}");
+    let patch = dev_path
+        .map(|path| {
+            let path = path.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("\n[patch.crates-io]\nhuggr-toolkit = {{ path = \"{path}\" }}\n")
+        })
+        .unwrap_or_default();
+    (dependency, patch)
 }
 
 /// The CLI shim's `main.rs` — embed the bundle and delegate to the universal
@@ -487,12 +514,29 @@ root = "work"
     }
 
     #[test]
-    fn cli_cargo_toml_detaches_workspace_and_paths_to_toolkit() {
+    fn cli_cargo_toml_detaches_workspace_and_pins_toolkit() {
         let toml = cli_cargo_toml("policy-docs", &None);
         assert!(toml.contains("[workspace]"));
-        assert!(toml.contains("huggr-toolkit = { path ="));
+        assert!(toml.contains(&format!(
+            "huggr-toolkit = {{ version = \"={}\" }}",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(toml.contains("[patch.crates-io]"));
         assert!(toml.contains("name = \"policy-docs\""));
         assert!(toml.contains("[[bin]]"));
+    }
+
+    #[test]
+    fn packaged_toolkit_dependency_never_needs_a_checkout() {
+        let (dependency, patch) = toolkit_dependency_for(&[], None);
+        assert_eq!(
+            dependency,
+            format!(
+                "huggr-toolkit = {{ version = \"={}\" }}",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        assert!(patch.is_empty());
     }
 
     #[test]

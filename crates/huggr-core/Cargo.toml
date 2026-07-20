@@ -5,7 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+publish = ["crates-io"]
 
 [dependencies]
 # serde/serde_json are pure data — no IO, no runtime. They carry the opaque

@@ -1,0 +1,16 @@
+# Huggr agent definition — edit, then run with:
+#   huglet-weather <question>            (a built binary)
+#   huggr run . "<question>"            (from this folder)
+# The first `huggr` run creates ~/.huggr/models.toml. Set the key named there.
+
+[agent]
+name = "huglet-weather"
+version = "0.1.0"
+description = "Answers current-weather questions via the Open-Meteo API."
+
+[models]
+default = "balanced"
+
+# GET-only HTTP, jailed to an allowlist of hosts (the sandbox boundary).
+[tools.web_fetch]
+allow_hosts = ["api.open-meteo.com", "geocoding-api.open-meteo.com"]

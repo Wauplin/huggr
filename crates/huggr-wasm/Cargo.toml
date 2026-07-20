@@ -1,10 +1,13 @@
 [package]
 name = "huggr-wasm"
+description = "WASM bindings for the sans-IO Huggr brain and portable trace verification."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -19,4 +22,3 @@ wasm-bindgen.workspace = true
 # Pure-data trace format + replay/verify fold; compiles to wasm because its fs
 # helpers are never called from here.
 huggr-replay.workspace = true
-

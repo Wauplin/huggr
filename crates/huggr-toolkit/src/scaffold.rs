@@ -92,14 +92,14 @@ pub fn scaffold_files(name: &str, template: Template) -> Vec<ScaffoldFile> {
     }
 }
 
-/// The `weather` template: the checked-in `examples/huglet-weather` crate,
-/// embedded at compile time, with the agent name substituted.
+/// The packaged `weather` template, kept in sync with the checked-in example,
+/// embedded at compile time with the agent name substituted.
 fn weather_files(name: &str) -> Vec<ScaffoldFile> {
-    const CARGO_TOML: &str = include_str!("../../../examples/huglet-weather/Cargo.toml");
-    const LIB_RS: &str = include_str!("../../../examples/huglet-weather/src/lib.rs");
-    const MANIFEST: &str = include_str!("../../../examples/huglet-weather/huggr.toml");
-    const SYSTEM: &str = include_str!("../../../examples/huglet-weather/SYSTEM.md");
-    const README: &str = include_str!("../../../examples/huglet-weather/README.md");
+    const CARGO_TOML: &str = include_str!("../assets/weather-template/Cargo.toml.txt");
+    const LIB_RS: &str = include_str!("../assets/weather-template/lib.rs");
+    const MANIFEST: &str = include_str!("../assets/weather-template/huggr.toml");
+    const SYSTEM: &str = include_str!("../assets/weather-template/SYSTEM.md");
+    const README: &str = include_str!("../assets/weather-template/README.md");
 
     let package = sanitize_rust_name(name, '-');
     let crate_name = package.replace('-', "_");

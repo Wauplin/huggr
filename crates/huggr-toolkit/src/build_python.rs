@@ -32,13 +32,12 @@ use serde_json::Value;
 
 use crate::build::{
     BuildError, BuildOptions, ResponseDependency, build as build_cli, response_dependency,
-    sanitize_crate_name, write_bundle,
+    sanitize_crate_name, toolkit_dependency, write_bundle,
 };
 use crate::manifest::AgentDefinition;
 use crate::schema_py;
 
-const SHARED_PYTHON_TYPES: &str =
-    include_str!("../../../bindings/python/python/huggr_agents/_types.py");
+const SHARED_PYTHON_TYPES: &str = include_str!("../assets/python/_types.py");
 
 /// The result of a successful Python-surface build.
 #[derive(Clone, Debug)]
@@ -157,11 +156,10 @@ fn python_module_name(name: &str) -> String {
     out
 }
 
-/// The cdylib crate's `Cargo.toml`. Detached from any surrounding workspace, it
-/// paths back to the installed `huggr-toolkit` and (for a typed contract) the
-/// agent crate so the Rust response type registers.
+/// The cdylib crate's `Cargo.toml`. It pins the toolkit release and links the
+/// local agent crate so the Rust response type registers.
 fn cargo_toml(pkg: &str, response_dep: &Option<ResponseDependency>) -> String {
-    let toolkit_dir = env!("CARGO_MANIFEST_DIR");
+    let (toolkit_dependency, toolkit_patch) = toolkit_dependency(&["python-bridge"]);
     let response_dep = response_dep
         .as_ref()
         .map(ResponseDependency::cargo_dep)
@@ -181,11 +179,12 @@ crate-type = ["cdylib"]
 [workspace]
 
 [dependencies]
-huggr-toolkit = {{ path = "{toolkit_dir}", features = ["python-bridge"] }}
+{toolkit_dependency}
 {response_dep}
 pyo3 = {{ version = "0.23", features = ["extension-module", "abi3-py39"] }}
 tokio = {{ version = "1", features = ["rt-multi-thread"] }}
 serde_json = "1"
+{toolkit_patch}
 "#
     )
 }
@@ -644,8 +643,12 @@ help = "Folder containing the documentation to search."
         assert!(toml.contains("crate-type = [\"cdylib\"]"));
         assert!(toml.contains("name = \"_native\""));
         assert!(toml.contains("pyo3 = { version"));
-        assert!(toml.contains("huggr-toolkit = { path ="));
+        assert!(toml.contains(&format!(
+            "huggr-toolkit = {{ version = \"={}\"",
+            env!("CARGO_PKG_VERSION")
+        )));
         assert!(toml.contains("features = [\"python-bridge\"]"));
+        assert!(toml.contains("[patch.crates-io]"));
     }
 
     #[test]

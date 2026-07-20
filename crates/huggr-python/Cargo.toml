@@ -5,6 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/Wauplin/huggr"
 description = "PyO3 embedding of the huglet runtime: define agents and tools in Python, run on the Rust runtime."
+publish = false
 
 # Deliberately outside the root workspace: building this crate requires a
 # Python toolchain (maturin drives it from bindings/python).

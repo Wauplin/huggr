@@ -25,6 +25,7 @@ version = "0.0.2"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/Wauplin/huggr"
+homepage = "https://github.com/Wauplin/huggr"
 rust-version = "1.85"
 
 [workspace.dependencies]
@@ -35,12 +36,12 @@ serde_yaml = "0.9"
 schemars = "1"
 
 # Host-side (IO/runtime) deps — never used by huggr-core.
-huggr-core = { path = "crates/huggr-core" }
-huggr-host = { path = "crates/huggr-host" }
-huggr-providers = { path = "crates/huggr-providers" }
-huggr-replay = { path = "crates/huggr-replay" }
-huggr-agent = { path = "crates/huggr-agent" }
-huggr-toolkit = { path = "crates/huggr-toolkit" }
+huggr-core = { version = "=0.0.2", path = "crates/huggr-core" }
+huggr-host = { version = "=0.0.2", path = "crates/huggr-host" }
+huggr-providers = { version = "=0.0.2", path = "crates/huggr-providers" }
+huggr-replay = { version = "=0.0.2", path = "crates/huggr-replay" }
+huggr-agent = { version = "=0.0.2", path = "crates/huggr-agent" }
+huggr-toolkit = { version = "=0.0.2", path = "crates/huggr-toolkit" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"
